@@ -20,12 +20,15 @@ describe('価格ファイルの形式', () => {
       { t, o: 158.123, h: 158.2, l: 158.1, c: 158.15 },
       { t: t + 60_000, o: 158.15, h: 158.16, l: 158.14, c: 158.155 },
     ]);
-    expect(a[0].o).toBe(158.126);
+    expect(a[0]?.o).toBe(158.126);
   });
 
-  it('Ask のない時刻の足は捨てる', () => {
+  it('Ask のない時刻の足は Bid だけ残し、Ask は null にする', () => {
     const t = Date.UTC(2026, 9, 20);
     const bytes: Uint8Array = encodeMonth([[t, 1, 1, 1, 1], [t + 60_000, 2, 2, 2, 2]], [[t, 1, 1, 1, 1]], 5);
-    expect(decodeMonth(bytes.slice().buffer as ArrayBuffer, 5).bid).toHaveLength(1);
+    const { bid, ask } = decodeMonth(bytes.slice().buffer as ArrayBuffer, 5);
+    expect(bid).toHaveLength(2);
+    expect(ask[0]?.o).toBe(1);
+    expect(ask[1]).toBeNull();
   });
 });
