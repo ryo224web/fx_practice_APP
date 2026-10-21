@@ -164,7 +164,11 @@ export class Account {
       events.push({ kind: 'open', ticket: o.ticket, time: B.t });
     }
 
+    const filledNow = new Set(events.map((e) => e.ticket));
     for (const p of this.positions.slice()) {
+      // この足で約定したポジションの S/L・T/P は次の足から見る。1 分足では約定の前か後か分からず、
+      // 約定より前の安値・高値・始値で決済してしまうことがあるため
+      if (filledNow.has(p.ticket)) continue;
       const hit = stopHit(p, B, A);
       if (!hit) continue;
       this.closePosition(p, p.lots, hit.price, B.t, hit.reason, rate);

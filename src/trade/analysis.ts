@@ -159,6 +159,18 @@ function emptySummary(): Summary {
   };
 }
 
+/**
+ * 決済した時点の S/L までの値幅を 1R とした損益。S/L が無い・建値と同じか有利な側にある
+ * （建値に動かした・利益を確保した）取引は、リスクが決まらないので null
+ */
+export function rMultiple(t: TradeRecord): number | null {
+  if (t.sl === null) return null;
+  const dir = t.side === 'buy' ? 1 : -1;
+  const risk = (t.openPrice - t.sl) * dir;
+  if (!(risk > t.openPrice * 1e-6)) return null;
+  return ((t.closePrice - t.openPrice) * dir) / risk;
+}
+
 const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN);
 const holdMin = (t: TradeRecord) => (t.closeTime - t.openTime) / 60_000;
 
@@ -223,7 +235,7 @@ export function summarize(trades: readonly TradeRecord[], initialBalance: number
   s.tpHits = list.filter((t) => t.reason === 'tp').length;
   s.manual = list.filter((t) => t.reason === 'manual').length;
 
-  const rs = list.filter((t) => t.sl !== null && Math.abs(t.openPrice - t.sl) > 0).map((t) => t.pips / (Math.abs(t.openPrice - t.sl!) / pip));
+  const rs = list.map(rMultiple).filter((r): r is number => r !== null);
   s.rTrades = rs.length;
   s.avgR = avg(rs);
   s.avgMae = avg(list.filter((t) => t.mae !== null).map((t) => t.mae!));
@@ -411,7 +423,7 @@ export function tradesCsv(
     t.pips.toFixed(1),
     Math.round(t.profit),
     Math.round(holdMin(t)),
-    t.sl !== null && Math.abs(t.openPrice - t.sl) > 0 ? (t.pips / (Math.abs(t.openPrice - t.sl) / pip)).toFixed(2) : '',
+    rMultiple(t)?.toFixed(2) ?? '',
     t.mae === null ? '' : t.mae.toFixed(1),
     t.mfe === null ? '' : t.mfe.toFixed(1),
     WEEKDAYS[new Date(toWall(t.openTime)).getUTCDay()],

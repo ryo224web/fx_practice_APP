@@ -71,6 +71,8 @@ export interface IndicatorInput {
   /** 今の足（作りかけ）の位置と終値 */
   k: number;
   partialClose: number;
+  /** ローソク足のチャートに渡した最初の足の位置。これより古い値は描かない（横の位置がずれるため） */
+  offset: number;
 }
 
 interface Line {
@@ -90,10 +92,11 @@ export class IndicatorLayer {
 
   constructor(private readonly chart: IChartApi) {
     chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
-      // 左へ動かして計算済みの範囲を出たら、さらに前まで計算する
-      if (r && this.last && r.from < this.from + 50 && this.from > 0) {
-        this.from = Math.max(0, Math.floor(r.from) - WINDOW);
-        this.render(this.last);
+      // 左へ動かして計算済みの範囲を出たら、さらに前まで計算する（r はチャートの位置なので、渡した最初の足の分を足す）
+      const last = this.last;
+      if (r && last && r.from + last.offset < this.from + 50 && this.from > last.offset) {
+        this.from = Math.max(last.offset, Math.floor(r.from + last.offset) - WINDOW);
+        this.render(last);
       }
     });
   }
@@ -148,7 +151,7 @@ export class IndicatorLayer {
       this.rciCache.clear();
       this.from = Math.max(0, input.k - WINDOW);
     }
-    this.from = Math.min(this.from, Math.max(0, input.k - WINDOW));
+    this.from = Math.max(input.offset, Math.min(this.from, Math.max(0, input.k - WINDOW)));
     const { k } = input;
     const full = this.shown.key !== input.key || this.shown.from !== this.from || k < this.shown.k;
     for (const l of this.lines) {
@@ -176,8 +179,9 @@ export class IndicatorLayer {
     }
     if (j < inp.k) return arr[j];
     // 作りかけの足は、その時点の終値で計算する
-    if (m.type === 'ema') return j === 0 ? inp.partialClose : emaNext(arr[j - 1], inp.partialClose, m.period);
     if (j - m.period + 1 < 0) return NaN;
+    if (m.type === 'ema' && j > m.period - 1) return emaNext(arr[j - 1], inp.partialClose, m.period);
+    // SMA と、EMA の最初の値（SMA から始める）
     let sum = inp.partialClose;
     for (let q = j - m.period + 1; q < j; q++) sum += inp.closes[q];
     return sum / m.period;

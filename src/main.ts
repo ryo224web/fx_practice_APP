@@ -477,7 +477,7 @@ function renderTerminal(force = false) {
 // ---------------- 成績 ----------------
 
 /** 保有中に一番不利・有利だった値幅（pips）。今の銘柄で、その期間の価格データがあるときだけ */
-function excursion(symbol: string, side: 'buy' | 'sell', openTime: number, closeTime: number, openPrice: number) {
+function excursion(symbol: string, side: 'buy' | 'sell', openTime: number, closeTime: number, openPrice: number, closePrice: number) {
   if (symbol.toLowerCase() !== md.symbol) return { mae: null, mfe: null };
   const i0 = md.indexAtOrBefore(openTime);
   const i1 = md.indexAtOrBefore(closeTime);
@@ -490,9 +490,13 @@ function excursion(symbol: string, side: 'buy' | 'sell', openTime: number, close
     if (bars[i].l < lo) lo = bars[i].l;
   }
   const dir = side === 'buy' ? 1 : -1;
-  const a = ((side === 'buy' ? lo : hi) - openPrice) * dir;
-  const f = ((side === 'buy' ? hi : lo) - openPrice) * dir;
-  return { mae: a / spec.pip, mfe: f / spec.pip };
+  const done = ((closePrice - openPrice) * dir) / spec.pip;
+  // 同じ 1 分足の中で建てて決済した取引は、足の中の順番が分からないので決済の値幅だけを使う
+  if (i0 === i1) return { mae: Math.min(0, done), mfe: Math.max(0, done) };
+  // 建てた足・決済した足は、約定の前後も含んだ 1 分足全体で見る（少し大きめに出ることがある）
+  const a = (((side === 'buy' ? lo : hi) - openPrice) * dir) / spec.pip;
+  const f = (((side === 'buy' ? hi : lo) - openPrice) * dir) / spec.pip;
+  return { mae: Math.min(0, a, done), mfe: Math.max(0, f, done) };
 }
 
 /** 銘柄ごとの 1 pip（口座履歴にほかの銘柄が混ざっていても pips を正しく出すため） */
@@ -524,7 +528,7 @@ function statsRecords(source: 'virtual' | 'mt4'): TradeRecord[] {
           pips: ((t.closePrice! - t.openPrice) * dir) / pipOf(t.symbol),
           // MT4 の履歴には決済の理由が無いので、記録の価格が S/L・T/P と同じかで見分ける
           reason: t.sl !== null && Math.abs(t.closePrice! - t.sl) < pipOf(t.symbol) * 0.5 ? 'sl' : t.tp !== null && Math.abs(t.closePrice! - t.tp) < pipOf(t.symbol) * 0.5 ? 'tp' : 'manual',
-          ...excursion(t.symbol, t.side, openTime, closeTime, t.openPrice),
+          ...excursion(t.symbol, t.side, openTime, closeTime, t.openPrice, t.closePrice!),
         } satisfies TradeRecord;
       });
   }
@@ -545,7 +549,7 @@ function statsRecords(source: 'virtual' | 'mt4'): TradeRecord[] {
         profit: h.profit,
         pips: ((h.closePrice - h.openPrice) * dir) / pipOf(h.symbol),
         reason: h.reason,
-        ...excursion(h.symbol, h.side, h.openTime, h.closeTime, h.openPrice),
+        ...excursion(h.symbol, h.side, h.openTime, h.closeTime, h.openPrice, h.closePrice),
       } satisfies TradeRecord,
     ];
   });
@@ -956,6 +960,39 @@ async function ensureLoaded(from: number, to: number) {
   updateStatus();
 }
 
+/** 自動で読み込むインジケーター用の過去データの上限 */
+const HISTORY_LIMIT = 5 * 365 * 86_400_000;
+let loadingHistory = false;
+
+/**
+ * 表示しているチャートのインジケーターに必要な分だけ、前のデータを読み込む。
+ * 例: 日足の SMA(200) には 200 日分の 1 分足が要る。足りないと線が途中から始まったり、
+ * EMA が MT4 と違う値になったりする（EMA は初めの値の影響が残るので、期間の 3 倍を見る）。
+ * 週末など足の無い時間があるので 1.5 倍の期間を見る。最大 5 年分。
+ */
+async function ensureIndicatorHistory() {
+  if (!manifest || loadingHistory || !md.hasEarlier) return;
+  let need = 0;
+  for (const p of visiblePanes()) {
+    const cfg = indicatorsFor(p.tf);
+    const bars = Math.max(
+      0,
+      ...cfg.ma.filter((m) => m.enabled).map((m) => (m.type === 'ema' ? m.period * 3 : m.period)),
+      ...cfg.rci.flatMap((r) => (r.enabled ? r.lines.filter((l) => l.enabled).map((l) => l.period) : [])),
+    );
+    need = Math.max(need, (bars + 20) * TIMEFRAMES[p.tf] * 60_000 * 1.5);
+  }
+  const now = md.bid[cursor].t;
+  const from = now - Math.min(need, HISTORY_LIMIT);
+  if (md.bid[0].t <= from) return;
+  loadingHistory = true;
+  try {
+    await ensureLoaded(from, now);
+  } finally {
+    loadingHistory = false;
+  }
+}
+
 async function readText(file: File): Promise<string> {
   const buf = new Uint8Array(await file.arrayBuffer());
   // MT4 のレポートは UTF-16 のことがある
@@ -1253,6 +1290,7 @@ function applyIndicators(tfs: string[], cfg: IndicatorConfig) {
   for (const tf of tfs) state.indicatorSets![tf] = structuredClone(cfg);
   for (const p of panes) if (tfs.includes(p.tf)) p.indicators.setConfig(indicatorsFor(p.tf));
   save();
+  void ensureIndicatorHistory();
 }
 
 // ---------------- 図形の色（時間足ごと） ----------------
@@ -1407,6 +1445,7 @@ function setTf(tf: Timeframe) {
   active.scrollToNow();
   renderQuotes();
   save();
+  void ensureIndicatorHistory();
 }
 
 function setLayout(layout: Layout) {
@@ -1421,6 +1460,7 @@ function setLayout(layout: Layout) {
   scrollToNow();
   renderQuotes();
   save();
+  void ensureIndicatorHistory();
 }
 
 /** チャートを 4 枚作る（表示するのは並べ方の枚数だけ） */
@@ -1779,6 +1819,8 @@ async function start() {
   $<HTMLInputElement>('#jump').value = toLocalInput(md.bid[cursor].t, state.zone, rule);
 
   updateStatus(Math.round(performance.now()));
+  // 表示が出てから、インジケーターに必要な過去のデータを裏で読み込む（R1 の 1 秒を守るため後回し）
+  setTimeout(() => void ensureIndicatorHistory(), 0);
   if (store.lockedBy) toast(`このプロジェクトは別の Mac（${store.lockedBy}）でも開いているようです。同時に使うと Dropbox で競合コピーができます`);
   else if (!store.remote) toast('保存先のフォルダに届かないため、ブラウザの中だけに保存しています');
 }

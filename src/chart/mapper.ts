@@ -11,9 +11,19 @@ export class TimeMapper {
     public times: readonly number[] = [],
     /** 1 本の長さ（ミリ秒） */
     public size = 60_000,
+    /** チャートに渡した最初の足が times の何番目か（古い足を省いて渡しているときの分） */
+    public offset = 0,
   ) {}
 
   toLogical(t: number): number {
+    return this.rawLogical(t) - this.offset;
+  }
+
+  toTime(logical: number): number {
+    return this.rawTime(logical + this.offset);
+  }
+
+  private rawLogical(t: number): number {
     const n = this.times.length;
     if (n === 0) return 0;
     if (t <= this.times[0]) return (t - this.times[0]) / this.size;
@@ -30,7 +40,7 @@ export class TimeMapper {
     return lo + frac;
   }
 
-  toTime(logical: number): number {
+  private rawTime(logical: number): number {
     const n = this.times.length;
     if (n === 0) return 0;
     if (logical <= 0) return this.times[0] + logical * this.size;

@@ -73,3 +73,19 @@ describe('成績の分析', () => {
     expect(csv.split('\r\n')[1].split(',').at(-1)).toBe('月');
   });
 });
+
+describe('R（決済時の S/L 基準）', () => {
+  it('価格だけで計算するので、銘柄の pip の大きさに依らない', async () => {
+    const { rMultiple } = await import('../src/trade/analysis');
+    // EURUSD: 建値 1.10000・S/L 1.09800（20 pips）・決済 1.10400（+40 pips）→ 2R
+    const eur = { ...trade(0, 40), openPrice: 1.1, sl: 1.098, closePrice: 1.104 };
+    expect(rMultiple(eur)).toBeCloseTo(2);
+  });
+
+  it('S/L を建値や利益側へ動かした取引は対象外（リスクが決まらない）', async () => {
+    const { rMultiple } = await import('../src/trade/analysis');
+    expect(rMultiple({ ...trade(0, 20), sl: 150 })).toBeNull(); // 建値
+    expect(rMultiple({ ...trade(0, 20), sl: 150.1 })).toBeNull(); // 利益側
+    expect(rMultiple({ ...trade(0, 20), side: 'sell', sl: 149.9 })).toBeNull(); // 売りで利益側
+  });
+});

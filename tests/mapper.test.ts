@@ -21,3 +21,12 @@ describe('時刻と足の位置の変換', () => {
     expect(m.toTime(5)).toBe(53 * H);
   });
 });
+
+describe('古い足を省いてチャートに渡したとき', () => {
+  it('offset の分だけ位置をずらす（時刻との対応は変わらない）', () => {
+    const H = 3_600_000;
+    const m = new TimeMapper([0, H, 2 * H, 3 * H], H, 2);
+    expect(m.toLogical(2 * H)).toBe(0);
+    expect(m.toTime(1)).toBe(3 * H);
+  });
+});

@@ -134,3 +134,21 @@ describe('リスクからロットを決める', () => {
     expect(lossAt(lots, 150, 149.77, 100_000, 1)).toBeLessThanOrEqual(10_000);
   });
 });
+
+describe('逆指値が約定した足の S/L', () => {
+  it('約定より前の安値・始値では S/L に掛けない（次の足から見る）', () => {
+    // 2 本目: 始値 149.00 → 安値 148.90 → 高値 150.20 で、150.00 の買い逆指値が約定。
+    // S/L 149.50 は約定より前の始値・安値より上なので、同じ足で判定すると約定した直後に決済になってしまう
+    const feed = feedOf([
+      [149.0, 149.0, 149.0, 149.0],
+      [149.0, 150.2, 148.9, 150.1],
+      [150.1, 150.15, 149.4, 149.6],
+    ]);
+    const a = newAccount();
+    a.apply(feed, 0, { t: T0, kind: 'pending', type: 'buystop', price: 150, lots: 0.1, sl: 149.5, tp: null });
+    expect(a.processBar(feed, 1).map((e) => e.kind)).toEqual(['open']);
+    expect(a.positions).toHaveLength(1);
+    // 次の足で安値 149.40 が S/L 149.50 に届く
+    expect(a.processBar(feed, 2).map((e) => e.kind)).toEqual(['sl']);
+  });
+});

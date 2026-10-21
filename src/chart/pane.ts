@@ -39,6 +39,12 @@ export interface PaneHost {
   lead(pane: ChartPane): void;
 }
 
+/**
+ * 1 枚のチャートに渡す足の本数の上限。何年分も読み込んだときに M1 などで重くならないように、
+ * 今の足から古い方へこの本数だけ渡す（左端まで動かすと、さらに古い足を足す）
+ */
+const CHART_MAX_BARS = 30_000;
+
 /** 足 1 本の幅（px）の初期値。ライブラリの初期値と同じ */
 const DEFAULT_BAR_SPACING = 6;
 
@@ -66,7 +72,9 @@ export class ChartPane {
   private readonly legend: HTMLElement;
   /** MT4 の「チャートの右端をずらす」三角のつまみ */
   private readonly shiftHandle: HTMLElement;
-  private shown = { tf: '' as Timeframe | '', k: -1, version: -1 };
+  private shown = { tf: '' as Timeframe | '', k: -1, version: -1, start: -1 };
+  /** 左端まで動かして足した、古い足の本数 */
+  private extraBars = 0;
   /**
    * 今の足 1 本の幅。マウスホイールで変えた分は設定値に入らないので、表示の範囲が変わるたびに
    * 見えている本数から求め直す（＋・－ を続けて押しても 1 回ずつ効くように、ここで覚えておく）
@@ -117,7 +125,13 @@ export class ChartPane {
     el.addEventListener('mousedown', () => host.activate(this), true);
     el.addEventListener('mouseenter', () => host.lead(this));
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
-      if (r && r.from < 30) host.nearLeftEdge();
+      if (r && r.from < 30) {
+        // 省いていた古い足があれば足す。無ければ前の月を読み込む
+        if (this.shown.start > 0) {
+          this.extraBars += CHART_MAX_BARS;
+          setTimeout(() => this.render(true, true));
+        } else host.nearLeftEdge();
+      }
       this.placeShiftHandle();
       const w = this.chart.timeScale().width();
       if (r && r.to > r.from && w > 0) this.spacing = w / (r.to - r.from);
@@ -160,16 +174,22 @@ export class ChartPane {
     this.drawings.tf = this.tf;
     const k = lastLE(agg.starts, cursor);
     const partial = this.host.toChart(mergeBars(this.host.bid(), agg.starts[k], cursor, agg.bars[k].t));
-    if (reset || this.shown.tf !== this.tf || this.shown.version !== version || k < this.shown.k) {
-      const view = keepView ? this.chart.timeScale().getVisibleRange() : null;
-      this.series.setData([...data.slice(0, k), partial]);
+    if (this.shown.tf !== this.tf || this.shown.version !== version) this.extraBars = 0;
+    // 渡すのは今の足から古い方へ CHART_MAX_BARS 本（＋左へ動かして足した分）まで。再生中は始まりを動かさない
+    let start = Math.max(0, k - CHART_MAX_BARS - this.extraBars);
+    const same = !reset && this.shown.tf === this.tf && this.shown.version === version && k >= this.shown.k;
+    if (same && this.shown.start >= 0 && start > this.shown.start) start = this.shown.start;
+    this.mapper.offset = start;
+    if (!same || start !== this.shown.start) {
+      const view = keepView || (same && start !== this.shown.start) ? this.chart.timeScale().getVisibleRange() : null;
+      this.series.setData([...data.slice(start, k), partial]);
       if (view) this.chart.timeScale().setVisibleRange(view);
     } else {
       for (let j = this.shown.k; j < k; j++) this.series.update(data[j]);
       this.series.update(partial);
     }
-    this.shown = { tf: this.tf, k, version };
-    this.indicators.render({ key: `${this.tf}:${version}`, closes, times: chartTimes, k, partialClose: partial.close });
+    this.shown = { tf: this.tf, k, version, start };
+    this.indicators.render({ key: `${this.tf}:${version}`, closes, times: chartTimes, k, partialClose: partial.close, offset: start });
     this.drawings.refresh();
     if (!this.hovering) this.renderLegend(null);
   }
