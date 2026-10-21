@@ -20,6 +20,12 @@ export interface Position {
   sl: number | null;
   tp: number | null;
   comment: string;
+  /**
+   * 建ててから一番有利・不利だった決済側の価格（買いは Bid、売りは Ask）。MAE・MFE に使う。
+   * 建てた足（約定の前の値動きを含む）と決済した足（決済の後の値動きを含む）は入れない
+   */
+  best?: number;
+  worst?: number;
 }
 
 export interface PendingOrder {
@@ -53,6 +59,9 @@ export type HistoryRow =
       profit: number;
       reason: CloseReason;
       comment: string;
+      /** 保有中に一番不利・有利だった値幅（価格。含み損は 0 以下、含み益は 0 以上） */
+      mae?: number;
+      mfe?: number;
     }
   | {
       kind: 'cancelled';
@@ -170,7 +179,15 @@ export class Account {
       // 約定より前の安値・高値・始値で決済してしまうことがあるため
       if (filledNow.has(p.ticket)) continue;
       const hit = stopHit(p, B, A);
-      if (!hit) continue;
+      if (!hit) {
+        // 決済しなかった足は、足の値幅を含み損益の最大・最小に入れる（決済した足は決済の価格だけを入れる）
+        const bar = p.side === 'buy' ? B : A;
+        const [good, bad] = p.side === 'buy' ? [bar.h, bar.l] : [bar.l, bar.h];
+        const dir = p.side === 'buy' ? 1 : -1;
+        if (p.best === undefined || (good - p.best) * dir > 0) p.best = good;
+        if (p.worst === undefined || (bad - p.worst) * dir < 0) p.worst = bad;
+        continue;
+      }
       this.closePosition(p, p.lots, hit.price, B.t, hit.reason, rate);
       events.push({ kind: hit.reason, ticket: p.ticket, time: B.t });
     }
@@ -261,6 +278,10 @@ export class Account {
   private closePosition(p: Position, lots: number, price: number, t: number, reason: CloseReason, rate: number) {
     const part = { ...p, lots };
     const profit = this.profitOf(part, price, rate);
+    const dir = p.side === 'buy' ? 1 : -1;
+    const done = (price - p.openPrice) * dir;
+    const mae = Math.min(0, done, p.worst === undefined ? 0 : (p.worst - p.openPrice) * dir);
+    const mfe = Math.max(0, done, p.best === undefined ? 0 : (p.best - p.openPrice) * dir);
     this.balance += profit;
     this.history.push({
       kind: 'trade',
@@ -277,6 +298,8 @@ export class Account {
       profit,
       reason,
       comment: p.comment,
+      mae,
+      mfe,
     });
     this.positions = this.positions.filter((x) => x !== p);
     // 一部決済は MT4 と同じく、残りを新しい注文番号で持ち続ける

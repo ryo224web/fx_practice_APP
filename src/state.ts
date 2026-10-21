@@ -10,6 +10,7 @@ import type { Drawing } from './chart/drawings';
 import type { IndicatorConfig } from './chart/indicators';
 import type { Mt4Trade } from './mt4/history';
 import type { Action, Baseline } from './trade/account';
+import type { Ledger } from './trade/ledger';
 
 export interface TestState {
   /** 検証を始めた時刻 */
@@ -24,6 +25,8 @@ export interface TestState {
    * 無い検証（固定スプレッドを入れる前に始めたもの）は、データの Ask を使う
    */
   spreadPips?: Record<string, number>;
+  /** 計算結果（月ごとの区切りと口座履歴）。開き直しや巻き戻しを速くするために残す（操作の記録から作り直せる） */
+  ledger?: Ledger;
 }
 
 /** EasyOrder の入力（リスクと S/L・T/P の位置） */

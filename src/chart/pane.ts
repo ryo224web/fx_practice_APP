@@ -12,7 +12,6 @@ import { TradeOverlay } from './trades';
 export interface AggEntry {
   agg: Aggregated;
   times: number[];
-  data: CandlestickData[];
   closes: Float64Array;
   chartTimes: Time[];
 }
@@ -188,7 +187,8 @@ export class ChartPane {
   /** 今の時刻までの足を表示する。reset なら全部描き直す（keepView なら見えている範囲を保つ） */
   render(reset = false, keepView = false) {
     if (this.el.hidden) return;
-    const { agg, times, data, closes, chartTimes } = this.host.agg(this.tf);
+    const { agg, times, closes, chartTimes } = this.host.agg(this.tf);
+    const bar = (j: number) => this.host.toChart(agg.bars[j]);
     const cursor = this.host.cursor();
     const version = this.host.dataVersion();
     this.mapper.times = times;
@@ -204,10 +204,13 @@ export class ChartPane {
     this.mapper.offset = start;
     if (!same || start !== this.shown.start) {
       const view = keepView || (same && start !== this.shown.start) ? this.chart.timeScale().getVisibleRange() : null;
-      this.series.setData([...data.slice(start, k), partial]);
+      const list: CandlestickData[] = [];
+      for (let j = start; j < k; j++) list.push(bar(j));
+      list.push(partial);
+      this.series.setData(list);
       if (view) this.chart.timeScale().setVisibleRange(view);
     } else {
-      for (let j = this.shown.k; j < k; j++) this.series.update(data[j]);
+      for (let j = this.shown.k; j < k; j++) this.series.update(bar(j));
       this.series.update(partial);
     }
     this.shown = { tf: this.tf, k, version, start };

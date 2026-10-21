@@ -10,6 +10,17 @@ import { loadMonths } from '../data/store';
  * - データの Ask（以前の検証）: データ元で欠けている（ファイルでは null）・Bid より安い足は、
  *   直前のスプレッドを Bid に足した推定値で埋め、askEstimated に印を付ける
  */
+/** "2026-10" → その月の 1 日 0:00（UTC） */
+function monthStart(key: string): number {
+  const [y, m] = key.split('-').map(Number);
+  return Date.UTC(y, m - 1, 1);
+}
+
+function monthEnd(key: string): number {
+  const [y, m] = key.split('-').map(Number);
+  return Date.UTC(y, m, 1);
+}
+
 export class MarketData {
   bid: Bar[] = [];
   ask: Bar[] = [];
@@ -57,31 +68,74 @@ export class MarketData {
     await this.loadRange(Math.max(0, i - before), Math.min(this.months.length - 1, i + after));
   }
 
-  /** 読み込み済みの範囲を months[from..to] まで広げる */
+  /** 読み込み済みの範囲を months[from..to] まで広げる（今読み込んでいる月は残す） */
   async loadRange(from: number, to: number): Promise<void> {
     while (this.loading) await this.loading;
-    const lo = this.lo < 0 ? from : Math.min(from, this.lo);
-    const hi = this.hi < 0 ? to : Math.max(to, this.hi);
-    if (lo === this.lo && hi === this.hi) return;
+    await this.setWindow(this.lo < 0 ? from : Math.min(from, this.lo), this.hi < 0 ? to : Math.max(to, this.hi));
+  }
+
+  /**
+   * 読み込む月をちょうど months[from..to] にする。範囲の外の月は捨て（メモリを空ける）、
+   * 重なる月は読み直さない。長い検証で、今の時刻の辺りだけを持っておくのに使う
+   */
+  async setWindow(from: number, to: number): Promise<void> {
+    while (this.loading) await this.loading;
+    from = Math.max(0, from);
+    to = Math.min(this.months.length - 1, to);
+    if (from === this.lo && to === this.hi) return;
     this.loading = (async () => {
-      const need = this.months.slice(lo, hi + 1).filter((_, k) => lo + k < this.lo || lo + k > this.hi || this.lo < 0);
+      const start = monthStart(this.months[from]);
+      const end = monthEnd(this.months[to]);
+      // 残す月（時刻順に並んでいるので、範囲の両端を探して切り出す）
+      const a = this.firstAtOrAfter(start);
+      const b = this.firstAtOrAfter(end);
+      const keepBid = this.bid.slice(a, b);
+      const keepAsk = this.rawAsk.slice(a, b);
+      const need = this.months.slice(from, to + 1).filter((_, k) => this.lo < 0 || from + k < this.lo || from + k > this.hi);
       const { bid, ask } = await loadMonths(this.symbol, need, this.digits);
-      // 既存の分と合わせて時刻順に並べ直す
-      const allBid = [...bid, ...this.bid];
-      const allAsk = [...ask, ...this.rawAsk];
-      const order = allBid.map((_, k) => k).sort((x, y) => allBid[x].t - allBid[y].t);
-      this.setData(
-        order.map((k) => allBid[k]),
-        order.map((k) => allAsk[k]),
-      );
-      this.lo = lo;
-      this.hi = hi;
+      // 読み込んだ月は月の順に並んでいるので、残す分の前と後ろに分けてつなぐ
+      const keepStart = keepBid.length ? keepBid[0].t : Infinity;
+      const cut = bid.findIndex((x) => x.t >= keepStart);
+      const n = cut < 0 ? bid.length : cut;
+      this.setData([...bid.slice(0, n), ...keepBid, ...bid.slice(n)], [...ask.slice(0, n), ...keepAsk, ...ask.slice(n)]);
+      this.lo = from;
+      this.hi = to;
     })();
     try {
       await this.loading;
     } finally {
       this.loading = null;
     }
+  }
+
+  /** 読み込んでいる月の数 */
+  get windowMonths(): number {
+    return this.lo < 0 ? 0 : this.hi - this.lo + 1;
+  }
+
+  /** 読み込んでいる範囲の最初・最後の月の位置（months の何番目か） */
+  get windowRange(): [number, number] {
+    return [this.lo, this.hi];
+  }
+
+  /** t を含む月が months の何番目か（無ければ一番近い月） */
+  monthIndexOf(t: number): number {
+    const key = new Date(t).toISOString().slice(0, 7);
+    const i = this.months.findIndex((m) => m >= key);
+    if (i < 0) return this.months.length - 1;
+    return this.months[i] === key || i === 0 ? i : i - 1;
+  }
+
+  /** t 以降で最初の 1 分足の位置（無ければ本数） */
+  private firstAtOrAfter(t: number): number {
+    let lo = 0;
+    let hi = this.bid.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.bid[mid].t < t) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
   }
 
   /** 前の months 個の月を足す */

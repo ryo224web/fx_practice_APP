@@ -31,7 +31,8 @@ import {
   type PaneState,
   type TestState,
 } from './state';
-import { Account, replayAccount, type Action, type FillEvent, type NewAction, type PendingType, type PriceFeed, type Side } from './trade/account';
+import { Account, type Action, type FillEvent, type NewAction, type PendingType, type PriceFeed, type Side } from './trade/account';
+import { checkpointAtOrBefore, ledgerMatches, restoreAccount, Runner } from './trade/ledger';
 import { lossAt, lotsForRisk } from './trade/risk';
 import { analyze, excursionOf, tradesCsv, type Analysis, type TradeRecord } from './trade/analysis';
 import { renderHistory, renderMt4, renderTrade, type Mt4Row, type TerminalTab } from './ui/terminal';
@@ -93,7 +94,7 @@ let playing = false;
 let dataVersion = 0;
 const aggCache = new Map<
   Timeframe,
-  { agg: Aggregated; times: number[]; data: CandlestickData[]; closes: Float64Array; chartTimes: Time[]; version: number }
+  { agg: Aggregated; times: number[]; closes: Float64Array; chartTimes: Time[]; version: number }
 >();
 let loadingEarlier = false;
 let loadingLater = false;
@@ -194,6 +195,8 @@ function eo(): EasyOrderState {
 }
 
 function save(now = false) {
+  // 計算結果（月ごとの区切り）も残す。開き直したときに、検証の最初から計算し直さなくて済む
+  if (state.test && runner) state.test.ledger = runner.ledger(state.test.baseline.time);
   // プロジェクトを切り替えて読み直す間は書かない（切り替え先を上書きしないように）
   if (!leaving) saveState(state, now);
 }
@@ -240,7 +243,8 @@ async function syncUsd() {
   let to = usd.months.findLastIndex((m) => m <= months[months.length - 1]);
   if (from < 0 || to < 0) return;
   if (to < from) to = from;
-  await usd.loadRange(from, to);
+  // 同じ月だけを持つ（長い検証で USDJPY のデータが増え続けないように）
+  await usd.setWindow(from, to);
 }
 
 /** 読み込んだ範囲が変わった・表示時刻を変えたときに呼ぶ */
@@ -254,13 +258,12 @@ function getAgg(tf: Timeframe) {
   let c = aggCache.get(tf);
   if (!c || c.version !== dataVersion) {
     const agg = aggregateWithIndex(md.bid, tf, rule);
-    const data = agg.bars.map(toChart);
+    // チャート用の形（CandlestickData）は描く分だけその都度作る（全部の足の分を持つとメモリを食うため）
     c = {
       agg,
       times: agg.bars.map((b) => b.t),
-      data,
       closes: Float64Array.from(agg.bars, (b) => b.c),
-      chartTimes: data.map((d) => d.time),
+      chartTimes: agg.bars.map((b) => (toDisplay(b.t, state.zone, rule) / 1000) as UTCTimestamp),
       version: dataVersion,
     };
     aggCache.set(tf, c);
@@ -284,9 +287,6 @@ function lastLE(arr: readonly number[], v: number): number {
   return lo;
 }
 
-function minIndex(): number {
-  return Math.max(0, md.indexAtOrBefore(test().baseline.time));
-}
 
 /** 仮想の取引をまだしていない（開始時刻を動かしてよい） */
 function isPristine(): boolean {
@@ -295,11 +295,130 @@ function isPristine(): boolean {
 }
 
 // ---------------- 口座 ----------------
-function rebuildAccount() {
+// 口座は Runner（src/trade/ledger.ts）が 1 分足を順に処理して作る。月の変わり目ごとに区切りを残すので、
+// 巻き戻し・開き直しは手前の区切りから計算し直せる（10 年の検証でも速い）。
+
+/** 読み込んでおく月の上限。長い検証でも、今の時刻の辺りだけを持つ（メモリが増えないように） */
+const MAX_MONTHS = 30;
+
+let runner: Runner | null = null;
+/** 日時の移動・巻き戻しの計算中（その間は再生やキー操作を受け付けない） */
+let traveling = false;
+
+const settingsOf = () => ({ leverage: test().leverage });
+
+/** 検証の出発点から口座を作り直す（出発点の足が読み込んである前提。新しい検証・銘柄の切り替えのとき） */
+function freshRunner() {
   const t = test();
-  const r = replayAccount(spec, { leverage: t.leverage }, t.baseline, t.actions, feed, minIndex(), cursor);
-  account = r.account;
-  t.actions = r.actions;
+  runner = new Runner(new Account(spec, settingsOf(), t.baseline), t.actions.slice().sort((a, b) => a.t - b.t), [], true);
+  t.actions = runner.actions;
+  account = runner.account;
+  const i = md.indexAtOrBefore(t.baseline.time);
+  runner.run(feed, Math.max(0, i), cursor);
+}
+
+/**
+ * 価格データを fromT〜toT（UTC）の月が入るように読み込む（1 か月先まで）。
+ * 上限（MAX_MONTHS）を超えるときは、fromT から上限まで（続きは呼び出し側が順に読む）
+ */
+async function ensureWindow(fromT: number, toT: number, exact = false) {
+  if (!manifest || !md.months.length) return;
+  let lo = md.monthIndexOf(fromT);
+  let hi = Math.min(md.months.length - 1, md.monthIndexOf(toT) + 1);
+  if (hi - lo + 1 > MAX_MONTHS) hi = lo + MAX_MONTHS - 1;
+  const [curLo, curHi] = md.windowRange;
+  if (!exact && curLo >= 0 && lo >= curLo && hi <= curHi) return;
+  if (exact && lo === curLo && hi === curHi) return;
+  // 今の範囲とつなげて上限に収まるなら残す（戻ったときに読み直さなくて済む）。収まらなければ入れ替える。
+  // exact のときは、ちょうどその範囲にする（長い移動の後に、要らない月を捨ててメモリを空ける）
+  if (!exact && curLo >= 0 && Math.max(hi, curHi) - Math.min(lo, curLo) + 1 <= MAX_MONTHS) {
+    lo = Math.min(lo, curLo);
+    hi = Math.max(hi, curHi);
+  }
+  statusEl.textContent = `${md.symbol.toUpperCase()} ${md.months[lo]}〜${md.months[hi]} を読み込み中…`;
+  await md.setWindow(lo, hi);
+  await syncUsd();
+  dataChanged();
+}
+
+/**
+ * 時刻 time（UTC）の時点へ移る（日時への移動・巻き戻し・開き直し）。
+ * - 戻るときは、time より後の操作を消し、手前の区切りから計算し直す
+ * - 進むときは、途中の約定も計算する（価格データは上限ずつ読みながら進むので、何年先でもメモリは増えない）
+ */
+async function travel(time: number) {
+  if (traveling) return;
+  traveling = true;
+  setPlaying(false);
+  try {
+    const t = test();
+    if (time < t.baseline.time) {
+      if (!isPristine()) {
+        toast('取引した後は、検証を始めた時刻より前には戻れません（新しい検証で始め直せます）');
+        time = t.baseline.time;
+      } else {
+        // まだ何も取引していなければ、検証の開始時刻ごと前へずらす
+        await ensureWindow(time - 31 * 86_400_000, time);
+        const i = Math.max(0, md.indexAtOrBefore(time));
+        t.baseline.time = t.startTime = md.bid[i].t;
+        for (const h of t.baseline.history) if (h.kind === 'balance') h.time = t.startTime;
+        state.cursor = t.baseline.time;
+        cursor = i;
+        freshRunner();
+        afterTravel();
+        return;
+      }
+    }
+    if (!runner || time < runner.account.time) {
+      // 手前の区切り（無ければ検証の出発点）から作り直す。区切りは、計算中ならその結果、開き直しなら保存したもの
+      const saved = ledgerMatches(t.ledger, t.baseline.time, t.actions) ? t.ledger : null;
+      const cps = runner ? runner.checkpoints : (saved?.checkpoints ?? []);
+      const history = runner ? runner.account.history : (saved?.history ?? []);
+      const cp = checkpointAtOrBefore(cps, time);
+      const usable = cp && cp.time >= t.baseline.time ? cp : null;
+      const actions = t.actions.filter((a) => a.t <= time).sort((a, b) => a.t - b.t);
+      runner = new Runner(
+        restoreAccount(spec, settingsOf(), t.baseline, history, usable),
+        actions,
+        cps.filter((c) => usable && c.time <= usable.time),
+        !usable,
+      );
+      t.actions = runner.actions;
+      account = runner.account;
+    }
+    // 価格データを（上限の月数ずつ）読みながら time まで進める
+    for (let stuck = 0; ; ) {
+      await ensureWindow(runner.account.time, time);
+      const before = runner.account.time;
+      const to = md.indexAtOrBefore(time);
+      if (to >= 0) runner.run(feed, Math.max(0, md.indexAtOrBefore(runner.account.time)), to);
+      if (md.bid[md.bid.length - 1].t >= time || !md.hasLater) break;
+      // 進まないとき（データの抜けなど）に止まらなくならないように
+      if (runner.account.time === before && ++stuck > 2) break;
+      statusEl.textContent = `計算中… ${new Date(runner.account.time).toISOString().slice(0, 7)}`;
+    }
+    // 表示用に、今の時刻の辺り（2 か月前〜1 か月先）だけにする。インジケーターに要る分は後で足す
+    await ensureWindow(time - 62 * 86_400_000, time, true);
+    cursor = Math.max(0, md.indexAtOrBefore(Math.min(time, runner.account.time)));
+    state.cursor = md.bid[cursor].t;
+    afterTravel();
+  } finally {
+    traveling = false;
+  }
+}
+
+function afterTravel() {
+  renderChart(true);
+  scrollToNow();
+  refresh();
+  updateStatus();
+  void ensureIndicatorHistory();
+}
+
+/** 今の足で操作する（操作の記録に残す） */
+function record(action: Action) {
+  runner!.record(action);
+  test().actions = runner!.actions;
 }
 
 function act(a: NewAction): boolean {
@@ -309,7 +428,7 @@ function act(a: NewAction): boolean {
     toast(err);
     return false;
   }
-  test().actions.push(action);
+  record(action);
   refresh();
   return true;
 }
@@ -327,41 +446,26 @@ function notifyFills(events: FillEvent[]) {
 // ---------------- 時間を進める・戻す ----------------
 /** target 番目の 1 分足まで動く。約定で止まったら true。pause=false なら途中の約定で止まらない（日時への移動など） */
 function goTo(target: number, pause = true): boolean {
-  target = Math.max(0, Math.min(md.bid.length - 1, target));
-  if (target < minIndex()) {
-    if (isPristine()) {
-      // まだ何も取引していなければ、検証の開始時刻ごと前へずらす
-      const t = test();
-      t.baseline.time = t.startTime = md.bid[target].t;
-      for (const h of t.baseline.history) if (h.kind === 'balance') h.time = t.startTime;
-      cursor = target;
-      rebuildAccount();
-    } else {
-      toast('取引した後は、検証を始めた時刻より前には戻れません（新しい検証で始め直せます）');
-      target = minIndex();
-    }
+  if (traveling || !runner) return false;
+  if (target < cursor) {
+    // 戻るときは、手前の区切りから計算し直す（データの読み込みが要ることもあるので非同期）
+    const i = Math.max(0, target);
+    void travel(target < 0 ? md.bid[0].t - 60_000 : md.bid[i].t);
+    return false;
   }
+  target = Math.min(md.bid.length - 1, target);
   let stopped = false;
   if (target > cursor) {
-    for (let i = cursor + 1; i <= target; i++) {
-      const ev = account.processBar(feed, i);
-      if (!pause) continue;
+    // 約定・決済や、MT4 の記録のエントリー・決済があった足で止める（「約定したら一時停止」のとき）
+    cursor = runner.run(feed, cursor + 1, target, (ev, i) => {
+      if (!pause) return false;
       const mt4 = mt4EventsIn(md.bid[i].t);
       if (ev.length) notifyFills(ev);
       if (mt4.length) toast(mt4.join(' / '));
-      if ((ev.length || mt4.length) && state.pauseOnFill) {
-        target = i;
-        stopped = true;
-        break;
-      }
-    }
-    cursor = target;
-  } else if (target < cursor) {
-    // 戻した時刻より後の操作は取り消して、口座を計算し直す
-    cursor = target;
-    const t = md.bid[cursor].t;
-    test().actions = test().actions.filter((a) => a.t <= t);
-    rebuildAccount();
+      const hit = (ev.length > 0 || mt4.length > 0) && state.pauseOnFill;
+      if (hit) stopped = true;
+      return hit;
+    });
   }
   state.cursor = md.bid[cursor].t;
   refresh();
@@ -418,6 +522,11 @@ function maybeLoadLater() {
   loadingLater = true;
   const mdNow = md;
   md.loadLater(1)
+    // 上限を超えたら、古い月を捨てる（長い検証でもメモリが増えないように）
+    .then(() => {
+      const [lo, hi] = md.windowRange;
+      if (hi - lo + 1 > MAX_MONTHS) return md.setWindow(hi - MAX_MONTHS + 1, hi);
+    })
     .then(syncUsd)
     .then(() => {
       if (md !== mdNow) return;
@@ -427,11 +536,18 @@ function maybeLoadLater() {
     .finally(() => (loadingLater = false));
 }
 
+let warnedWindow = false;
 function loadEarlier() {
   if (loadingEarlier || !md.hasEarlier) return;
+  const room = MAX_MONTHS - md.windowMonths;
+  if (room <= 0) {
+    if (!warnedWindow) toast(`チャートを読み込めるのは ${MAX_MONTHS} か月分までです。もっと前を見るときは「移動」で日時を選んでください`);
+    warnedWindow = true;
+    return;
+  }
   loadingEarlier = true;
   const mdNow = md;
-  md.loadEarlier(3)
+  md.loadEarlier(Math.min(3, room))
     .then(syncUsd)
     .then(() => {
       if (md !== mdNow) return;
@@ -557,7 +673,10 @@ function statsRecords(source: 'virtual' | 'mt4'): TradeRecord[] {
         profit: h.profit,
         pips: ((h.closePrice - h.openPrice) * dir) / pipOf(h.symbol),
         reason: h.reason,
-        ...excursion(h.symbol, h.side, h.openTime, h.closeTime, h.openPrice, h.closePrice),
+        // 口座が保有中に記録した値（価格データを読み込んでいない昔の取引でも分かる）。以前の記録には無いので、そのときは価格データから求める
+        ...(h.mae !== undefined && h.mfe !== undefined
+          ? { mae: h.mae / pipOf(h.symbol), mfe: h.mfe / pipOf(h.symbol) }
+          : excursion(h.symbol, h.side, h.openTime, h.closeTime, h.openPrice, h.closePrice)),
       } satisfies TradeRecord,
     ];
   });
@@ -691,7 +810,7 @@ function submitOrder(side: 'buy' | 'sell' | null) {
     $('#od-error').textContent = err;
     return;
   }
-  test().actions.push({ ...action, t: md.bid[cursor].t } as Action);
+  record({ ...action, t: md.bid[cursor].t } as Action);
   state.lots = lots;
   lotsEl.value = String(lots);
   $<HTMLDialogElement>('#order-dialog').close();
@@ -736,7 +855,7 @@ function modifyAction(kind: 'modify' | 'close' | 'cancel') {
     $('#md-error').textContent = err;
     return;
   }
-  test().actions.push(action);
+  record(action);
   $<HTMLDialogElement>('#modify-dialog').close();
   refresh();
 }
@@ -800,10 +919,12 @@ async function startTest(symbol: string, start: number, balance: number, leverag
     spreadPips: { ...DEFAULT_SPREAD_PIPS, ...state.test?.spreadPips, [md.symbol]: spread },
   };
   applySpread();
-  rebuildAccount();
+  runner = null;
+  freshRunner();
   renderChart(true);
   scrollToNow();
   refresh();
+  updateStatus();
   save(true);
   return null;
 }
@@ -848,8 +969,11 @@ async function detectMt4ForSymbol(): Promise<{ hours: number; matched: number; c
   if (!mine.length) return null;
   const opens = mine.map((t) => serverToUtc(t.openServer, rule));
   const closes = mine.map((t) => (t.closeServer === null ? NaN : serverToUtc(t.closeServer, rule))).filter(Number.isFinite);
-  await ensureLoaded(Math.min(...opens) - 86_400_000, Math.max(...opens, ...closes) + 86_400_000);
+  // 判定には新しい方の取引の期間だけを読み込む（読み込める月数に上限があるため）。終わったら今の時刻の辺りに戻す
+  const last = Math.max(...opens, ...closes);
+  await ensureWindow(Math.max(Math.min(...opens), last - HISTORY_LIMIT) - 86_400_000, last + 86_400_000);
   const det = detectOffsetHours(mine, (sv) => serverToUtc(sv, rule), priceLookup, spec.pip);
+  if (state.cursor) await ensureLoaded(state.cursor - 62 * 86_400_000, state.cursor);
   if (det.checked === 0) return null;
   const result = { hours: det.hours, matched: det.matched, checked: det.checked };
   (m.bySymbol ??= {})[md.symbol] = result;
@@ -961,29 +1085,15 @@ function mt4View() {
   };
 }
 
-/** from〜to（UTC）の価格データが無ければ読み込む */
+/** from〜to（UTC）の価格データが無ければ読み込む（上限の月数まで）。表示も描き直す */
 async function ensureLoaded(from: number, to: number) {
-  if (!manifest || !md.months.length) return;
-  const key = (t: number) => new Date(t).toISOString().slice(0, 7);
-  const months = md.months;
-  let lo = months.findIndex((m) => m >= key(from));
-  if (lo < 0) lo = months.length - 1;
-  let hi = months.findLastIndex((m) => m <= key(to));
-  if (hi < 0) hi = 0;
-  const loaded = md.loadedMonths;
-  const curLo = months.indexOf(loaded[0]);
-  const curHi = months.indexOf(loaded[loaded.length - 1]);
-  if (lo >= curLo && hi <= curHi) return;
-  statusEl.textContent = `${md.symbol.toUpperCase()} のデータを読み込み中…`;
-  await md.loadRange(Math.min(lo, curLo), Math.max(hi, curHi));
-  await syncUsd();
-  dataChanged();
+  await ensureWindow(from, to);
   renderChart(true, true);
   updateStatus();
 }
 
-/** 自動で読み込むインジケーター用の過去データの上限 */
-const HISTORY_LIMIT = 5 * 365 * 86_400_000;
+/** 自動で読み込むインジケーター用の過去データの上限（読み込める月数の上限から、今の月と次の月の分を除く） */
+const HISTORY_LIMIT = (MAX_MONTHS - 2) * 30 * 86_400_000;
 let loadingHistory = false;
 
 /**
@@ -1006,7 +1116,7 @@ async function ensureIndicatorHistory() {
   }
   const now = md.bid[cursor].t;
   const from = now - Math.min(need, HISTORY_LIMIT);
-  if (md.bid[0].t <= from) return;
+  if (md.bid[0].t <= from || traveling) return;
   loadingHistory = true;
   try {
     await ensureLoaded(from, now);
@@ -1063,11 +1173,8 @@ async function jumpToTrade(ticket: number) {
   const t = mt4Trades().find((x) => x.ticket === ticket);
   if (!t) return;
   const openUtc = mt4ToUtc(t.openServer);
-  setPlaying(false);
-  await ensureLoaded(openUtc, openUtc);
   // エントリーする足の 1 本前に置く（→ で進めるとエントリーが現れる）
-  goTo(md.indexAtOrBefore(openUtc) - 1, false);
-  scrollToNow();
+  await travel(Math.floor(openUtc / 60_000) * 60_000 - 60_000);
 }
 
 // ---------------- EasyOrder ----------------
@@ -1434,13 +1541,14 @@ async function changeSymbol(symbol: string) {
   // 今の口座を出発点にして、新しい銘柄で続ける
   test().baseline = { time: state.cursor, balance: account.balance, history: account.history.slice(), nextTicket: account.nextTicket };
   test().actions = [];
+  test().ledger = undefined;
   state.symbol = symbol;
   // 固定スプレッドの検証なら、切り替え先の銘柄のスプレッドも決めておく（無ければ初期値）
   const sp = test().spreadPips;
   if (sp && sp[symbol] === undefined) sp[symbol] = DEFAULT_SPREAD_PIPS[symbol] ?? 0.5;
   await openSymbol(symbol, state.cursor);
   test().baseline.time = md.bid[cursor].t;
-  rebuildAccount();
+  freshRunner();
   renderChart(true);
   scrollToNow();
   refresh();
@@ -1748,11 +1856,8 @@ function showMenu(x: number, y: number, items: [string, () => void][]) {
 async function jump() {
   const t = fromLocalInput($<HTMLInputElement>('#jump').value, state.zone, rule);
   if (!Number.isFinite(t)) return toast('日時を入力してください');
-  setPlaying(false);
-  // その日時までのデータを読み込む（途中の約定も計算するため、間の月もすべて）
-  await ensureLoaded(t, t);
-  goTo(md.indexAtOrBefore(t), false);
-  scrollToNow();
+  // 途中の約定も計算しながら、その日時まで進む・戻る
+  await travel(t);
 }
 
 /** 文字キーのショートカット（日本語入力中でも効くように、文字ではなくキーの位置で見る） */
@@ -1835,16 +1940,9 @@ async function start() {
   }
   symbolEl.value = state.symbol;
 
-  // 前回の続きなら、口座の計算に必要な所（検証の出発点）から読み込む
+  // 前回の続きなら、今の時刻の辺りを読み込む（口座は保存した区切りから計算するので、検証の最初まで読まなくてよい）
   const resume = state.test && state.cursor ? state.cursor : null;
   await openSymbol(state.symbol, resume);
-  if (resume && state.test && md.indexAtOrBefore(state.test.baseline.time) < 0) {
-    const key = new Date(state.test.baseline.time).toISOString().slice(0, 7);
-    const from = Math.max(0, md.months.findIndex((m) => m >= key));
-    await md.loadRange(from, md.months.indexOf(md.loadedMonths[md.loadedMonths.length - 1]));
-    await syncUsd();
-    dataChanged();
-  }
 
   setupControls();
   setupProjects();
@@ -1862,9 +1960,7 @@ async function start() {
     await startTest(md.symbol, startAt, DEFAULT_BALANCE, DEFAULT_LEVERAGE, DEFAULT_SPREAD_PIPS[md.symbol] ?? 0.5);
   } else {
     cursor = md.indexAtOrBefore(state.cursor);
-    rebuildAccount();
-    renderChart(true);
-    refresh();
+    await travel(state.cursor);
   }
   $<HTMLInputElement>('#jump').value = toLocalInput(md.bid[cursor].t, state.zone, rule);
 
