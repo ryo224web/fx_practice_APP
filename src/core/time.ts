@@ -33,8 +33,26 @@ function formatterFor(timeZone: string): Intl.DateTimeFormat {
   return f;
 }
 
-/** IANA タイムゾーンの、ある瞬間における UTC からのずれ（分） */
+const HOUR = 60 * MINUTE;
+const offsetCache = new Map<string, Map<number, number>>();
+
+/**
+ * IANA タイムゾーンの、ある瞬間における UTC からのずれ（分）。
+ * Intl は遅いので 1 時間単位でキャッシュする（ずれが変わるのは正時だけ）。
+ */
 export function tzOffsetMinutes(timeZone: string, utcMs: number): number {
+  let cache = offsetCache.get(timeZone);
+  if (!cache) offsetCache.set(timeZone, (cache = new Map()));
+  const hour = Math.floor(utcMs / HOUR);
+  let off = cache.get(hour);
+  if (off === undefined) {
+    off = computeOffset(timeZone, hour * HOUR);
+    cache.set(hour, off);
+  }
+  return off;
+}
+
+function computeOffset(timeZone: string, utcMs: number): number {
   const parts = formatterFor(timeZone).formatToParts(new Date(utcMs));
   const get = (type: string) => Number(parts.find((p) => p.type === type)!.value);
   const asUtc = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));

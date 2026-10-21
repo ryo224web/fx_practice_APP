@@ -20,16 +20,22 @@
 git clone https://github.com/ryo224web/fx_practice_app.git
 cd fx_practice_app
 npm install
+npm run fetch-data                       # USDJPY の直近 1 年を取得（Bid と Ask）
+npm run fetch-data -- all                # 主要通貨 + GOLD をすべて
+npm run fetch-data -- eurusd --from 2015-01-01   # 銘柄と期間を指定
 npm run dev     # ブラウザが開く
 npm test        # 時刻変換と足の作成のテスト
 ```
+
+価格データは `public/data/<銘柄>/<年-月>.bin` に保存される（Git には入れない）。
+取得済みの月は飛ばすので、途中で止めても再実行すれば続きから始まる。
 
 ## 進め方
 
 1. ~~Node.js~~
 2. ~~TitanFX のサーバー時刻の確認~~
-3. ~~アプリの土台（チャート表示・時間足・表示時刻の切り替え）~~ ← 今ここ（仮データ）
-4. Dukascopy のデータ取得・変換（主要通貨 + GOLD）
+3. ~~アプリの土台（チャート表示・時間足・表示時刻の切り替え）~~
+4. Dukascopy のデータ取得・変換（主要通貨 + GOLD） ← 今ここ
 5. リプレイ再生と仮想の注文（買値線・スプレッド表示）
 6. MT4 書き出しスクリプト + 取引履歴の再現（時刻のずれを自動判定）
 7. 取引記録の保存と成績統計

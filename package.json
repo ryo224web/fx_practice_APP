@@ -7,12 +7,14 @@
     "dev": "vite --open",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "fetch-data": "node scripts/fetch-data.mjs"
   },
   "dependencies": {
     "lightweight-charts": "5.2.1"
   },
   "devDependencies": {
+    "dukascopy-node": "1.50.0",
     "typescript": "7.0.2",
     "vite": "8.3.4",
     "vitest": "5.0.5"
