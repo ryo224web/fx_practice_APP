@@ -31,6 +31,8 @@ export interface PaneHost {
   activate(pane: ChartPane): void;
   /** 左端まで表示した（前の月を読み込む） */
   nearLeftEdge(): void;
+  /** 右の余白（足の本数）を三角のつまみで変えた */
+  setRightOffset(bars: number): void;
 }
 
 const css = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -55,6 +57,8 @@ export class ChartPane {
   readonly drawings: DrawingManager;
   readonly indicators: IndicatorLayer;
   private readonly legend: HTMLElement;
+  /** MT4 の「チャートの右端をずらす」三角のつまみ */
+  private readonly shiftHandle: HTMLElement;
   private shown = { tf: '' as Timeframe | '', k: -1, version: -1 };
   private hovering = false;
 
@@ -69,7 +73,10 @@ export class ChartPane {
     box.className = 'pane-chart';
     this.legend = document.createElement('div');
     this.legend.className = 'legend';
-    el.append(box, this.legend);
+    this.shiftHandle = document.createElement('div');
+    this.shiftHandle.className = 'shift-handle';
+    this.shiftHandle.title = 'ドラッグして右側の余白を変える';
+    el.append(box, this.legend, this.shiftHandle);
 
     this.chart = createChart(box, {
       autoSize: true,
@@ -97,6 +104,21 @@ export class ChartPane {
     el.addEventListener('mousedown', () => host.activate(this), true);
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
       if (r && r.from < 30) host.nearLeftEdge();
+      this.placeShiftHandle();
+    });
+    this.shiftHandle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const ts = this.chart.timeScale();
+      const move = (ev: MouseEvent) => {
+        const x = Math.max(40, Math.min(ts.width(), ev.clientX - box.getBoundingClientRect().left));
+        host.setRightOffset(Math.round((ts.width() - x) / ts.options().barSpacing));
+      };
+      const up = () => {
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', up);
+      };
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up);
     });
     this.chart.subscribeCrosshairMove((p) => {
       const d = p.seriesData.get(this.series) as CandlestickData | undefined;
@@ -118,6 +140,7 @@ export class ChartPane {
     const version = this.host.dataVersion();
     this.mapper.times = times;
     this.mapper.size = TIMEFRAMES[this.tf] * 60_000;
+    this.drawings.tf = this.tf;
     const k = lastLE(agg.starts, cursor);
     const partial = this.host.toChart(mergeBars(this.host.bid(), agg.starts[k], cursor, agg.bars[k].t));
     if (reset || this.shown.tf !== this.tf || this.shown.version !== version || k < this.shown.k) {
@@ -148,8 +171,30 @@ export class ChartPane {
     this.legend.innerHTML = `<b>${this.host.symbol().toUpperCase()},${this.tf}</b>　${f(b.open)} ${f(b.high)} ${f(b.low)} <b>${f(b.close)}</b>`;
   }
 
+  /** from〜to（UTC）が真ん中あたりに収まるように表示を動かす */
+  showTimeRange(from: number, to: number) {
+    const a = this.mapper.toLogical(from);
+    const b = this.mapper.toLogical(to);
+    const pad = Math.max(15, (b - a) * 0.5);
+    this.chart.timeScale().setVisibleLogicalRange({ from: a - pad, to: b + pad });
+  }
+
   scrollToNow() {
     this.chart.timeScale().scrollToRealTime();
+  }
+
+  /** 右の余白（足の本数）。最新の足が見えている位置に戻す */
+  setRightOffset(bars: number) {
+    this.chart.timeScale().applyOptions({ rightOffset: bars });
+    this.chart.timeScale().scrollToRealTime();
+    this.placeShiftHandle();
+  }
+
+  /** つまみは「最新の足の右端 = 余白の始まり」に置く */
+  private placeShiftHandle() {
+    const ts = this.chart.timeScale();
+    const o = ts.options();
+    this.shiftHandle.style.left = `${ts.width() - o.rightOffset * o.barSpacing}px`;
   }
 
   zoom(factor: number) {

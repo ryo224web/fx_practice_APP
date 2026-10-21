@@ -23,8 +23,24 @@ export interface Drawing {
   kind: DrawingKind;
   /** 時刻（UTC ミリ秒）と価格。水平線・垂直線は 1 点、チャネルは 3 点（3 点目は平行線の位置）、ほかは 2 点 */
   points: { t: number; p: number }[];
+  /** 描いた時間足以外のとき（以前の保存）の色 */
   color: string;
+  /** 描いた時間足。色はこの時間足の色になる（「図形の色」で時間足ごとに決める） */
+  tf?: string;
 }
+
+/** 時間足ごとの図形の色（初期値） */
+export const DEFAULT_TF_COLORS: Record<string, string> = {
+  M1: '#9a9a9a',
+  M5: '#3fb950',
+  M15: '#4493f8',
+  M30: '#39c5cf',
+  H1: '#a371f7',
+  H4: '#f85149',
+  D1: '#e5a50a',
+  W1: '#db61a2',
+  MN: '#d29922',
+};
 
 export const DRAWING_LABELS: Record<DrawingKind, string> = {
   hline: '水平線',
@@ -86,6 +102,10 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   /** 選んでいるツール。null は通常のカーソル */
   tool: DrawingKind | null = null;
   digits = 3;
+  /** このチャートの時間足（新しく描いた図形に記録する） */
+  tf = 'M15';
+  /** 図形の色（時間足ごとの色を main.ts で決める） */
+  colorOf: (d: Drawing) => string = (d) => (d.tf ? (DEFAULT_TF_COLORS[d.tf] ?? d.color) : d.color);
   onChange: () => void = () => {};
   onToolChange: (tool: DrawingKind | null) => void = () => {};
 
@@ -141,7 +161,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
           coordinate: () => y,
           text: () => pt.p.toFixed(this.digits),
           textColor: () => '#000',
-          backColor: () => d.color,
+          backColor: () => this.colorOf(d),
           visible: () => true,
           tickVisible: () => true,
         });
@@ -276,6 +296,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         kind: this.tool,
         points: onePoint(this.tool) ? [{ t: this.mapper.toTime(m.l), p: m.p }] : [0, 1].map(() => ({ t: this.mapper.toTime(m.l), p: m.p })),
         color: COLORS[this.tool],
+        tf: this.tf,
       };
       this.drawings.push(d);
       this.selectedId = d.id;
@@ -392,8 +413,9 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   private drawOne(ctx: CanvasRenderingContext2D, d: Drawing, pts: Px[], w: number, h: number) {
     const sel = d.id === this.selectedId;
     ctx.save();
-    ctx.strokeStyle = d.color;
-    ctx.fillStyle = d.color;
+    const color = this.colorOf(d);
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
     ctx.lineWidth = sel ? 2 : 1;
     ctx.font = '11px system-ui, sans-serif';
     const [a, b] = pts;

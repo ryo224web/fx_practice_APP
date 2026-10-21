@@ -86,17 +86,18 @@ export class IndicatorLayer {
     this.lines = [];
     while (this.chart.panes().length > 1) this.chart.removePane(1);
 
+    // 価格の目盛りに名前や値の札は出さない（見づらいため）
     const common = { lineWidth: 1 as const, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false };
     for (const m of config.ma) {
       if (!m.enabled || !(m.period >= 1)) continue;
-      const series = this.chart.addSeries(LineSeries, { ...common, color: m.color, title: `${m.type.toUpperCase()}(${m.period})` }, 0);
+      const series = this.chart.addSeries(LineSeries, { ...common, color: m.color }, 0);
       this.lines.push({ series, values: (inp, j) => this.maValue(inp, j, m) });
     }
     const rci = config.rci.lines.filter((l) => config.rci.enabled && l.enabled && l.period >= 2);
     rci.forEach((l, n) => {
       const series = this.chart.addSeries(
         LineSeries,
-        { ...common, color: l.color, title: `RCI(${l.period})`, autoscaleInfoProvider: () => ({ priceRange: { minValue: -100, maxValue: 100 } }) },
+        { ...common, color: l.color, autoscaleInfoProvider: () => ({ priceRange: { minValue: -100, maxValue: 100 } }) },
         1,
       );
       if (n === 0) {

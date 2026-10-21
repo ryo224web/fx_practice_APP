@@ -21,6 +21,7 @@
         <button data-tool="channel" title="チャネル（平行線。3 つ目の四角で幅を変える）">⫽</button>
         <button data-tool="rect" title="長方形">▭</button>
         <button data-tool="fibo" title="フィボナッチ・リトレースメント">Fib</button>
+        <button id="tf-colors-btn" title="図形の色を時間足ごとに決める（描いたチャートの時間足の色になる）">色</button>
         <button id="clear-drawings" title="この銘柄の図形をすべて削除">全消去</button>
       </div>
       <select id="layout" aria-label="チャートの並べ方" title="チャートの並べ方（時間足とインジケーターはチャートごと。クリックしたチャートが操作の対象）">
@@ -101,6 +102,19 @@
     <div id="ctx-menu" hidden></div>
     <input id="mt4-file" type="file" accept=".csv,.htm,.html,.txt" hidden />
     <input id="project-file" type="file" accept=".json" hidden />
+
+    <dialog id="color-dialog">
+      <form method="dialog">
+        <h2>図形の色（時間足ごと）</h2>
+        <p class="hint">図形は描いたチャートの時間足の色になります。色を変えると、描いてある図形の色も変わります。</p>
+        <table class="ind-table" id="color-table"></table>
+        <div class="buttons">
+          <button type="button" id="color-reset">初期設定に戻す</button>
+          <button value="cancel" formnovalidate>キャンセル</button>
+          <button type="button" id="color-apply" class="primary">適用</button>
+        </div>
+      </form>
+    </dialog>
 
     <dialog id="ind-dialog">
       <form method="dialog">

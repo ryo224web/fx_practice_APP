@@ -151,7 +151,8 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
       else if (isEntry) want.push({ ...d.info, key, price: d.price, color: PREVIEW, title: '', style: LineStyle.Dashed });
     }
     if (view.ask !== null) {
-      want.push({ key: 'ask', ticket: 0, role: 'entry', price: view.ask, color: view.askEstimated ? '#d29922' : SELL, title: view.askEstimated ? 'Ask(推定)' : 'Ask', style: view.askEstimated ? LineStyle.Dashed : LineStyle.Solid });
+      // 「Ask」の札は出さず、線と目盛りの価格だけにする（推定のときは黄色の破線）
+      want.push({ key: 'ask', ticket: 0, role: 'entry', price: view.ask, color: view.askEstimated ? '#d29922' : SELL, title: '', style: view.askEstimated ? LineStyle.Dashed : LineStyle.Solid });
     }
 
     const keep = new Set(want.map((w) => w.key));

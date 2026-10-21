@@ -1,5 +1,5 @@
 import { type CandlestickData, type Time, type UTCTimestamp } from 'lightweight-charts';
-import { type DrawingKind } from './chart/drawings';
+import { DEFAULT_TF_COLORS, type DrawingKind } from './chart/drawings';
 import { DEFAULT_INDICATORS, type IndicatorConfig } from './chart/indicators';
 import { ChartPane, type PaneHost } from './chart/pane';
 import { type LineEdit, type OrderPreview } from './chart/trades';
@@ -830,6 +830,17 @@ async function loadMt4File(file: File) {
   save(true);
 }
 
+/**
+ * 口座履歴の取引が見えるようにチャートを動かす（リプレイの時刻は動かさない。
+ * 戻すと後の取引が取り消されてしまうため）
+ */
+function showHistoryTrade(ticket: number, closeTime: number) {
+  const h = account.history.find((x) => x.kind === 'trade' && x.ticket === ticket && x.closeTime === closeTime);
+  if (!h || h.kind !== 'trade') return;
+  for (const p of visiblePanes()) p.showTimeRange(h.openTime, h.closeTime);
+  if (!panes[0].overlay.showHistory) $('#toggle-history').click();
+}
+
 async function jumpToTrade(ticket: number) {
   const t = mt4Trades().find((x) => x.ticket === ticket);
   if (!t) return;
@@ -1073,6 +1084,15 @@ function readIndicatorDialog(): IndicatorConfig {
   };
 }
 
+// ---------------- 図形の色（時間足ごと） ----------------
+function openColorDialog(colors: Record<string, string>) {
+  $('#color-table').innerHTML = (Object.keys(TIMEFRAMES) as Timeframe[])
+    .map((tf) => `<tr><td>${tf}</td><td><input type="color" data-tf="${tf}" value="${colors[tf] ?? DEFAULT_TF_COLORS[tf]}" /></td></tr>`)
+    .join('');
+  const dlg = $<HTMLDialogElement>('#color-dialog');
+  if (!dlg.open) dlg.showModal();
+}
+
 // ---------------- プロジェクト ----------------
 // 検証（口座・時刻）・図形・インジケーター・MT4 履歴をまとめて保存する。切り替えるとページを読み直す。
 
@@ -1109,8 +1129,16 @@ function setupProjects() {
         () => {
           const name = prompt('新しいプロジェクトの名前', `プロジェクト ${listProjects().length + 1}`);
           if (!name) return;
-          // 銘柄・時間足・インジケーターは今の設定を引き継ぐ
-          const fresh: AppState = { ...defaultState(), symbol: state.symbol, zone: state.zone, layout: state.layout, panes: structuredClone(state.panes) };
+          // 銘柄・並べ方・時間足・インジケーター・図形の色・右の余白は今の設定を引き継ぐ
+          const fresh: AppState = {
+            ...defaultState(),
+            symbol: state.symbol,
+            zone: state.zone,
+            layout: state.layout,
+            panes: structuredClone(state.panes),
+            tfColors: structuredClone(state.tfColors),
+            rightOffset: state.rightOffset,
+          };
           reloadInto(() => createProject(name, fresh));
         },
       ],
@@ -1233,6 +1261,11 @@ function createPanes() {
     digits: () => md.digits,
     activate: setActivePane,
     nearLeftEdge: loadEarlier,
+    setRightOffset: (bars) => {
+      state.rightOffset = bars;
+      for (const p of panes) p.setRightOffset(bars);
+      save();
+    },
   };
   panes = state.panes!.map((ps, i) => {
     const el = document.createElement('div');
@@ -1240,6 +1273,8 @@ function createPanes() {
     chartsEl.append(el);
     const p = new ChartPane(i, el, host, ps.tf, ps.indicators);
     p.overlay.onEdit = onLineEdit;
+    p.drawings.colorOf = (d) => (d.tf ? (state.tfColors?.[d.tf] ?? DEFAULT_TF_COLORS[d.tf] ?? d.color) : d.color);
+    p.setRightOffset(state.rightOffset ?? 12);
     return p;
   });
   active = panes[Math.min(state.activePane ?? 0, panes.length - 1)];
@@ -1345,10 +1380,15 @@ function setupControls() {
     const row = (e.target as HTMLElement).closest<HTMLElement>('tr[data-ticket]');
     if (!row) return;
     if (row.dataset.kind === 'mt4') jumpToTrade(Number(row.dataset.ticket));
-    else if (row.dataset.kind !== 'history') openModifyDialog(Number(row.dataset.ticket));
+    else if (row.dataset.kind === 'history') showHistoryTrade(Number(row.dataset.ticket), Number(row.dataset.close));
+    else openModifyDialog(Number(row.dataset.ticket));
   });
   termBody.addEventListener('click', (e) => {
-    const action = (e.target as HTMLElement).closest<HTMLElement>('[data-action]')?.dataset.action;
+    const target = (e.target as HTMLElement).closest<HTMLElement>('[data-action]');
+    const action = target?.dataset.action;
+    // 行の右端の ✕: ポジションは全部決済、待機注文は削除
+    if (action === 'close') act({ kind: 'close', ticket: Number(target!.dataset.ticket) });
+    if (action === 'cancel') act({ kind: 'cancel', ticket: Number(target!.dataset.ticket) });
     if (action === 'mt4-load') $('#mt4-file').click();
     if (action === 'mt4-clear' && confirm('読み込んだ MT4 の履歴を消しますか？')) {
       state.mt4 = null;
@@ -1365,6 +1405,16 @@ function setupControls() {
   });
 
   $('#indicators-btn').addEventListener('click', () => openIndicatorDialog());
+  $('#tf-colors-btn').addEventListener('click', () => openColorDialog(state.tfColors ?? {}));
+  $('#color-reset').addEventListener('click', () => openColorDialog({}));
+  $('#color-apply').addEventListener('click', () => {
+    const colors: Record<string, string> = {};
+    document.querySelectorAll<HTMLInputElement>('#color-table input[data-tf]').forEach((el) => (colors[el.dataset.tf!] = el.value));
+    state.tfColors = colors;
+    for (const p of panes) p.drawings.refresh();
+    $<HTMLDialogElement>('#color-dialog').close();
+    save();
+  });
   $('#ind-reset').addEventListener('click', () => openIndicatorDialog(structuredClone(DEFAULT_INDICATORS)));
   $('#ind-apply').addEventListener('click', () => {
     paneState(active).indicators = readIndicatorDialog();

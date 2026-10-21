@@ -44,10 +44,10 @@ export function renderTrade(c: Ctx): string {
         <td>${esc(p.symbol.toLowerCase())}</td><td class="num">${price(p.openPrice, c.digits)}</td>
         <td class="num">${price(p.sl, c.digits)}</td><td class="num">${price(p.tp, c.digits)}</td>
         <td class="num">${price(now, c.digits)}</td><td class="num">0</td><td class="num">0</td>${money(a.floatingOf(c.feed, c.index, p))}
-        <td>${esc(p.comment)}</td></tr>`;
+        <td>${esc(p.comment)}</td><td class="x"><button type="button" class="close-x" data-action="close" data-ticket="${p.ticket}" title="決済">✕</button></td></tr>`;
     });
   const level = Number.isFinite(s.level) ? `${s.level.toFixed(2)}%` : '';
-  const summary = `<tr class="summary"><td colspan="13">残高: <b>${formatMoney(s.balance)}</b> JPY　有効証拠金: <b>${formatMoney(s.equity)}</b>　証拠金: <b>${formatMoney(s.margin)}</b>　余剰証拠金: <b>${formatMoney(s.free)}</b>　${level ? `証拠金維持率: <b>${level}</b>` : ''}<span class="floating ${s.floating < 0 ? 'neg' : ''}">${formatMoney(s.floating)}</span></td></tr>`;
+  const summary = `<tr class="summary"><td colspan="14">残高: <b>${formatMoney(s.balance)}</b> JPY　有効証拠金: <b>${formatMoney(s.equity)}</b>　証拠金: <b>${formatMoney(s.margin)}</b>　余剰証拠金: <b>${formatMoney(s.free)}</b>　${level ? `証拠金維持率: <b>${level}</b>` : ''}<span class="floating ${s.floating < 0 ? 'neg' : ''}">${formatMoney(s.floating)}</span></td></tr>`;
   const orders = a.orders
     .slice()
     .sort((x, y) => x.ticket - y.ticket)
@@ -57,9 +57,9 @@ export function renderTrade(c: Ctx): string {
         <td>${o.ticket}</td><td>${c.time(o.placedTime)}</td><td>${TYPE_LABEL[o.type]}</td><td class="num">${lots(o.lots)}</td>
         <td>${esc(o.symbol.toLowerCase())}</td><td class="num">${price(o.price, c.digits)}</td>
         <td class="num">${price(o.sl, c.digits)}</td><td class="num">${price(o.tp, c.digits)}</td>
-        <td class="num">${price(now, c.digits)}</td><td></td><td></td><td></td><td></td></tr>`;
+        <td class="num">${price(now, c.digits)}</td><td></td><td></td><td></td><td></td><td class="x"><button type="button" class="close-x" data-action="cancel" data-ticket="${o.ticket}" title="注文を削除">✕</button></td></tr>`;
     });
-  return `<table><thead><tr><th>注文番号</th><th>注文時間</th><th>取引種別</th><th>数量</th><th>通貨ペア</th><th>価格</th><th>決済逆指値(S/L)</th><th>決済指値(T/P)</th><th>価格</th><th>手数料</th><th>スワップ</th><th>損益</th><th>コメント</th></tr></thead>
+  return `<table><thead><tr><th>注文番号</th><th>注文時間</th><th>取引種別</th><th>数量</th><th>通貨ペア</th><th>価格</th><th>決済逆指値(S/L)</th><th>決済指値(T/P)</th><th>価格</th><th>手数料</th><th>スワップ</th><th>損益</th><th>コメント</th><th></th></tr></thead>
     <tbody>${rows.join('')}${summary}${orders.join('')}</tbody></table>`;
 }
 
@@ -73,7 +73,7 @@ export function renderHistory(c: Ctx): string {
       if (h.kind === 'cancelled')
         return `<tr class="pending"><td>${h.ticket}</td><td>${c.time(h.placedTime)}</td><td>${TYPE_LABEL[h.type]}</td><td class="num">${lots(h.lots)}</td><td>${esc(h.symbol.toLowerCase())}</td><td class="num">${price(h.price, c.digits)}</td><td class="num">${price(h.sl, c.digits)}</td><td class="num">${price(h.tp, c.digits)}</td><td>${c.time(h.closeTime)}</td><td>cancelled</td><td></td><td></td><td></td></tr>`;
       const mark = h.reason === 'manual' ? '' : ` [${h.reason}]`;
-      return `<tr data-ticket="${h.ticket}" data-kind="history">
+      return `<tr data-ticket="${h.ticket}" data-close="${h.closeTime}" data-kind="history" title="ダブルクリックで、この取引をチャートに表示">
         <td>${h.ticket}</td><td>${c.time(h.openTime)}</td><td class="${h.side}">${h.side}</td><td class="num">${lots(h.lots)}</td>
         <td>${esc(h.symbol.toLowerCase())}</td><td class="num">${price(h.openPrice, c.digits)}</td>
         <td class="num">${price(h.sl, c.digits)}</td><td class="num">${price(h.tp, c.digits)}</td>

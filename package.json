@@ -16,6 +16,7 @@
     "lightweight-charts": "5.2.1"
   },
   "devDependencies": {
+    "@types/node": "25.9.9",
     "dukascopy-node": "1.50.0",
     "typescript": "7.0.2",
     "vite": "8.3.4",
