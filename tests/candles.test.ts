@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { aggregate, type Bar } from '../src/core/candles';
+import { aggregate, mergeBars, type Bar } from '../src/core/candles';
 import type { ServerTimeRule } from '../src/core/time';
 
 const ny: ServerTimeRule = { kind: 'ny-close' };
@@ -33,5 +33,29 @@ describe('aggregate', () => {
     const [h4] = aggregate(m1, 'H4', ny);
     expect(h4.h).toBe(100 + 239 + 0.5);
     expect(h4.l).toBe(99.5);
+  });
+});
+
+describe('週足・月足', () => {
+  it('週足は日曜 0:00（サーバー時刻）で切り替わる', () => {
+    // 2026-10-18 は日曜。サーバー 0:00（UTC+3）= UTC 10-17 21:00
+    const m1 = flatM1(utc('2026-10-16T20:00:00'), 4 * 1440);
+    const w1 = aggregate(m1, 'W1', ny);
+    expect(w1).toHaveLength(2);
+    expect(w1[1].t).toBe(utc('2026-10-17T21:00:00'));
+  });
+
+  it('月足はサーバー時刻の 1 日 0:00 で切り替わる', () => {
+    const m1 = flatM1(utc('2026-09-30T20:00:00'), 120);
+    const mn = aggregate(m1, 'MN', ny);
+    expect(mn).toHaveLength(2);
+    expect(mn[1].t).toBe(utc('2026-09-30T21:00:00'));
+  });
+});
+
+describe('作りかけの足', () => {
+  it('mergeBars は指定した範囲の始値・高値・安値・終値をまとめる', () => {
+    const m1 = flatM1(utc('2026-07-01T21:00:00'), 10);
+    expect(mergeBars(m1, 2, 4, m1[0].t)).toEqual({ t: m1[0].t, o: 102, h: 104.5, l: 101.5, c: 104.1 });
   });
 });

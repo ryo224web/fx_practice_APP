@@ -6,11 +6,25 @@
     <title>FX Practice</title>
   </head>
   <body>
-    <header>
-      <h1>FX Practice</h1>
+    <header class="toolbar">
       <select id="symbol" aria-label="銘柄"></select>
-      <div id="timeframes"></div>
-      <label>
+      <div class="group" id="timeframes" aria-label="時間足"></div>
+      <div class="group" id="tools" aria-label="描画ツール">
+        <button data-tool="" title="カーソル（Esc）">↖</button>
+        <button data-tool="hline" title="水平線">─</button>
+        <button data-tool="vline" title="垂直線">│</button>
+        <button data-tool="trend" title="トレンドライン">╱</button>
+        <button data-tool="rect" title="長方形">▭</button>
+        <button data-tool="fibo" title="フィボナッチ・リトレースメント">Fib</button>
+        <button id="clear-drawings" title="この銘柄の図形をすべて削除">全消去</button>
+      </div>
+      <div class="group">
+        <button id="zoom-in" title="拡大">＋</button>
+        <button id="zoom-out" title="縮小">－</button>
+        <button id="toggle-history" title="決済した取引を矢印で表示" aria-pressed="true">履歴矢印</button>
+      </div>
+      <button id="new-order" title="新規注文（F9）">新規注文</button>
+      <label class="zone">
         表示時刻
         <select id="zone">
           <option value="jst">日本時間</option>
@@ -19,7 +33,110 @@
       </label>
       <span id="status"></span>
     </header>
-    <div id="chart"></div>
+
+    <main id="chart-area">
+      <div id="chart"></div>
+      <div id="legend"></div>
+      <div id="oneclick">
+        <button id="sell-btn" class="sell" title="成行で売り（Bid）"><span>SELL</span><b id="bid-big">—</b></button>
+        <div class="lots">
+          <input id="lots" type="number" step="0.01" min="0.01" aria-label="ロット数" />
+          <small id="spread"></small>
+        </div>
+        <button id="buy-btn" class="buy" title="成行で買い（Ask）"><span>BUY</span><b id="ask-big">—</b></button>
+      </div>
+      <div id="toast" role="status"></div>
+    </main>
+
+    <div id="replay">
+      <button id="new-test" title="初期資金と開始日時を決めて、新しく検証を始める">新しい検証</button>
+      <span class="sep"></span>
+      <input id="jump" type="datetime-local" aria-label="移動する日時" />
+      <button id="jump-btn" title="その日時まで進む・戻る">移動</button>
+      <span class="sep"></span>
+      <button id="back-bar" title="1 本戻る（←、Shift+← で 1 分）">◀</button>
+      <button id="play" title="再生・一時停止（Space）">▶</button>
+      <button id="fwd-bar" title="1 本進む（→、Shift+→ で 1 分）">▶|</button>
+      <label class="speed">速度 <input id="speed" type="range" min="0" max="8" step="1" /> <span id="speed-label"></span></label>
+      <label><input id="pause-on-fill" type="checkbox" /> 約定したら一時停止</label>
+      <span id="clock"></span>
+    </div>
+
+    <div id="splitter" title="ドラッグで高さを変える"></div>
+    <section id="terminal">
+      <div id="terminal-body"></div>
+      <nav id="terminal-tabs">
+        <button data-tab="trade">取引</button>
+        <button data-tab="history">口座履歴</button>
+        <button data-tab="stats">成績</button>
+      </nav>
+    </section>
+
+    <div id="ctx-menu" hidden></div>
+
+    <dialog id="order-dialog">
+      <form method="dialog">
+        <h2>新規注文 <span id="od-symbol"></span></h2>
+        <div class="quote"><span>Bid</span> <b id="od-bid"></b> <span>Ask</span> <b id="od-ask"></b></div>
+        <label>注文種別
+          <select id="od-type">
+            <option value="market">成行注文</option>
+            <option value="buylimit">Buy Limit（買い指値）</option>
+            <option value="selllimit">Sell Limit（売り指値）</option>
+            <option value="buystop">Buy Stop（買い逆指値）</option>
+            <option value="sellstop">Sell Stop（売り逆指値）</option>
+          </select>
+        </label>
+        <label>数量 <input id="od-lots" type="number" step="0.01" min="0.01" /></label>
+        <label id="od-price-row">価格 <input id="od-price" type="number" step="any" /></label>
+        <label>決済逆指値（S/L） <input id="od-sl" type="number" step="any" placeholder="なし" /></label>
+        <label>決済指値（T/P） <input id="od-tp" type="number" step="any" placeholder="なし" /></label>
+        <p class="hint" id="od-hint"></p>
+        <p class="error" id="od-error"></p>
+        <div class="buttons">
+          <button value="cancel" formnovalidate>キャンセル</button>
+          <span id="od-market-buttons">
+            <button type="button" id="od-sell" class="sell">成行売り</button>
+            <button type="button" id="od-buy" class="buy">成行買い</button>
+          </span>
+          <button type="button" id="od-place" class="primary">発注</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="modify-dialog">
+      <form method="dialog">
+        <h2 id="md-title"></h2>
+        <label id="md-price-row">価格 <input id="md-price" type="number" step="any" /></label>
+        <label>決済逆指値（S/L） <input id="md-sl" type="number" step="any" placeholder="なし" /></label>
+        <label>決済指値（T/P） <input id="md-tp" type="number" step="any" placeholder="なし" /></label>
+        <label id="md-lots-row">決済する数量 <input id="md-lots" type="number" step="0.01" min="0.01" /></label>
+        <p class="error" id="md-error"></p>
+        <div class="buttons">
+          <button value="cancel" formnovalidate>キャンセル</button>
+          <button type="button" id="md-delete" class="sell">削除</button>
+          <button type="button" id="md-close" class="sell">決済</button>
+          <button type="button" id="md-apply" class="primary">変更</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="newtest-dialog">
+      <form method="dialog">
+        <h2>新しい検証</h2>
+        <p class="hint">今の検証（ポジション・口座履歴）は消えます。図形は残ります。</p>
+        <label>銘柄 <select id="nt-symbol"></select></label>
+        <label>開始日時 <input id="nt-start" type="datetime-local" /></label>
+        <label>初期資金（円） <input id="nt-balance" type="number" step="10000" min="10000" /></label>
+        <label>レバレッジ <input id="nt-leverage" type="number" step="1" min="1" /></label>
+        <p class="error" id="nt-error"></p>
+        <div class="buttons">
+          <button value="cancel" formnovalidate>キャンセル</button>
+          <button type="button" id="nt-start-btn" class="primary">開始</button>
+        </div>
+      </form>
+    </dialog>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

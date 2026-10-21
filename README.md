@@ -20,11 +20,9 @@
 git clone https://github.com/ryo224web/fx_practice_app.git
 cd fx_practice_app
 npm install
-npm run fetch-data                       # USDJPY の直近 1 年を取得（Bid と Ask）
-npm run fetch-data -- all                # 主要通貨 + GOLD をすべて
-npm run fetch-data -- eurusd --from 2015-01-01   # 銘柄と期間を指定
+npm run import-data                      # Dukascopy からダウンロードした CSV を変換（置き場所は CLAUDE.md）
 npm run dev     # ブラウザが開く
-npm test        # 時刻変換と足の作成のテスト
+npm test        # 時刻変換・足の作成・約定の計算のテスト
 ```
 
 価格データは `public/data/<銘柄>/<年-月>.bin` に保存される（Git には入れない）。

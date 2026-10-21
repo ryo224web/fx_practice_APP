@@ -1,0 +1,150 @@
+import { describe, expect, it } from 'vitest';
+import type { Bar } from '../src/core/candles';
+import { symbolSpec } from '../src/core/symbols';
+import { Account, replayAccount, type Action, type Baseline, type PriceFeed } from '../src/trade/account';
+import { computeStats } from '../src/trade/stats';
+
+const spec = symbolSpec('usdjpy', 3);
+const T0 = Date.UTC(2026, 9, 20, 0, 0);
+const SPREAD = 0.004;
+
+/** [始値, 高値, 安値, 終値] の Bid から 1 分足を作る。Ask は一定のスプレッドを足す */
+function feedOf(rows: [number, number, number, number][]): PriceFeed {
+  const bid: Bar[] = rows.map(([o, h, l, c], i) => ({ t: T0 + i * 60_000, o, h, l, c }));
+  const ask = bid.map((b) => ({ t: b.t, o: b.o + SPREAD, h: b.h + SPREAD, l: b.l + SPREAD, c: b.c + SPREAD }));
+  return { bid, ask, jpyRate: () => 1 };
+}
+
+const baseline: Baseline = {
+  time: T0,
+  balance: 1_000_000,
+  history: [{ kind: 'balance', ticket: 1, time: T0, amount: 1_000_000, comment: 'Deposit' }],
+  nextTicket: 2,
+};
+
+function newAccount() {
+  return new Account(spec, { leverage: 500 }, baseline);
+}
+
+describe('仮想口座', () => {
+  it('買いは Ask で建てて Bid で決済する', () => {
+    const feed = feedOf([
+      [150, 150, 150, 150],
+      [150, 150.2, 150, 150.1],
+    ]);
+    const a = newAccount();
+    expect(a.apply(feed, 0, { t: T0, kind: 'market', side: 'buy', lots: 0.1, sl: null, tp: null })).toBeNull();
+    expect(a.positions[0].openPrice).toBeCloseTo(150.004);
+    a.processBar(feed, 1);
+    expect(a.apply(feed, 1, { t: T0 + 60_000, kind: 'close', ticket: 2 })).toBeNull();
+    const h = a.history.at(-1)!;
+    expect(h.kind === 'trade' && h.closePrice).toBe(150.1);
+    // (150.1 - 150.004) × 10,000 通貨 = 960 円
+    expect(a.balance).toBeCloseTo(1_000_960);
+  });
+
+  it('売りの S/L は Ask で判定する（Bid が届かなくても Ask が届けば決済）', () => {
+    const feed = feedOf([
+      [150, 150, 150, 150],
+      [150, 150.098, 149.99, 150.05],
+    ]);
+    const a = newAccount();
+    a.apply(feed, 0, { t: T0, kind: 'market', side: 'sell', lots: 1, sl: 150.1, tp: null });
+    const ev = a.processBar(feed, 1);
+    // Bid の高値は 150.098 だが、Ask の高値は 150.102 で S/L 150.1 に届く
+    expect(ev).toEqual([{ kind: 'sl', ticket: 2, time: T0 + 60_000 }]);
+    expect(a.positions).toHaveLength(0);
+  });
+
+  it('窓を開けて S/L を飛び越えたら始値で決済する', () => {
+    const feed = feedOf([
+      [150, 150, 150, 150],
+      [149.5, 149.6, 149.4, 149.5],
+    ]);
+    const a = newAccount();
+    a.apply(feed, 0, { t: T0, kind: 'market', side: 'buy', lots: 0.1, sl: 149.8, tp: null });
+    a.processBar(feed, 1);
+    const h = a.history.at(-1)!;
+    expect(h.kind === 'trade' && h.closePrice).toBe(149.5);
+  });
+
+  it('同じ足で S/L と T/P の両方に届いたら、陽線は安値が先とみなす', () => {
+    const feed = feedOf([
+      [150, 150, 150, 150],
+      [150, 150.5, 149.5, 150.2],
+    ]);
+    const a = newAccount();
+    a.apply(feed, 0, { t: T0, kind: 'market', side: 'buy', lots: 0.1, sl: 149.8, tp: 150.3 });
+    expect(a.processBar(feed, 1)[0].kind).toBe('sl');
+  });
+
+  it('指値注文は次の足から約定し、置いた足では約定しない', () => {
+    const feed = feedOf([
+      [150, 150, 149.9, 150],
+      [150, 150, 149.85, 149.95],
+    ]);
+    const a = newAccount();
+    expect(a.apply(feed, 0, { t: T0, kind: 'pending', type: 'buylimit', price: 149.86, lots: 0.1, sl: null, tp: null })).toBeNull();
+    expect(a.positions).toHaveLength(0);
+    // 2 本目の Ask 安値は 149.854 → 149.86 で約定
+    expect(a.processBar(feed, 1)[0].kind).toBe('open');
+    expect(a.positions[0].openPrice).toBe(149.86);
+  });
+
+  it('S/L・T/P や指値の位置が逆なら断る', () => {
+    const feed = feedOf([[150, 150, 150, 150]]);
+    const a = newAccount();
+    expect(a.apply(feed, 0, { t: T0, kind: 'market', side: 'buy', lots: 0.1, sl: 150.1, tp: null })).toMatch(/S\/L/);
+    expect(a.apply(feed, 0, { t: T0, kind: 'pending', type: 'buylimit', price: 150.1, lots: 0.1, sl: null, tp: null })).toMatch(/Buy Limit/);
+  });
+
+  it('一部決済すると残りは新しい注文番号で残る', () => {
+    const feed = feedOf([[150, 150, 150, 150]]);
+    const a = newAccount();
+    a.apply(feed, 0, { t: T0, kind: 'market', side: 'buy', lots: 0.3, sl: null, tp: null });
+    a.apply(feed, 0, { t: T0, kind: 'close', ticket: 2, lots: 0.1 });
+    expect(a.positions).toHaveLength(1);
+    expect(a.positions[0]).toMatchObject({ ticket: 3, lots: 0.2, comment: 'from #2' });
+  });
+
+  it('記録した操作を再生すると同じ口座になる（巻き戻しに使う）', () => {
+    const feed = feedOf([
+      [150, 150, 150, 150],
+      [150, 150.2, 150, 150.1],
+      [150.1, 150.4, 150.1, 150.3],
+    ]);
+    const actions: Action[] = [{ t: T0, kind: 'market', side: 'buy', lots: 0.1, sl: null, tp: 150.25 }];
+    const { account } = replayAccount(spec, { leverage: 500 }, baseline, actions, feed, 0, 2);
+    const h = account.history.at(-1)!;
+    expect(h.kind === 'trade' && h.reason).toBe('tp');
+    // 1 本目までなら、まだ保有中
+    expect(replayAccount(spec, { leverage: 500 }, baseline, actions, feed, 0, 1).account.positions).toHaveLength(1);
+  });
+});
+
+describe('成績', () => {
+  it('勝率・プロフィットファクター・最大ドローダウン', () => {
+    const trade = (profit: number, t: number) => ({
+      kind: 'trade' as const,
+      ticket: t,
+      symbol: 'USDJPY',
+      side: 'buy' as const,
+      lots: 0.1,
+      openTime: t,
+      openPrice: 150,
+      sl: null,
+      tp: null,
+      closeTime: t,
+      closePrice: 150,
+      profit,
+      reason: 'manual' as const,
+      comment: '',
+    });
+    const s = computeStats([baseline.history[0], trade(1000, T0 + 1), trade(-3000, T0 + 2), trade(500, T0 + 3)]);
+    expect(s.trades).toBe(3);
+    expect(s.winRate).toBeCloseTo(66.67, 1);
+    expect(s.profitFactor).toBeCloseTo(0.5);
+    expect(s.maxDrawdown).toBe(3000);
+    expect(s.maxConsecLosses).toBe(1);
+  });
+});

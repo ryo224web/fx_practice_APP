@@ -1,21 +1,31 @@
 :root {
   --bg: #ffffff;
+  --panel: #f6f8fa;
   --fg: #1f2328;
   --muted: #656d76;
   --grid: #eef0f2;
   --border: #d0d7de;
   --accent: #0969da;
+  --buy: #0969da;
+  --sell: #cf222e;
+  --pos: #1a7f37;
+  --neg: #cf222e;
   color-scheme: light dark;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0d1117;
+    --panel: #161b22;
     --fg: #e6edf3;
     --muted: #8d96a0;
     --grid: #1c2128;
     --border: #30363d;
     --accent: #4493f8;
+    --buy: #4493f8;
+    --sell: #f85149;
+    --pos: #3fb950;
+    --neg: #f85149;
   }
 }
 
@@ -35,36 +45,26 @@ body {
 body {
   display: flex;
   flex-direction: column;
-}
-
-header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-}
-
-header h1 {
-  margin: 0;
-  font-size: 14px;
-}
-
-#timeframes {
-  display: flex;
-  gap: 2px;
+  overflow: hidden;
 }
 
 button,
-select {
+select,
+input {
   font: inherit;
   color: inherit;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 2px 8px;
+}
+
+button {
   cursor: pointer;
+}
+
+button:hover {
+  background: var(--grid);
 }
 
 button[aria-pressed='true'] {
@@ -73,12 +73,377 @@ button[aria-pressed='true'] {
   color: #fff;
 }
 
+button.buy {
+  color: var(--buy);
+  border-color: var(--buy);
+}
+
+button.sell {
+  color: var(--sell);
+  border-color: var(--sell);
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.neg {
+  color: var(--neg);
+}
+
+td.buy {
+  color: var(--buy);
+}
+
+td.sell {
+  color: var(--sell);
+}
+
+/* ---- 上のツールバー ---- */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.group {
+  display: flex;
+  gap: 2px;
+}
+
+.toolbar .zone {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 #status {
   margin-left: auto;
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- チャート ---- */
+#chart-area {
+  position: relative;
+  flex: 1;
+  min-height: 120px;
 }
 
 #chart {
+  position: absolute;
+  inset: 0;
+}
+
+#legend {
+  position: absolute;
+  top: 6px;
+  left: 10px;
+  z-index: 2;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+#legend b {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+#oneclick {
+  position: absolute;
+  top: 28px;
+  left: 10px;
+  z-index: 3;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+}
+
+#oneclick button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 86px;
+  padding: 2px 8px;
+}
+
+#oneclick button span {
+  font-size: 11px;
+}
+
+#oneclick button b {
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+
+#oneclick .lots {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+#oneclick input {
+  width: 64px;
+  text-align: center;
+}
+
+#oneclick small {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+#toast {
+  position: absolute;
+  left: 50%;
+  bottom: 40px;
+  transform: translateX(-50%);
+  z-index: 5;
+  padding: 6px 14px;
+  border-radius: 6px;
+  background: var(--fg);
+  color: var(--bg);
+  opacity: 0;
+  transition: opacity 0.2s;
+  pointer-events: none;
+}
+
+#toast.show {
+  opacity: 0.92;
+}
+
+/* ---- リプレイの操作 ---- */
+#replay {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+#replay .sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+}
+
+#replay #play {
+  min-width: 40px;
+}
+
+#replay .speed {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#speed-label {
+  min-width: 72px;
+  color: var(--muted);
+}
+
+#clock {
+  margin-left: auto;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- ターミナル ---- */
+#splitter {
+  height: 5px;
+  cursor: ns-resize;
+  background: var(--border);
+}
+
+#terminal {
+  display: flex;
+  flex-direction: column;
+  height: 220px;
+  min-height: 60px;
+  background: var(--bg);
+}
+
+#terminal-body {
   flex: 1;
-  min-height: 0;
+  overflow: auto;
+}
+
+#terminal-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px 6px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+#terminal-tabs button {
+  border: none;
+  border-radius: 0 0 4px 4px;
+  padding: 2px 12px;
+}
+
+#terminal table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#terminal th,
+#terminal td {
+  padding: 2px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--grid);
+}
+
+#terminal th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  font-weight: 500;
+  color: var(--muted);
+}
+
+#terminal td.num {
+  text-align: right;
+}
+
+#terminal tr[data-ticket] {
+  cursor: default;
+}
+
+#terminal tr[data-ticket]:hover {
+  background: var(--grid);
+}
+
+#terminal tr.summary td {
+  background: var(--panel);
+}
+
+#terminal tr.pending td {
+  color: var(--muted);
+}
+
+#terminal .floating {
+  float: right;
+  font-weight: 600;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 4px 16px;
+  padding: 10px;
+}
+
+.stat {
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--grid);
+  padding: 2px 0;
+}
+
+.stat span {
+  color: var(--muted);
+}
+
+/* ---- 右クリックメニュー ---- */
+#ctx-menu {
+  position: fixed;
+  z-index: 10;
+  min-width: 140px;
+  padding: 4px 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.2);
+}
+
+#ctx-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: 0;
+  padding: 4px 14px;
+}
+
+/* ---- ダイアログ ---- */
+dialog {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--fg);
+  min-width: 340px;
+  padding: 16px 20px;
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 0.4);
+}
+
+dialog h2 {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+
+dialog label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+}
+
+dialog input,
+dialog select {
+  width: 190px;
+}
+
+dialog .quote {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+dialog .quote b {
+  font-size: 18px;
+}
+
+dialog .buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+dialog .hint {
+  color: var(--muted);
+  margin: 6px 0;
+}
+
+dialog .error {
+  color: var(--neg);
+  margin: 6px 0;
+  min-height: 1em;
+}
+
+[hidden] {
+  display: none !important;
 }
