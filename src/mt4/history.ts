@@ -44,9 +44,18 @@ function stopOrNull(s: string): number | null {
   return Number.isFinite(v) && v > 0 ? v : null;
 }
 
+/** ブローカーによって名前が違う銘柄（先頭が一致すれば読み替える。"GOLDmicro" なども） */
+const ALIASES: [string, string][] = [
+  ['GOLD', 'XAUUSD'],
+  ['SILVER', 'XAGUSD'],
+];
+
+/** "USDJPY.a" → "USDJPY"、"GOLD" → "XAUUSD" のように、アプリの銘柄名にそろえる */
 export function normalizeSymbol(s: string): string {
-  const m = /[A-Za-z]{6}/.exec(s);
-  return (m ? m[0] : s).toUpperCase();
+  const up = s.trim().toUpperCase();
+  for (const [prefix, name] of ALIASES) if (up.startsWith(prefix)) return name;
+  const m = /[A-Z]{6}/.exec(up);
+  return m ? m[0] : up;
 }
 
 function decode(s: string): string {

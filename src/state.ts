@@ -33,11 +33,12 @@ export interface EasyOrderState {
 export interface Mt4State {
   fileName: string;
   trades: Mt4Trade[];
-  /** 自動判定した時刻のずれ（時間）。サーバー時刻 → UTC の変換の後に足す */
+  /** 時刻のずれ（時間）。サーバー時刻 → UTC の変換の後に足す。銘柄ごとの判定が無いときに使う */
   offsetHours: number;
-  /** 判定のときに価格が足に収まった件数 / 調べた件数 */
   matched: number;
   checked: number;
+  /** 銘柄ごとに自動判定したずれ。価格が足に収まった件数 / 調べた件数 */
+  bySymbol?: Record<string, { hours: number; matched: number; checked: number }>;
 }
 
 export interface AppState {

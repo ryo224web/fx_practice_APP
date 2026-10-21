@@ -129,6 +129,8 @@ export interface Mt4Info {
   offsetHours: number;
   matched: number;
   checked: number;
+  /** この銘柄の取引で判定できたか（できなければ、ほかの銘柄の値か 0 を使っている） */
+  detected: boolean;
   /** この銘柄以外の取引の件数（表示しない） */
   others: number;
 }
@@ -142,7 +144,10 @@ export function renderMt4(rows: Mt4Row[], info: Mt4Info | null, digits: number, 
   }
   const mark = (v: boolean | null) => (v === null ? '' : v ? '✓' : '<b class="neg" title="記録の価格が、その時刻の足の値幅に入っていません">✗</b>');
   const off = `${info.offsetHours >= 0 ? '+' : ''}${info.offsetHours}`;
-  const head = `${bar}<span class="hint">${esc(info.fileName)}　時刻のずれ（自動判定）: <b>${off} 時間</b>　価格が足に収まった: <b>${info.matched}/${info.checked}</b>${info.others ? `　（他の銘柄 ${info.others} 件は表示していません）` : ''}　行をダブルクリックで、その取引の直前へ移動</span></div>`;
+  const judged = info.detected
+    ? `時刻のずれ（自動判定）: <b>${off} 時間</b>　価格が足に収まった: <b>${info.matched}/${info.checked}</b>`
+    : `時刻のずれ: <b>${off} 時間</b>（この銘柄では判定できていません。価格データが無いか、取引がありません）`;
+  const head = `${bar}<span class="hint">${esc(info.fileName)}　${judged}${info.others ? `　（他の銘柄 ${info.others} 件は表示していません）` : ''}　行をダブルクリックで、その取引の直前へ移動</span></div>`;
   const body = rows.map((r) => {
     const cls = r.status === 'wait' ? 'pending' : '';
     const pl = r.status === 'closed' ? money(r.profit + r.swap + r.commission) : r.status === 'open' && r.floating !== null ? money(r.floating) : '<td></td>';

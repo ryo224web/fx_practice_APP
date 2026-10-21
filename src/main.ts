@@ -170,6 +170,8 @@ async function openSymbol(symbol: string, around: number | null) {
   series.applyOptions({ priceFormat: { type: 'price', precision: md.digits, minMove: 10 ** -md.digits } });
   drawings.digits = md.digits;
   drawings.setDrawings(state.drawings[md.symbol] ?? []);
+  // 読み込み済みの MT4 履歴に、この銘柄の取引があれば時刻のずれを判定する（まだなら）
+  if (state.mt4) await detectMt4ForSymbol();
 }
 
 /** 円に換算するために USDJPY を同じ期間だけ読み込む */
@@ -471,7 +473,8 @@ function renderTerminal(force = false) {
 function mt4Info() {
   const m = state.mt4;
   if (!m) return null;
-  return { fileName: m.fileName, offsetHours: m.offsetHours, matched: m.matched, checked: m.checked, others: m.trades.length - mt4Trades().length };
+  const off = mt4Offset();
+  return { fileName: m.fileName, offsetHours: off.hours, matched: off.matched, checked: off.checked, detected: off.detected, others: m.trades.length - mt4Trades().length };
 }
 
 function refresh() {
@@ -658,8 +661,37 @@ $('#nt-start-btn').addEventListener('click', async () => {
 // ---------------- MT4 の取引履歴 ----------------
 // 記録の時刻・価格のまま表示する（R2）。ローソク足を進めると、記録どおりにエントリー・決済が現れる。
 
+/** 今の銘柄の時刻のずれ。まだ判定していなければ、ほかの銘柄で判定した値（同じブローカーなら同じはず） */
+function mt4Offset() {
+  const m = state.mt4;
+  const d = m?.bySymbol?.[md.symbol];
+  return d ? { ...d, detected: true } : { hours: m?.offsetHours ?? 0, matched: 0, checked: 0, detected: false };
+}
+
 function mt4ToUtc(server: number): number {
-  return serverToUtc(server, rule) + (state.mt4?.offsetHours ?? 0) * 3_600_000;
+  return serverToUtc(server, rule) + mt4Offset().hours * 3_600_000;
+}
+
+/**
+ * 今の銘柄の取引で時刻のずれを判定する（まだなら）。取引の期間の価格データも読み込む。
+ * 価格データが無くて判定できなければ null
+ */
+async function detectMt4ForSymbol(): Promise<{ hours: number; matched: number; checked: number } | null> {
+  const m = state.mt4;
+  if (!m) return null;
+  if (m.bySymbol?.[md.symbol]) return m.bySymbol[md.symbol];
+  const mine = mt4Trades();
+  if (!mine.length) return null;
+  const opens = mine.map((t) => serverToUtc(t.openServer, rule));
+  const closes = mine.map((t) => (t.closeServer === null ? NaN : serverToUtc(t.closeServer, rule))).filter(Number.isFinite);
+  await ensureLoaded(Math.min(...opens) - 86_400_000, Math.max(...opens, ...closes) + 86_400_000);
+  const det = detectOffsetHours(mine, (sv) => serverToUtc(sv, rule), priceLookup, spec.pip);
+  if (det.checked === 0) return null;
+  const result = { hours: det.hours, matched: det.matched, checked: det.checked };
+  (m.bySymbol ??= {})[md.symbol] = result;
+  m.offsetHours = det.hours;
+  mt4EventCache = null;
+  return result;
 }
 
 function mt4Trades(): Mt4Trade[] {
@@ -678,7 +710,7 @@ let mt4EventCache: { key: string; events: { t: number; label: string }[] } | nul
 
 /** エントリー・決済が起きる 1 分足の時刻（昇順） */
 function mt4Events() {
-  const key = `${md.symbol}:${state.mt4?.fileName}:${state.mt4?.trades.length}:${state.mt4?.offsetHours}`;
+  const key = `${md.symbol}:${state.mt4?.fileName}:${state.mt4?.trades.length}:${mt4Offset().hours}`;
   if (mt4EventCache?.key === key) return mt4EventCache.events;
   const minute = (t: number) => Math.floor(t / 60_000) * 60_000;
   const events: { t: number; label: string }[] = [];
@@ -800,21 +832,18 @@ async function readText(file: File): Promise<string> {
 async function loadMt4File(file: File) {
   const trades = parseHistoryFile(file.name, await readText(file));
   if (!trades.length) return toast('取引が見つかりませんでした（詳細レポートの .htm か、ExportHistory.mq4 の .csv を選んでください）');
-  const mine = trades.filter((t) => t.symbol.toLowerCase() === md.symbol);
-  if (mine.length) {
-    const opens = mine.map((t) => serverToUtc(t.openServer, rule));
-    const closes = mine.map((t) => (t.closeServer === null ? NaN : serverToUtc(t.closeServer, rule))).filter(Number.isFinite);
-    await ensureLoaded(Math.min(...opens) - 86_400_000, Math.max(...opens, ...closes) + 86_400_000);
-  }
-  const det = detectOffsetHours(mine, (sv) => serverToUtc(sv, rule), priceLookup, spec.pip);
-  state.mt4 = { fileName: file.name, trades, offsetHours: det.hours, matched: Math.max(0, det.matched), checked: det.checked };
+  state.mt4 = { fileName: file.name, trades, offsetHours: 0, matched: 0, checked: 0, bySymbol: {} };
   mt4EventCache = null;
+  const mine = mt4Trades();
+  const det = await detectMt4ForSymbol();
   state.terminalTab = 'mt4';
   const symbols = [...new Set(trades.map((t) => t.symbol))].join(', ');
   toast(
-    mine.length
-      ? `${trades.length} 件を読み込みました（${md.symbol.toUpperCase()} は ${mine.length} 件）。時刻のずれ ${det.hours} 時間`
-      : `${trades.length} 件を読み込みましたが、${md.symbol.toUpperCase()} の取引はありません（含まれる銘柄: ${symbols}）`,
+    !mine.length
+      ? `${trades.length} 件を読み込みましたが、${md.symbol.toUpperCase()} の取引はありません（含まれる銘柄: ${symbols}）。その銘柄を開くと表示し、時刻のずれもそのとき判定します`
+      : det
+        ? `${trades.length} 件を読み込みました（${md.symbol.toUpperCase()} は ${mine.length} 件）。時刻のずれ ${det.hours} 時間`
+        : `${trades.length} 件を読み込みました（${md.symbol.toUpperCase()} は ${mine.length} 件）。その期間の価格データが無いため、時刻のずれは判定できませんでした`,
   );
   refresh();
   renderTerminal(true);

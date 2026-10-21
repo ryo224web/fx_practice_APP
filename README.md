@@ -21,7 +21,8 @@ git clone https://github.com/ryo224web/fx_practice_app.git
 cd fx_practice_app
 npm install
 npm run import-data                      # Dukascopy からダウンロードした CSV を変換（置き場所は CLAUDE.md）
-npm run dev     # ブラウザが開く
+npm run dev     # ブラウザが開く（http://localhost:5173）
+npm run make-app   # ダブルクリックで起動できるアプリを ~/Applications に作る
 npm test        # 時刻変換・足の作成・約定の計算のテスト
 ```
 

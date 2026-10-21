@@ -63,3 +63,14 @@ describe('MT4 の取引履歴', () => {
     expect(detectOffsetHours(trades, wrongToUtc, lookup, 0.01)).toMatchObject({ hours: -2, matched: 2 });
   });
 });
+
+describe('銘柄名の読み替え', () => {
+  it('接尾辞を取り除き、GOLD などは通貨ペアの名前にする', async () => {
+    const { normalizeSymbol } = await import('../src/mt4/history');
+    expect(normalizeSymbol('usdjpy.a')).toBe('USDJPY');
+    expect(normalizeSymbol('EURUSDmicro')).toBe('EURUSD');
+    expect(normalizeSymbol('GOLD')).toBe('XAUUSD');
+    expect(normalizeSymbol('GOLD.a')).toBe('XAUUSD');
+    expect(normalizeSymbol('XAUUSD')).toBe('XAUUSD');
+  });
+});
