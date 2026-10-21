@@ -37,6 +37,8 @@ export interface PaneHost {
   rangeChanged(pane: ChartPane): void;
   /** マウスがこのチャートに入った（このチャートの動きにほかを合わせる） */
   lead(pane: ChartPane): void;
+  /** マウスの真ん中のボタンを押した（十字線を出す・消す） */
+  toggleCrosshair(): void;
 }
 
 /**
@@ -110,7 +112,8 @@ export class ChartPane {
       // 背景のグリッドは出さない（見やすさのため）
       grid: { vertLines: { visible: false }, horzLines: { visible: false } },
       timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 12, shiftVisibleRangeOnNewBar: true },
-      crosshair: { mode: CrosshairMode.Normal },
+      // 十字線はふだん出さない（MT4 と同じく、真ん中のボタンで出す）
+      crosshair: { mode: CrosshairMode.Hidden },
       // 十字線の日時は MT4 と同じ「2026.10.08 05:00」。チャートの時刻は表示の時刻帯にずらした値なので UTC として読む
       localization: { locale: 'ja-JP', timeFormatter: (t: Time) => crosshairTime(t as number) },
     });
@@ -131,6 +134,18 @@ export class ChartPane {
 
     el.addEventListener('mousedown', () => host.activate(this), true);
     el.addEventListener('mouseenter', () => host.lead(this));
+    // 真ん中のボタン（ホイールを押す）で十字線。ブラウザの自動スクロールは止める
+    el.addEventListener(
+      'mousedown',
+      (e) => {
+        if (e.button !== 1) return;
+        e.preventDefault();
+        e.stopPropagation();
+        host.toggleCrosshair();
+      },
+      true,
+    );
+    el.addEventListener('auxclick', (e) => e.button === 1 && e.preventDefault());
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
       if (r && r.from < 30) {
         // 省いていた古い足があれば足す。無ければ前の月を読み込む
@@ -283,6 +298,10 @@ export class ChartPane {
   zoom(factor: number) {
     this.spacing = Math.max(1, Math.min(60, this.spacing * factor));
     this.chart.timeScale().applyOptions({ barSpacing: this.spacing });
+  }
+
+  setCrosshair(on: boolean) {
+    this.chart.applyOptions({ crosshair: { mode: on ? CrosshairMode.Normal : CrosshairMode.Hidden } });
   }
 
   setActive(on: boolean) {

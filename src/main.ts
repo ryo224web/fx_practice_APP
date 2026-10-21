@@ -64,6 +64,13 @@ let panes: ChartPane[] = [];
 let active: ChartPane;
 /** マウスが乗っているチャート（連動のときは、このチャートの動きにほかを合わせる） */
 let leader: ChartPane | null = null;
+/** 十字線を出しているか（真ん中のボタンで切り替える。全部のチャートで同じ） */
+let crosshairOn = false;
+
+function setCrosshair(on: boolean) {
+  crosshairOn = on;
+  for (const p of panes) p.setCrosshair(on);
+}
 
 /** 表示しているチャート */
 function visiblePanes(): ChartPane[] {
@@ -1494,6 +1501,7 @@ function createPanes() {
     activate: setActivePane,
     nearLeftEdge: loadEarlier,
     lead: (p) => (leader = p),
+    toggleCrosshair: () => setCrosshair(!crosshairOn),
     rangeChanged: (p) => {
       // チャートはいつも連動する。マウスで動かしているチャートにだけ、ほかを合わせる（合わせた側の動きでは何もしない）
       if (p !== leader || p.el.hidden) return;
@@ -1747,9 +1755,32 @@ async function jump() {
   scrollToNow();
 }
 
+/** 文字キーのショートカット（日本語入力中でも効くように、文字ではなくキーの位置で見る） */
+const LETTER_KEYS: Record<string, () => void> = {
+  KeyC: () => stepBar(1),
+  KeyZ: () => stepBar(-1),
+  KeyT: () => toggleTool('trend'),
+  KeyF: () => toggleTool('fibo'),
+  KeyH: () => toggleTool('hline'),
+  KeyW: () => toggleTool('poly'),
+};
+
+/** 描画ツールを選ぶ。もう一度押すとやめる */
+function toggleTool(tool: DrawingKind) {
+  const next = panes[0].drawings.tool === tool ? null : tool;
+  for (const p of panes) p.drawings.setTool(next);
+}
+
 function onKey(e: KeyboardEvent) {
   const tag = (e.target as HTMLElement).tagName;
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || document.querySelector('dialog[open]')) return;
+  // ⌘C（コピー）などは邪魔しない
+  const letter = !e.metaKey && !e.ctrlKey && !e.altKey ? LETTER_KEYS[e.code] : undefined;
+  if (letter) {
+    letter();
+    e.preventDefault();
+    return;
+  }
   switch (e.key) {
     case ' ':
       setPlaying(!playing);
@@ -1774,6 +1805,7 @@ function onKey(e: KeyboardEvent) {
       if (!panes.some((p) => p.drawings.finishPoly())) return;
       break;
     case 'Escape':
+      setCrosshair(false);
       for (const p of panes) p.drawings.setTool(null);
       for (const p of panes) p.overlay.setHighlight(null);
       ctxMenu.hidden = true;

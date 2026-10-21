@@ -15,13 +15,13 @@
       <div class="group" id="timeframes" aria-label="時間足"></div>
       <div class="group" id="tools" aria-label="描画ツール">
         <button data-tool="" title="カーソル（Esc）">↖</button>
-        <button data-tool="hline" title="水平線">─</button>
+        <button data-tool="hline" title="水平線（H）">─</button>
         <button data-tool="vline" title="垂直線">│</button>
-        <button data-tool="trend" title="トレンドライン">╱</button>
-        <button data-tool="poly" title="ポリライン（クリックで点を足し、ダブルクリック・Enter で終わる）">⌇</button>
+        <button data-tool="trend" title="トレンドライン（T）">╱</button>
+        <button data-tool="poly" title="ポリライン（W。クリックで点を足し、ダブルクリック・Enter で終わる）">⌇</button>
         <button data-tool="channel" title="チャネル（平行線。3 つ目の四角で幅を変える）">⫽</button>
         <button data-tool="rect" title="長方形">▭</button>
-        <button data-tool="fibo" title="フィボナッチ・リトレースメント">Fib</button>
+        <button data-tool="fibo" title="フィボナッチ・リトレースメント（F）">Fib</button>
         <button id="tf-colors-btn" title="図形の色を時間足ごとに決める（描いたチャートの時間足の色になる）">色</button>
         <button id="clear-drawings" title="この銘柄の図形をすべて削除">全消去</button>
       </div>
@@ -82,9 +82,9 @@
       <input id="jump" type="datetime-local" aria-label="移動する日時" />
       <button id="jump-btn" title="その日時まで進む・戻る">移動</button>
       <span class="sep"></span>
-      <button id="back-bar" title="1 本戻る（←、Shift+← で 1 分）">◀</button>
+      <button id="back-bar" title="1 本戻る（Z か ←。Shift+← で 1 分）">◀</button>
       <button id="play" title="再生・一時停止（Space）">▶</button>
-      <button id="fwd-bar" title="1 本進む（→、Shift+→ で 1 分）">▶|</button>
+      <button id="fwd-bar" title="1 本進む（C か →。Shift+→ で 1 分）">▶|</button>
       <label class="speed">速度 <input id="speed" type="range" min="0" max="8" step="1" /> <span id="speed-label"></span></label>
       <label><input id="pause-on-fill" type="checkbox" /> 約定したら一時停止</label>
       <span id="clock"></span>
