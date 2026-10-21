@@ -188,6 +188,8 @@
         <label>開始日時 <input id="nt-start" type="datetime-local" /></label>
         <label>初期資金（円） <input id="nt-balance" type="number" step="10000" min="10000" /></label>
         <label>レバレッジ <input id="nt-leverage" type="number" step="1" min="1" /></label>
+        <label><span>スプレッド（pips・固定） <small id="nt-spread-symbol"></small></span> <input id="nt-spread" type="number" step="0.1" min="0" /></label>
+        <p class="hint">Ask は「Bid ＋ このスプレッド」にします（Forex Tester と同じ）。検証の途中では変えられません。</p>
         <p class="error" id="nt-error"></p>
         <div class="buttons">
           <button value="cancel" formnovalidate>キャンセル</button>

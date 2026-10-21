@@ -6,7 +6,7 @@ import { type LineEdit, type OrderPreview } from './chart/trades';
 import { aggregateWithIndex, mergeBars, TIMEFRAMES, type Aggregated, type Bar, type Timeframe } from './core/candles';
 import { formatMoney, formatPrice, formatTime, fromLocalInput, toLocalInput } from './core/format';
 import { sampleM1 } from './core/sample';
-import { symbolSpec, type SymbolSpec } from './core/symbols';
+import { DEFAULT_SPREAD_PIPS, symbolSpec, type SymbolSpec } from './core/symbols';
 import { DEFAULT_SERVER_RULE, serverToUtc, toDisplay, type DisplayZone } from './core/time';
 import { loadManifest, type Manifest } from './data/store';
 import { detectOffsetHours, matchTrade, parseHistoryFile, type Mt4Trade, type PriceLookup } from './mt4/history';
@@ -205,6 +205,7 @@ async function openSymbol(symbol: string, around: number | null) {
   usd = null;
   await syncUsd();
   dataChanged();
+  applySpread();
   const list = (state.drawings[md.symbol] ??= []);
   for (const p of panes) {
     p.setDigits(md.digits);
@@ -212,6 +213,15 @@ async function openSymbol(symbol: string, around: number | null) {
   }
   // 読み込み済みの MT4 履歴に、この銘柄の取引があれば時刻のずれを判定する（まだなら）
   if (state.mt4) await detectMt4ForSymbol();
+}
+
+/**
+ * 今の検証のスプレッドを価格データに入れる。固定スプレッドの検証なら Ask = Bid + スプレッド、
+ * 固定スプレッドを決める前に始めた検証なら、データの Ask（欠けは推定）
+ */
+function applySpread() {
+  const pips = state.test?.spreadPips?.[md.symbol];
+  md.setFixedSpread(pips === undefined ? null : Number((pips * spec.pip).toFixed(md.digits + 1)));
 }
 
 /** 円に換算するために USDJPY を同じ期間だけ読み込む */
@@ -439,8 +449,12 @@ function renderQuotes() {
   const est = md.askEstimated[cursor] === 1;
   $('#bid-big').textContent = formatPrice(bid, md.digits);
   $('#ask-big').textContent = formatPrice(ask, md.digits);
-  $('#spread').textContent = `${((ask - bid) / spec.pip).toFixed(1)} pips${est ? '（推定）' : ''}`;
-  $('#spread').title = est ? 'この時間の Ask はデータに無いため、直前のスプレッドで推定しています' : '';
+  $('#spread').textContent = `${((ask - bid) / spec.pip).toFixed(1)} pips${md.spreadIsFixed ? '（固定）' : est ? '（推定）' : ''}`;
+  $('#spread').title = md.spreadIsFixed
+    ? 'この検証は固定スプレッドです（新しい検証を始めるときに決めます）'
+    : est
+      ? 'この時間の Ask はデータに無いため、直前のスプレッドで推定しています'
+      : '';
   clockEl.textContent = formatTime(md.bid[cursor].t + 60_000, state.zone, rule);
   const view = {
     positions: account.positions,
@@ -736,11 +750,20 @@ function onLineEdit(e: LineEdit) {
 }
 
 // ---------------- 新しい検証 ----------------
+/** 新しい検証の画面に、選んだ銘柄のスプレッドを出す（今の検証の値、無ければ初期値） */
+function fillSpreadInput() {
+  const sym = $<HTMLSelectElement>('#nt-symbol').value || md.symbol;
+  $('#nt-spread-symbol').textContent = sym.toUpperCase();
+  $<HTMLInputElement>('#nt-spread').value = String(state.test?.spreadPips?.[sym] ?? DEFAULT_SPREAD_PIPS[sym] ?? 0.5);
+}
+
 function openNewTestDialog() {
   const sel = $<HTMLSelectElement>('#nt-symbol');
   sel.innerHTML = symbolEl.innerHTML;
   sel.value = md.symbol;
   sel.disabled = !manifest;
+  sel.onchange = fillSpreadInput;
+  fillSpreadInput();
   $<HTMLInputElement>('#nt-start').value = toLocalInput(md.bid[cursor].t, state.zone, rule);
   $<HTMLInputElement>('#nt-balance').value = String(state.test?.initialBalance ?? DEFAULT_BALANCE);
   $<HTMLInputElement>('#nt-leverage').value = String(state.test?.leverage ?? DEFAULT_LEVERAGE);
@@ -748,7 +771,7 @@ function openNewTestDialog() {
   $<HTMLDialogElement>('#newtest-dialog').showModal();
 }
 
-async function startTest(symbol: string, start: number, balance: number, leverage: number): Promise<string | null> {
+async function startTest(symbol: string, start: number, balance: number, leverage: number, spread: number): Promise<string | null> {
   setPlaying(false);
   if (symbol !== md?.symbol || md.indexAtOrBefore(start) < 0 || start > md.bid[md.bid.length - 1].t || start < md.bid[0].t) {
     await openSymbol(symbol, start);
@@ -766,7 +789,10 @@ async function startTest(symbol: string, start: number, balance: number, leverag
     leverage,
     baseline: { time: t, balance, history: [{ kind: 'balance', ticket: 1, time: t, amount: balance, comment: 'Deposit' }], nextTicket: 2 },
     actions: [],
+    // ほかの銘柄は今の検証の値（無ければ初期値）を引き継ぎ、選んだ銘柄だけ入力した値にする
+    spreadPips: { ...DEFAULT_SPREAD_PIPS, ...state.test?.spreadPips, [md.symbol]: spread },
   };
+  applySpread();
   rebuildAccount();
   renderChart(true);
   scrollToNow();
@@ -779,9 +805,11 @@ $('#nt-start-btn').addEventListener('click', async () => {
   const start = fromLocalInput($<HTMLInputElement>('#nt-start').value, state.zone, rule);
   const balance = Number($<HTMLInputElement>('#nt-balance').value);
   const leverage = Number($<HTMLInputElement>('#nt-leverage').value);
+  const spread = Number($<HTMLInputElement>('#nt-spread').value);
   if (!Number.isFinite(start)) return void ($('#nt-error').textContent = '開始日時を入力してください');
   if (!(balance > 0) || !(leverage >= 1)) return void ($('#nt-error').textContent = '初期資金とレバレッジを確認してください');
-  const err = await startTest($<HTMLSelectElement>('#nt-symbol').value, start, balance, leverage);
+  if (!(spread >= 0)) return void ($('#nt-error').textContent = 'スプレッドを確認してください（0 以上）');
+  const err = await startTest($<HTMLSelectElement>('#nt-symbol').value || md.symbol, start, balance, leverage, spread);
   if (err) $('#nt-error').textContent = err;
   else $<HTMLDialogElement>('#newtest-dialog').close();
 });
@@ -1400,6 +1428,9 @@ async function changeSymbol(symbol: string) {
   test().baseline = { time: state.cursor, balance: account.balance, history: account.history.slice(), nextTicket: account.nextTicket };
   test().actions = [];
   state.symbol = symbol;
+  // 固定スプレッドの検証なら、切り替え先の銘柄のスプレッドも決めておく（無ければ初期値）
+  const sp = test().spreadPips;
+  if (sp && sp[symbol] === undefined) sp[symbol] = DEFAULT_SPREAD_PIPS[symbol] ?? 0.5;
   await openSymbol(symbol, state.cursor);
   test().baseline.time = md.bid[cursor].t;
   rebuildAccount();
@@ -1796,7 +1827,7 @@ async function start() {
   if (!state.test || md.indexAtOrBefore(state.cursor) < 0) {
     // 初めて開いたとき: データの最後から 5 日前を開始時刻にする
     const startAt = md.bid[Math.max(0, md.bid.length - 1 - 5 * DAY_BARS)].t;
-    await startTest(md.symbol, startAt, DEFAULT_BALANCE, DEFAULT_LEVERAGE);
+    await startTest(md.symbol, startAt, DEFAULT_BALANCE, DEFAULT_LEVERAGE, DEFAULT_SPREAD_PIPS[md.symbol] ?? 0.5);
   } else {
     cursor = md.indexAtOrBefore(state.cursor);
     rebuildAccount();

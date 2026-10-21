@@ -19,6 +19,11 @@ export interface TestState {
   /** 口座の出発点（銘柄を切り替えるとその時点に更新する） */
   baseline: Baseline;
   actions: Action[];
+  /**
+   * 銘柄ごとの固定スプレッド（pips）。Ask = Bid + スプレッド で、データの Ask は使わない。
+   * 無い検証（固定スプレッドを入れる前に始めたもの）は、データの Ask を使う
+   */
+  spreadPips?: Record<string, number>;
 }
 
 /** EasyOrder の入力（リスクと S/L・T/P の位置） */

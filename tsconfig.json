@@ -8,6 +8,7 @@
     "strict": true,
     "noEmit": true,
     "isolatedModules": true,
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true
   },
   "include": ["src", "tests", "server", "vite.config.ts"]

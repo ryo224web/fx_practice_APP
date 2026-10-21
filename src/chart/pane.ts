@@ -45,6 +45,12 @@ export interface PaneHost {
  */
 const CHART_MAX_BARS = 30_000;
 
+function crosshairTime(sec: number): string {
+  const d = new Date(sec * 1000);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}.${p(d.getUTCMonth() + 1)}.${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+
 /** 足 1 本の幅（px）の初期値。ライブラリの初期値と同じ */
 const DEFAULT_BAR_SPACING = 6;
 
@@ -105,7 +111,8 @@ export class ChartPane {
       grid: { vertLines: { visible: false }, horzLines: { visible: false } },
       timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 12, shiftVisibleRangeOnNewBar: true },
       crosshair: { mode: CrosshairMode.Normal },
-      localization: { locale: 'ja-JP' },
+      // 十字線の日時は MT4 と同じ「2026.10.08 05:00」。チャートの時刻は表示の時刻帯にずらした値なので UTC として読む
+      localization: { locale: 'ja-JP', timeFormatter: (t: Time) => crosshairTime(t as number) },
     });
     this.series = this.chart.addSeries(CandlestickSeries, {
       upColor: '#26a69a',
