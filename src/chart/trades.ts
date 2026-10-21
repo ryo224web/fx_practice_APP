@@ -213,7 +213,8 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
     const m = this.priceAt(e);
     if (!m) return;
     const step = 10 ** -this.view.digits;
-    this.drag.price = Math.round(m.price / step) * step;
+    // 小数の誤差（158.87800000000001 など）を残さないように、桁数で丸める
+    this.drag.price = Number((Math.round(m.price / step) * step).toFixed(this.view.digits));
     // クリックしただけ（動かしていない）なら何もしない
     this.drag.moved = Math.abs(this.drag.price - this.drag.info.price) >= step / 2;
     this.update(this.view);

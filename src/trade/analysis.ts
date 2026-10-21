@@ -171,6 +171,41 @@ export function rMultiple(t: TradeRecord): number | null {
   return ((t.closePrice - t.openPrice) * dir) / risk;
 }
 
+/**
+ * 保有中に一番不利・有利だった値幅（pips）。i0・i1 は建てた足・決済した足の位置。
+ * 買いは Bid、売りは Ask で見る（決済に使う側）。
+ * - 成行（足の終値で約定）なら、建てた足の値動きは約定より前なので含めない
+ * - 建てた足・決済した足のそれ以外の部分は 1 分足全体で見る（少し大きめに出ることがある）
+ * - 同じ 1 分足の中で終わった取引は、足の中の順番が分からないので決済の値幅だけを使う
+ * 含み損は 0 以下、含み益は 0 以上にし、決済した値幅も含める
+ */
+export function excursionOf(
+  bid: readonly { h: number; l: number; c: number }[],
+  ask: readonly { h: number; l: number; c: number }[],
+  i0: number,
+  i1: number,
+  side: 'buy' | 'sell',
+  openPrice: number,
+  closePrice: number,
+  pip: number,
+): { mae: number; mfe: number } {
+  const dir = side === 'buy' ? 1 : -1;
+  const done = ((closePrice - openPrice) * dir) / pip;
+  if (i0 >= i1) return { mae: Math.min(0, done), mfe: Math.max(0, done) };
+  const entryBar = side === 'buy' ? ask[i0] : bid[i0];
+  const from = Math.abs(entryBar.c - openPrice) < pip * 0.01 ? i0 + 1 : i0;
+  const bars = side === 'buy' ? bid : ask;
+  let hi = -Infinity;
+  let lo = Infinity;
+  for (let i = from; i <= i1; i++) {
+    if (bars[i].h > hi) hi = bars[i].h;
+    if (bars[i].l < lo) lo = bars[i].l;
+  }
+  const a = (((side === 'buy' ? lo : hi) - openPrice) * dir) / pip;
+  const f = (((side === 'buy' ? hi : lo) - openPrice) * dir) / pip;
+  return { mae: Math.min(0, a, done), mfe: Math.max(0, f, done) };
+}
+
 const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN);
 const holdMin = (t: TradeRecord) => (t.closeTime - t.openTime) / 60_000;
 

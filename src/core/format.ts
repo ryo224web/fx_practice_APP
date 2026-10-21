@@ -28,5 +28,6 @@ export function formatPrice(p: number, digits: number): string {
 /** 円の金額。MT4 と同じく桁区切りあり・小数なし */
 export function formatMoney(v: number): string {
   if (!Number.isFinite(v)) return '—';
-  return Math.round(v).toLocaleString('ja-JP');
+  // -0.4 などを丸めた「-0」は 0 と出す
+  return (Math.round(v) || 0).toLocaleString('ja-JP');
 }

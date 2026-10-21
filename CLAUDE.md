@@ -20,7 +20,7 @@
 - 上位足はすべて 1 分足からサーバー時刻で区切って作る（日足は NY 17:00 切り替え）
 - 過去データは Dukascopy。Bid と Ask を両方持つ。形式は `scripts/lib/binfmt.mjs` に記載
   - 自動取得（`npm run fetch-data`）は 2026-10 時点で 429 で止められる。AWS S3（`cfg-public-proper-wallaby`）も 403 で使えなかった
-  - そのため、サイトから手動でダウンロードした 1 分足の CSV（Bid・Ask、GMT）を外付け SSD の `/Volumes/Clucial_1TB/claude/dukascopy/` に置き、`npm run import-data` で変換する
+  - そのため、サイトから手動でダウンロードした 1 分足の CSV（Bid・Ask、GMT）を外付け SSD の `/Volumes/Clucial_1TB/claude/dukascopy/` に置き、`npm run import-data` で変換する（日時は 年.月.日 と 日.月.年 のどちらでも読む。`scripts/lib/dukascopy-csv.mjs`）
   - Dukascopy の Ask の CSV は丸 1 日欠けることがある（出来高 0 で同じ値が並ぶ）。その足は Bid だけで保存し、Ask は null（作り出さない）
 - 対象銘柄: USDJPY, EURUSD, GBPUSD, AUDUSD, USDCHF, USDCAD, NZDUSD, EURJPY, GBPJPY, XAUUSD
 - MT4/MT5 は Windows 機（MSI または T580）にある。MT4 がメイン、口座は TitanFX
@@ -69,7 +69,7 @@ ExportHistory.mq4 の使い方（**Windows 機（MSI か T580）の MT4**）:
 
 ## 計算の確かめ方
 
-`tests/crosscheck.test.ts` で、インジケーター（SMA・EMA・RCI）、上位足のまとめ方（夏時間の切り替えをまたぐ）、仮想口座の損益、EasyOrder のロット、成績の数字を、別の素直な書き方と乱数の値動きで突き合わせている。計算を変えたら `npm test` で確かめる。
+`tests/crosscheck.test.ts`・`tests/crosscheck2.test.ts` で、インジケーター（SMA・EMA・RCI）、上位足のまとめ方（夏時間の切り替えをまたぐ）、仮想口座の損益、EasyOrder のロット、成績の数字と内訳、MAE/MFE、時刻の往復（2 年分）、EURUSD の円換算、CSV の日時の読み方を、別の素直な書き方と乱数の値動きで突き合わせている。計算を変えたら `npm test` で確かめる。
 
 ## 起動（Mac mini）
 

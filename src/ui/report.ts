@@ -5,7 +5,7 @@ import { barChart, CHART_CSS, equityChart } from './charts';
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 const ok = (v: number) => Number.isFinite(v);
-const yen = (v: number) => (ok(v) ? `${Math.round(v).toLocaleString('ja-JP')} 円` : '—');
+const yen = (v: number) => (ok(v) ? `${(Math.round(v) || 0).toLocaleString('ja-JP')} 円` : '—');
 const num = (v: number, d = 0) => (ok(v) ? v.toLocaleString('ja-JP', { maximumFractionDigits: d, minimumFractionDigits: d }) : v === Infinity ? '∞' : '—');
 const pct = (v: number) => (ok(v) ? `${v.toFixed(1)}%` : '—');
 const pips = (v: number) => (ok(v) ? `${v.toFixed(1)} pips` : '—');

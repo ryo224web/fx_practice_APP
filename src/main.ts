@@ -33,7 +33,7 @@ import {
 } from './state';
 import { Account, replayAccount, type Action, type FillEvent, type NewAction, type PendingType, type PriceFeed, type Side } from './trade/account';
 import { lossAt, lotsForRisk } from './trade/risk';
-import { analyze, tradesCsv, type Analysis, type TradeRecord } from './trade/analysis';
+import { analyze, excursionOf, tradesCsv, type Analysis, type TradeRecord } from './trade/analysis';
 import { renderHistory, renderMt4, renderTrade, type Mt4Row, type TerminalTab } from './ui/terminal';
 import { quickSummary, REPORT_CSS, reportBody, reportHtml } from './ui/report';
 import './style.css';
@@ -483,21 +483,7 @@ function excursion(symbol: string, side: 'buy' | 'sell', openTime: number, close
   const i0 = md.indexAtOrBefore(openTime);
   const i1 = md.indexAtOrBefore(closeTime);
   if (i0 < 0 || i1 < i0 || openTime - md.bid[i0].t > 60_000) return { mae: null, mfe: null };
-  const bars = side === 'buy' ? md.bid : md.ask;
-  let hi = -Infinity;
-  let lo = Infinity;
-  for (let i = i0; i <= i1; i++) {
-    if (bars[i].h > hi) hi = bars[i].h;
-    if (bars[i].l < lo) lo = bars[i].l;
-  }
-  const dir = side === 'buy' ? 1 : -1;
-  const done = ((closePrice - openPrice) * dir) / spec.pip;
-  // 同じ 1 分足の中で建てて決済した取引は、足の中の順番が分からないので決済の値幅だけを使う
-  if (i0 === i1) return { mae: Math.min(0, done), mfe: Math.max(0, done) };
-  // 建てた足・決済した足は、約定の前後も含んだ 1 分足全体で見る（少し大きめに出ることがある）
-  const a = (((side === 'buy' ? lo : hi) - openPrice) * dir) / spec.pip;
-  const f = (((side === 'buy' ? hi : lo) - openPrice) * dir) / spec.pip;
-  return { mae: Math.min(0, a, done), mfe: Math.max(0, f, done) };
+  return excursionOf(md.bid, md.ask, i0, i1, side, openPrice, closePrice, spec.pip);
 }
 
 /** 銘柄ごとの 1 pip（口座履歴にほかの銘柄が混ざっていても pips を正しく出すため） */
@@ -1053,7 +1039,7 @@ async function jumpToTrade(ticket: number) {
 // 損切りの位置と、許容する損失（残高の % か金額）からロット数を計算して発注する。
 
 function roundPrice(p: number) {
-  return Math.round(p / 10 ** -md.digits) * 10 ** -md.digits;
+  return Number(p.toFixed(md.digits));
 }
 
 function eoCalc() {

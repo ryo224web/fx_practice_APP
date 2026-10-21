@@ -6,13 +6,14 @@
 // ファイル名は Dukascopy の既定のまま（例: "USDJPY_1 Min_Bid_2026.10.19_2026.10.21.csv"）。
 // 同じ銘柄の Bid と Ask を両方置くこと（Ask が欠けた時刻の足は Bid だけで保存する）。期間を分けた複数のファイルがあってもまとめて読む。
 // 毎回フォルダ内のすべての CSV から作り直すので、ファイルを足したら再実行すればよい。
-// CSV の形式: "Time (UTC),Open,High,Low,Close,Volume"、時刻は "2026.10.21 00:00:00"（UTC）
+// CSV の形式: "Time (UTC),Open,High,Low,Close,Volume"、時刻は "2026.10.21 00:00:00"（UTC）。日.月.年 の並びも読む
 
 import { createReadStream } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile, access } from 'node:fs/promises';
 import path from 'node:path';
 import readline from 'node:readline';
 import { encodeMonth } from './lib/binfmt.mjs';
+import { parseDukascopyRow } from './lib/dukascopy-csv.mjs';
 
 const DEFAULT_DIR = '/Volumes/Clucial_1TB/claude/dukascopy';
 const DATA_DIR = path.resolve('public/data');
@@ -50,20 +51,26 @@ async function exists(p) {
 async function readCsv(file, byMonth) {
   const lines = readline.createInterface({ input: createReadStream(file), crlfDelay: Infinity });
   let n = 0;
+  let bad = 0;
+  let first = true;
   for await (const line of lines) {
-    const c = line.split(',');
-    if (c.length < 6 || !/^\d/.test(c[0])) continue;
-    if (Number(c[5]) === 0) continue;
-    const [d, t] = c[0].split(' ');
-    const [y, mo, day] = d.split('.').map(Number);
-    const [hh, mm] = t.split(':').map(Number);
-    const time = Date.UTC(y, mo - 1, day, hh, mm);
-    const key = `${y}-${String(mo).padStart(2, '0')}`;
+    const row = parseDukascopyRow(line);
+    if (!row) {
+      // 1 行目（見出し）以外で読めない行は数えて知らせる
+      if (!first && line.trim()) bad++;
+      first = false;
+      continue;
+    }
+    first = false;
+    const [time, o, h, l, c, vol] = row;
+    if (vol === 0) continue;
+    const key = new Date(time).toISOString().slice(0, 7);
     let m = byMonth.get(key);
     if (!m) byMonth.set(key, (m = new Map()));
-    m.set(time, [time, Number(c[1]), Number(c[2]), Number(c[3]), Number(c[4])]);
+    m.set(time, [time, o, h, l, c]);
     n++;
   }
+  if (bad) console.log(`  ${path.basename(file)}: 読めない行が ${bad} 行あったので飛ばしました`);
   return n;
 }
 

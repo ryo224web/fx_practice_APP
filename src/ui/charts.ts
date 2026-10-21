@@ -11,7 +11,7 @@ function niceRange(lo: number, hi: number): [number, number] {
   return [lo - pad, hi + pad];
 }
 
-const yen = (v: number) => `${Math.round(v).toLocaleString('ja-JP')}`;
+const yen = (v: number) => `${(Math.round(v) || 0).toLocaleString('ja-JP')}`;
 
 /** 残高の推移（線）と、山からの下げ（ドローダウン、薄い赤の帯） */
 export function equityChart(points: { balance: number; drawdown: number }[], initial: number): string {
