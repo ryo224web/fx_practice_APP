@@ -4,7 +4,7 @@ import { formatMoney, formatPrice } from '../core/format';
 import type { Account, HistoryRow, PriceFeed } from '../trade/account';
 import { computeStats } from '../trade/stats';
 
-export type TerminalTab = 'trade' | 'history' | 'stats';
+export type TerminalTab = 'trade' | 'history' | 'stats' | 'mt4';
 
 interface Ctx {
   account: Account;
@@ -100,4 +100,62 @@ export function renderStats(c: Ctx): string {
 
 function closeTime(h: HistoryRow): number {
   return h.kind === 'balance' ? h.time : h.closeTime;
+}
+
+/** 読み込んだ MT4 の取引 1 件と、今の時刻での状態 */
+export interface Mt4Row {
+  ticket: number;
+  side: 'buy' | 'sell';
+  lots: number;
+  openUtc: number;
+  openPrice: number;
+  sl: number | null;
+  tp: number | null;
+  closeUtc: number | null;
+  closePrice: number | null;
+  swap: number;
+  commission: number;
+  profit: number;
+  status: 'wait' | 'open' | 'closed';
+  /** 今の価格での含み損益（保有中のときだけ。円換算できなければ NaN） */
+  floating: number | null;
+  /** 記録の価格がその時刻の足に収まるか（null はデータ無し） */
+  matchOpen: boolean | null;
+  matchClose: boolean | null;
+}
+
+export interface Mt4Info {
+  fileName: string;
+  offsetHours: number;
+  matched: number;
+  checked: number;
+  /** この銘柄以外の取引の件数（表示しない） */
+  others: number;
+}
+
+const STATUS_LABEL = { wait: '未エントリー', open: '保有中', closed: '決済済み' };
+
+export function renderMt4(rows: Mt4Row[], info: Mt4Info | null, digits: number, time: (t: number) => string): string {
+  const bar = `<div class="mt4-bar"><button type="button" data-action="mt4-load">MT4 履歴を読み込む…</button>${info ? '<button type="button" data-action="mt4-clear">消す</button>' : ''}`;
+  if (!info) {
+    return `${bar}<span class="hint">MT4 の「口座履歴」の詳細レポート（.htm）か、ExportHistory.mq4 で書き出した .csv を読み込みます。読み込んだら、ローソク足を進めると記録どおりにエントリー・決済が表示されます。</span></div>`;
+  }
+  const mark = (v: boolean | null) => (v === null ? '' : v ? '✓' : '<b class="neg" title="記録の価格が、その時刻の足の値幅に入っていません">✗</b>');
+  const off = `${info.offsetHours >= 0 ? '+' : ''}${info.offsetHours}`;
+  const head = `${bar}<span class="hint">${esc(info.fileName)}　時刻のずれ（自動判定）: <b>${off} 時間</b>　価格が足に収まった: <b>${info.matched}/${info.checked}</b>${info.others ? `　（他の銘柄 ${info.others} 件は表示していません）` : ''}　行をダブルクリックで、その取引の直前へ移動</span></div>`;
+  const body = rows.map((r) => {
+    const cls = r.status === 'wait' ? 'pending' : '';
+    const pl = r.status === 'closed' ? money(r.profit + r.swap + r.commission) : r.status === 'open' && r.floating !== null ? money(r.floating) : '<td></td>';
+    return `<tr data-ticket="${r.ticket}" data-kind="mt4" class="${cls}">
+      <td>${r.ticket}</td><td>${STATUS_LABEL[r.status]}</td><td>${time(r.openUtc)}</td><td class="${r.side}">${r.side}</td><td class="num">${lots(r.lots)}</td>
+      <td class="num">${price(r.openPrice, digits)} ${mark(r.matchOpen)}</td><td class="num">${price(r.sl, digits)}</td><td class="num">${price(r.tp, digits)}</td>
+      <td>${r.closeUtc === null ? '' : time(r.closeUtc)}</td><td class="num">${r.closePrice === null ? '' : `${price(r.closePrice, digits)} ${mark(r.matchClose)}`}</td>
+      <td class="num">${formatMoney(r.swap)}</td>${pl}</tr>`;
+  });
+  const closed = rows.filter((r) => r.status === 'closed');
+  const total = closed.reduce((s, r) => s + r.profit + r.swap + r.commission, 0);
+  const floating = rows.reduce((s, r) => s + (r.status === 'open' && r.floating !== null && Number.isFinite(r.floating) ? r.floating : 0), 0);
+  const summary = `<tr class="summary"><td colspan="12">決済済み ${closed.length} 件の損益（記録の値）: <b class="${total < 0 ? 'neg' : ''}">${formatMoney(total)}</b>　保有中 ${rows.filter((r) => r.status === 'open').length} 件の含み損益: <b class="${floating < 0 ? 'neg' : ''}">${formatMoney(floating)}</b>　未エントリー ${rows.filter((r) => r.status === 'wait').length} 件</td></tr>`;
+  return `${head}<table><thead><tr><th>注文番号</th><th>状態</th><th>注文時間</th><th>取引種別</th><th>数量</th><th>価格</th><th>決済逆指値(S/L)</th><th>決済指値(T/P)</th><th>決済時間</th><th>価格</th><th>スワップ</th><th>損益</th></tr></thead>
+    <tbody>${summary}${body.join('')}</tbody></table>`;
 }

@@ -7,6 +7,10 @@
   </head>
   <body>
     <header class="toolbar">
+      <div class="group project">
+        <select id="project" aria-label="プロジェクト" title="プロジェクト（検証・図形・設定をまとめて保存）"></select>
+        <button id="project-menu" title="プロジェクトの作成・名前の変更・書き出しなど">…</button>
+      </div>
       <select id="symbol" aria-label="銘柄"></select>
       <div class="group" id="timeframes" aria-label="時間足"></div>
       <div class="group" id="tools" aria-label="描画ツール">
@@ -14,6 +18,7 @@
         <button data-tool="hline" title="水平線">─</button>
         <button data-tool="vline" title="垂直線">│</button>
         <button data-tool="trend" title="トレンドライン">╱</button>
+        <button data-tool="channel" title="チャネル（平行線。3 つ目の四角で幅を変える）">⫽</button>
         <button data-tool="rect" title="長方形">▭</button>
         <button data-tool="fibo" title="フィボナッチ・リトレースメント">Fib</button>
         <button id="clear-drawings" title="この銘柄の図形をすべて削除">全消去</button>
@@ -23,6 +28,8 @@
         <button id="zoom-out" title="縮小">－</button>
         <button id="toggle-history" title="決済した取引を矢印で表示" aria-pressed="true">履歴矢印</button>
       </div>
+      <button id="indicators-btn" title="移動平均・RCI の設定">インジケーター</button>
+      <button id="easyorder-btn" title="損切り幅と許容する損失からロットを計算して注文" aria-pressed="false">EasyOrder</button>
       <button id="new-order" title="新規注文（F9）">新規注文</button>
       <label class="zone">
         表示時刻
@@ -44,6 +51,19 @@
           <small id="spread"></small>
         </div>
         <button id="buy-btn" class="buy" title="成行で買い（Ask）"><span>BUY</span><b id="ask-big">—</b></button>
+      </div>
+      <div id="easyorder" hidden>
+        <div class="eo-head"><b>EasyOrder</b><button id="eo-close" title="閉じる">×</button></div>
+        <label>注文 <select id="eo-mode"><option value="market">成行</option><option value="pending">指値・逆指値</option></select></label>
+        <label>許容する損失
+          <span class="pair"><input id="eo-risk" type="number" step="0.1" min="0" /><select id="eo-unit"><option value="pct">% (残高)</option><option value="jpy">円</option></select></span>
+        </label>
+        <label id="eo-entry-row">エントリー <span class="pair"><input id="eo-entry" type="number" step="any" /><small id="eo-entry-info"></small></span></label>
+        <label>損切り（S/L） <span class="pair"><input id="eo-sl" type="number" step="any" /><small id="eo-sl-pips"></small></span></label>
+        <label>利確（T/P） <span class="pair"><input id="eo-tp" type="number" step="any" placeholder="なし" /><small id="eo-tp-pips"></small></span></label>
+        <div id="eo-calc"></div>
+        <button id="eo-send" class="buy">—</button>
+        <p class="hint">チャートの太い線（S/L・T/P・エントリー）をドラッグして動かせます。S/L をエントリーより下に置くと買い、上に置くと売りになります。</p>
       </div>
       <div id="toast" role="status"></div>
     </main>
@@ -69,10 +89,28 @@
         <button data-tab="trade">取引</button>
         <button data-tab="history">口座履歴</button>
         <button data-tab="stats">成績</button>
+        <button data-tab="mt4">MT4 履歴</button>
       </nav>
     </section>
 
     <div id="ctx-menu" hidden></div>
+    <input id="mt4-file" type="file" accept=".csv,.htm,.html,.txt" hidden />
+    <input id="project-file" type="file" accept=".json" hidden />
+
+    <dialog id="ind-dialog">
+      <form method="dialog">
+        <h2>インジケーター</h2>
+        <h3>移動平均（メインチャート）</h3>
+        <table class="ind-table" id="ind-ma"></table>
+        <h3>RCI（サブウィンドウ）<label class="inline"><input id="ind-rci-on" type="checkbox" /> 表示する</label></h3>
+        <table class="ind-table" id="ind-rci"></table>
+        <div class="buttons">
+          <button type="button" id="ind-reset">初期設定に戻す</button>
+          <button value="cancel" formnovalidate>キャンセル</button>
+          <button type="button" id="ind-apply" class="primary">適用</button>
+        </div>
+      </form>
+    </dialog>
 
     <dialog id="order-dialog">
       <form method="dialog">

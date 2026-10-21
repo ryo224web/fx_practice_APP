@@ -1,4 +1,4 @@
-// チャートに描く図形（水平線・垂直線・トレンドライン・長方形・フィボナッチ）。
+// チャートに描く図形（水平線・垂直線・トレンドライン・チャネル・長方形・フィボナッチ）。
 // 位置は時刻（UTC）と価格で持つので、時間足を切り替えても同じ場所に残る。
 // 操作は MT4 と同じ: ツールを選んでチャートをドラッグ（またはクリック 2 回）で描く。
 // 描いた後はクリックで選択、ドラッグで移動、端の四角で形を変える、Delete キーか右クリックで消す。
@@ -16,12 +16,12 @@ import type {
 } from 'lightweight-charts';
 import type { TimeMapper } from './mapper';
 
-export type DrawingKind = 'hline' | 'vline' | 'trend' | 'rect' | 'fibo';
+export type DrawingKind = 'hline' | 'vline' | 'trend' | 'channel' | 'rect' | 'fibo';
 
 export interface Drawing {
   id: string;
   kind: DrawingKind;
-  /** 時刻（UTC ミリ秒）と価格。水平線・垂直線は 1 点、ほかは 2 点 */
+  /** 時刻（UTC ミリ秒）と価格。水平線・垂直線は 1 点、チャネルは 3 点（3 点目は平行線の位置）、ほかは 2 点 */
   points: { t: number; p: number }[];
   color: string;
 }
@@ -30,6 +30,7 @@ export const DRAWING_LABELS: Record<DrawingKind, string> = {
   hline: '水平線',
   vline: '垂直線',
   trend: 'トレンドライン',
+  channel: 'チャネル',
   rect: '長方形',
   fibo: 'フィボナッチ',
 };
@@ -38,6 +39,7 @@ const COLORS: Record<DrawingKind, string> = {
   hline: '#e5a50a',
   vline: '#9a9a9a',
   trend: '#4493f8',
+  channel: '#3fb950',
   rect: '#a371f7',
   fibo: '#e5a50a',
 };
@@ -63,6 +65,19 @@ function distToSegment(p: Px, a: Px, b: Px): number {
   const len = dx * dx + dy * dy;
   const u = len === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len));
   return Math.hypot(p.x - (a.x + u * dx), p.y - (a.y + u * dy));
+}
+
+/** a→b の直線を画面の右端（b が左なら左端）まで延ばした点 */
+function rayEnd(a: Px, b: Px, w: number): Px {
+  if (b.x === a.x) return b;
+  const x = b.x > a.x ? w : 0;
+  return { x, y: a.y + ((b.y - a.y) * (x - a.x)) / (b.x - a.x) };
+}
+
+/** チャネルの平行線の、基準線からの縦のずれ（px） */
+function channelOffset(a: Px, b: Px, c: Px): number {
+  const base = b.x === a.x ? a.y : a.y + ((b.y - a.y) * (c.x - a.x)) / (b.x - a.x);
+  return c.y - base;
 }
 
 export class DrawingManager implements ISeriesPrimitive<Time> {
@@ -182,8 +197,9 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     if (!this.chart || !this.series) return null;
     const r = this.el.getBoundingClientRect();
     const px = { x: e.clientX - r.left, y: e.clientY - r.top };
-    // 価格の目盛り・時間の目盛りの上は対象外
-    if (px.x > this.chart.timeScale().width() || px.y > this.el.clientHeight - this.chart.timeScale().height()) return null;
+    // 価格の目盛り・時間の目盛り・RCI などのサブウィンドウの上は対象外
+    const paneHeight = this.chart.panes()[0]?.getHeight() ?? this.el.clientHeight - this.chart.timeScale().height();
+    if (px.x > this.chart.timeScale().width() || px.y > paneHeight) return null;
     const l = this.chart.timeScale().coordinateToLogical(px.x);
     const p = this.series.coordinateToPrice(px.y);
     if (l === null || p === null) return null;
@@ -211,6 +227,15 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         case 'trend':
           hit = distToSegment(px, a, b) <= HIT;
           break;
+        case 'channel': {
+          const c = pts[2]!;
+          const dy = channelOffset(a, b, c);
+          const end = rayEnd(a, b, w);
+          hit =
+            distToSegment(px, a, end) <= HIT ||
+            distToSegment(px, { x: a.x, y: a.y + dy }, { x: end.x, y: end.y + dy }) <= HIT;
+          break;
+        }
         case 'rect': {
           const [x1, x2] = [Math.min(a.x, b.x), Math.max(a.x, b.x)];
           const [y1, y2] = [Math.min(a.y, b.y), Math.max(a.y, b.y)];
@@ -326,6 +351,13 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   }
 
   private finishCreate() {
+    const d = this.drawings.find((x) => x.id === this.selectedId);
+    if (d?.kind === 'channel' && d.points.length === 2 && this.series) {
+      // 平行線は、とりあえず基準線の 40px 下に置く（後からドラッグで動かす）
+      const y = this.series.priceToCoordinate(d.points[0].p);
+      const p = y === null ? null : this.series.coordinateToPrice(y + 40);
+      d.points.push({ t: d.points[0].t, p: p ?? d.points[0].p });
+    }
     this.setTool(null);
     this.onChange();
     this.refresh();
@@ -381,6 +413,23 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       case 'trend':
         line(a.x, a.y, b.x, b.y);
         break;
+      case 'channel': {
+        const c = pts[2];
+        const dy = channelOffset(a, b, c);
+        const end = rayEnd(a, b, w);
+        ctx.globalAlpha = 0.08;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(end.x, end.y);
+        ctx.lineTo(end.x, end.y + dy);
+        ctx.lineTo(a.x, a.y + dy);
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        line(a.x, a.y, end.x, end.y);
+        line(a.x, a.y + dy, end.x, end.y + dy);
+        break;
+      }
       case 'rect': {
         ctx.globalAlpha = 0.15;
         ctx.fillRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));

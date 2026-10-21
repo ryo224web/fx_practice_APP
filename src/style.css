@@ -205,6 +205,75 @@ td.sell {
   font-variant-numeric: tabular-nums;
 }
 
+#easyorder {
+  position: absolute;
+  top: 100px;
+  left: 10px;
+  z-index: 3;
+  width: 290px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+#easyorder .eo-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+#easyorder .eo-head button {
+  border: none;
+  padding: 0 6px;
+}
+
+#easyorder label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+}
+
+#easyorder .pair {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#easyorder input {
+  width: 88px;
+}
+
+#easyorder small {
+  min-width: 62px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+#eo-calc {
+  margin: 6px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+#eo-calc .err {
+  color: var(--neg);
+}
+
+#eo-send {
+  width: 100%;
+  padding: 5px;
+  font-weight: 600;
+}
+
+#easyorder .hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
 #toast {
   position: absolute;
   left: 50%;
@@ -343,6 +412,19 @@ td.sell {
   font-weight: 600;
 }
 
+.mt4-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--grid);
+}
+
+.mt4-bar .hint {
+  color: var(--muted);
+}
+
 .stats {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -436,6 +518,46 @@ dialog .buttons {
 dialog .hint {
   color: var(--muted);
   margin: 6px 0;
+}
+
+dialog h3 {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 12px 0 4px;
+  font-size: 13px;
+}
+
+dialog label.inline {
+  display: inline-flex;
+  margin: 0;
+  font-weight: normal;
+}
+
+dialog label.inline input {
+  width: auto;
+}
+
+.ind-table td {
+  padding: 2px 4px;
+}
+
+.ind-table input {
+  width: 80px;
+}
+
+.ind-table select {
+  width: 130px;
+}
+
+.ind-table input[type='checkbox'] {
+  width: auto;
+}
+
+.ind-table input[type='color'] {
+  width: 40px;
+  padding: 0;
+  height: 24px;
 }
 
 dialog .error {

@@ -1,17 +1,34 @@
-import { CandlestickSeries, CrosshairMode, createChart, type CandlestickData, type UTCTimestamp } from 'lightweight-charts';
+import { CandlestickSeries, CrosshairMode, createChart, type CandlestickData, type Time, type UTCTimestamp } from 'lightweight-charts';
 import { DrawingManager, type DrawingKind } from './chart/drawings';
+import { DEFAULT_INDICATORS, IndicatorLayer, type IndicatorConfig } from './chart/indicators';
 import { TimeMapper } from './chart/mapper';
-import { TradeOverlay, type LineEdit } from './chart/trades';
+import { TradeOverlay, type LineEdit, type OrderPreview } from './chart/trades';
 import { aggregateWithIndex, mergeBars, TIMEFRAMES, type Aggregated, type Bar, type Timeframe } from './core/candles';
 import { formatMoney, formatPrice, formatTime, fromLocalInput, toLocalInput } from './core/format';
 import { sampleM1 } from './core/sample';
 import { symbolSpec, type SymbolSpec } from './core/symbols';
-import { DEFAULT_SERVER_RULE, toDisplay, type DisplayZone } from './core/time';
+import { DEFAULT_SERVER_RULE, serverToUtc, toDisplay, type DisplayZone } from './core/time';
 import { loadManifest, type Manifest } from './data/store';
+import { detectOffsetHours, matchTrade, parseHistoryFile, type Mt4Trade, type PriceLookup } from './mt4/history';
 import { MarketData } from './replay/market';
-import { loadState, saveState, type AppState, type TestState } from './state';
-import { Account, replayAccount, type Action, type FillEvent, type NewAction, type PendingType, type PriceFeed } from './trade/account';
-import { renderHistory, renderStats, renderTrade, type TerminalTab } from './ui/terminal';
+import {
+  createProject,
+  currentMeta,
+  deleteProject,
+  exportProject,
+  importProject,
+  listProjects,
+  loadState,
+  renameProject,
+  saveState,
+  switchProject,
+  type AppState,
+  type EasyOrderState,
+  type TestState,
+} from './state';
+import { Account, replayAccount, type Action, type FillEvent, type NewAction, type PendingType, type PriceFeed, type Side } from './trade/account';
+import { lossAt, lotsForRisk } from './trade/risk';
+import { renderHistory, renderMt4, renderStats, renderTrade, type Mt4Row, type TerminalTab } from './ui/terminal';
 import './style.css';
 
 const rule = DEFAULT_SERVER_RULE;
@@ -56,8 +73,9 @@ const overlay = new TradeOverlay(chartEl, mapper);
 series.attachPrimitive(overlay);
 const drawings = new DrawingManager(chartEl, mapper);
 series.attachPrimitive(drawings);
+const indicators = new IndicatorLayer(chart);
 // 開発中の調査用（本番のビルドには入らない）
-if (import.meta.env.DEV) Object.assign(window, { __fx: { chart, series, mapper, drawings } });
+if (import.meta.env.DEV) Object.assign(window, { __fx: { chart, series, mapper, drawings, overlay } });
 
 // ---------------- 状態 ----------------
 let state: AppState;
@@ -70,7 +88,10 @@ let account: Account;
 let cursor = 0;
 let playing = false;
 let dataVersion = 0;
-const aggCache = new Map<Timeframe, { agg: Aggregated; times: number[]; data: CandlestickData[]; version: number }>();
+const aggCache = new Map<
+  Timeframe,
+  { agg: Aggregated; times: number[]; data: CandlestickData[]; closes: Float64Array; chartTimes: Time[]; version: number }
+>();
 const shown = { tf: '' as Timeframe | '', k: -1, version: -1 };
 let loadingEarlier = false;
 let loadingLater = false;
@@ -115,11 +136,21 @@ function defaultState(): AppState {
     terminalHeight: 220,
     test: null,
     drawings: {},
+    indicators: DEFAULT_INDICATORS,
+    easyOrder: DEFAULT_EO,
+    mt4: null,
   };
 }
 
+const DEFAULT_EO: EasyOrderState = { open: false, mode: 'market', risk: 1, riskUnit: 'pct', entry: null, sl: null, tp: null };
+
+function eo(): EasyOrderState {
+  return (state.easyOrder ??= { ...DEFAULT_EO });
+}
+
 function save(now = false) {
-  saveState(state, now);
+  // プロジェクトを切り替えて読み直す間は書かない（切り替え先を上書きしないように）
+  if (!leaving) saveState(state, now);
 }
 
 // ---------------- データ ----------------
@@ -164,7 +195,15 @@ function getAgg(tf: Timeframe) {
   let c = aggCache.get(tf);
   if (!c || c.version !== dataVersion) {
     const agg = aggregateWithIndex(md.bid, tf, rule);
-    c = { agg, times: agg.bars.map((b) => b.t), data: agg.bars.map(toChart), version: dataVersion };
+    const data = agg.bars.map(toChart);
+    c = {
+      agg,
+      times: agg.bars.map((b) => b.t),
+      data,
+      closes: Float64Array.from(agg.bars, (b) => b.c),
+      chartTimes: data.map((d) => d.time),
+      version: dataVersion,
+    };
     aggCache.set(tf, c);
   }
   return c;
@@ -188,6 +227,12 @@ function lastLE(arr: readonly number[], v: number): number {
 
 function minIndex(): number {
   return Math.max(0, md.indexAtOrBefore(test().baseline.time));
+}
+
+/** 仮想の取引をまだしていない（開始時刻を動かしてよい） */
+function isPristine(): boolean {
+  const t = test();
+  return t.actions.length === 0 && t.baseline.history.every((h) => h.kind === 'balance');
 }
 
 // ---------------- 口座 ----------------
@@ -221,20 +266,34 @@ function notifyFills(events: FillEvent[]) {
 }
 
 // ---------------- 時間を進める・戻す ----------------
-/** target 番目の 1 分足まで動く。約定で止まったら true */
-function goTo(target: number): boolean {
-  target = Math.max(minIndex(), Math.min(md.bid.length - 1, target));
+/** target 番目の 1 分足まで動く。約定で止まったら true。pause=false なら途中の約定で止まらない（日時への移動など） */
+function goTo(target: number, pause = true): boolean {
+  target = Math.max(0, Math.min(md.bid.length - 1, target));
+  if (target < minIndex()) {
+    if (isPristine()) {
+      // まだ何も取引していなければ、検証の開始時刻ごと前へずらす
+      const t = test();
+      t.baseline.time = t.startTime = md.bid[target].t;
+      for (const h of t.baseline.history) if (h.kind === 'balance') h.time = t.startTime;
+      cursor = target;
+      rebuildAccount();
+    } else {
+      toast('取引した後は、検証を始めた時刻より前には戻れません（新しい検証で始め直せます）');
+      target = minIndex();
+    }
+  }
   let stopped = false;
   if (target > cursor) {
     for (let i = cursor + 1; i <= target; i++) {
       const ev = account.processBar(feed, i);
-      if (ev.length) {
-        notifyFills(ev);
-        if (state.pauseOnFill) {
-          target = i;
-          stopped = true;
-          break;
-        }
+      if (!pause) continue;
+      const mt4 = mt4EventsIn(md.bid[i].t);
+      if (ev.length) notifyFills(ev);
+      if (mt4.length) toast(mt4.join(' / '));
+      if ((ev.length || mt4.length) && state.pauseOnFill) {
+        target = i;
+        stopped = true;
+        break;
       }
     }
     cursor = target;
@@ -329,7 +388,7 @@ chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
 
 // ---------------- 表示 ----------------
 function renderChart(reset = false, keepView = false) {
-  const { agg, times, data } = getAgg(state.tf);
+  const { agg, times, data, closes, chartTimes } = getAgg(state.tf);
   mapper.times = times;
   mapper.size = TIMEFRAMES[state.tf] * 60_000;
   const k = lastLE(agg.starts, cursor);
@@ -345,6 +404,7 @@ function renderChart(reset = false, keepView = false) {
   shown.tf = state.tf;
   shown.k = k;
   shown.version = dataVersion;
+  indicators.render({ key: `${state.tf}:${dataVersion}`, closes, times: chartTimes, k, partialClose: partial.close });
   drawings.refresh();
 }
 
@@ -364,7 +424,10 @@ function renderQuotes() {
     ask,
     askEstimated: est,
     digits: md.digits,
+    preview: eoPreview(),
+    imported: mt4View(),
   });
+  eoRender();
   if (!hovering) showLegend(null);
 }
 
@@ -393,9 +456,22 @@ function renderTerminal(force = false) {
   const scroll = termBody.scrollTop;
   const ctx = { account, feed, index: cursor, digits: md.digits, time: (t: number) => formatTime(t, state.zone, rule) };
   const tab = state.terminalTab as TerminalTab;
-  termBody.innerHTML = tab === 'history' ? renderHistory(ctx) : tab === 'stats' ? renderStats(ctx) : renderTrade(ctx);
+  termBody.innerHTML =
+    tab === 'history'
+      ? renderHistory(ctx)
+      : tab === 'stats'
+        ? renderStats(ctx)
+        : tab === 'mt4'
+          ? renderMt4(mt4Rows(), mt4Info(), md.digits, ctx.time)
+          : renderTrade(ctx);
   termBody.scrollTop = scroll;
   document.querySelectorAll<HTMLButtonElement>('#terminal-tabs button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tab === tab)));
+}
+
+function mt4Info() {
+  const m = state.mt4;
+  if (!m) return null;
+  return { fileName: m.fileName, offsetHours: m.offsetHours, matched: m.matched, checked: m.checked, others: m.trades.length - mt4Trades().length };
 }
 
 function refresh() {
@@ -578,6 +654,487 @@ $('#nt-start-btn').addEventListener('click', async () => {
   else $<HTMLDialogElement>('#newtest-dialog').close();
 });
 
+
+// ---------------- MT4 の取引履歴 ----------------
+// 記録の時刻・価格のまま表示する（R2）。ローソク足を進めると、記録どおりにエントリー・決済が現れる。
+
+function mt4ToUtc(server: number): number {
+  return serverToUtc(server, rule) + (state.mt4?.offsetHours ?? 0) * 3_600_000;
+}
+
+function mt4Trades(): Mt4Trade[] {
+  return (state.mt4?.trades ?? []).filter((t) => t.symbol.toLowerCase() === md.symbol);
+}
+
+const priceLookup: PriceLookup = {
+  bar(utc) {
+    const t = Math.floor(utc / 60_000) * 60_000;
+    const j = md.indexAtOrBefore(t);
+    return j >= 0 && md.bid[j].t === t ? { bid: md.bid[j], ask: md.ask[j] } : null;
+  },
+};
+
+let mt4EventCache: { key: string; events: { t: number; label: string }[] } | null = null;
+
+/** エントリー・決済が起きる 1 分足の時刻（昇順） */
+function mt4Events() {
+  const key = `${md.symbol}:${state.mt4?.fileName}:${state.mt4?.trades.length}:${state.mt4?.offsetHours}`;
+  if (mt4EventCache?.key === key) return mt4EventCache.events;
+  const minute = (t: number) => Math.floor(t / 60_000) * 60_000;
+  const events: { t: number; label: string }[] = [];
+  for (const t of mt4Trades()) {
+    events.push({ t: minute(mt4ToUtc(t.openServer)), label: `MT4 #${t.ticket} ${t.side} エントリー` });
+    if (t.closeServer !== null) events.push({ t: minute(mt4ToUtc(t.closeServer)), label: `MT4 #${t.ticket} 決済（${formatMoney(t.profit + t.swap + t.commission)}）` });
+  }
+  events.sort((a, b) => a.t - b.t);
+  mt4EventCache = { key, events };
+  return events;
+}
+
+/** その 1 分足で起きた MT4 のエントリー・決済 */
+function mt4EventsIn(barT: number): string[] {
+  const ev = mt4Events();
+  if (!ev.length) return [];
+  const i = lastLE(
+    ev.map((e) => e.t),
+    barT,
+  );
+  const out: string[] = [];
+  for (let j = i; j >= 0 && ev[j].t === barT; j--) out.unshift(ev[j].label);
+  return out;
+}
+
+function mt4Rows(): Mt4Row[] {
+  const end = md.bid[cursor].t + 60_000;
+  return mt4Trades().map((t) => {
+    const openUtc = mt4ToUtc(t.openServer);
+    const closeUtc = t.closeServer === null ? null : mt4ToUtc(t.closeServer);
+    const status = openUtc >= end ? 'wait' : closeUtc !== null && closeUtc < end ? 'closed' : 'open';
+    let floating: number | null = null;
+    if (status === 'open') {
+      const now = t.side === 'buy' ? md.bid[cursor].c : md.ask[cursor].c;
+      floating = (now - t.openPrice) * (t.side === 'buy' ? 1 : -1) * t.lots * spec.contract * jpyRate(cursor);
+    }
+    const m = matchTrade(t, mt4ToUtc, priceLookup, spec.pip);
+    return {
+      ticket: t.ticket,
+      side: t.side,
+      lots: t.lots,
+      openUtc,
+      openPrice: t.openPrice,
+      sl: t.sl,
+      tp: t.tp,
+      closeUtc,
+      closePrice: t.closePrice,
+      swap: t.swap,
+      commission: t.commission,
+      profit: t.profit,
+      status,
+      floating,
+      matchOpen: m.open,
+      matchClose: m.close,
+    } satisfies Mt4Row;
+  });
+}
+
+function mt4View() {
+  if (!state.mt4) return null;
+  const rows = mt4Rows();
+  return {
+    open: rows
+      .filter((r) => r.status === 'open')
+      .map((r) => ({ ticket: r.ticket, side: r.side, lots: r.lots, openTime: r.openUtc, openPrice: r.openPrice, sl: r.sl, tp: r.tp })),
+    closed: rows
+      .filter((r) => r.status === 'closed')
+      .map((r) => ({
+        kind: 'trade' as const,
+        ticket: r.ticket,
+        symbol: md.symbol.toUpperCase(),
+        side: r.side,
+        lots: r.lots,
+        openTime: r.openUtc,
+        openPrice: r.openPrice,
+        sl: r.sl,
+        tp: r.tp,
+        closeTime: r.closeUtc!,
+        closePrice: r.closePrice!,
+        profit: r.profit,
+        reason: 'manual' as const,
+        comment: '',
+      })),
+  };
+}
+
+/** from〜to（UTC）の価格データが無ければ読み込む */
+async function ensureLoaded(from: number, to: number) {
+  if (!manifest || !md.months.length) return;
+  const key = (t: number) => new Date(t).toISOString().slice(0, 7);
+  const months = md.months;
+  let lo = months.findIndex((m) => m >= key(from));
+  if (lo < 0) lo = months.length - 1;
+  let hi = months.findLastIndex((m) => m <= key(to));
+  if (hi < 0) hi = 0;
+  const loaded = md.loadedMonths;
+  const curLo = months.indexOf(loaded[0]);
+  const curHi = months.indexOf(loaded[loaded.length - 1]);
+  if (lo >= curLo && hi <= curHi) return;
+  statusEl.textContent = `${md.symbol.toUpperCase()} のデータを読み込み中…`;
+  await md.loadRange(Math.min(lo, curLo), Math.max(hi, curHi));
+  await syncUsd();
+  dataChanged();
+  renderChart(true, true);
+  updateStatus();
+}
+
+async function readText(file: File): Promise<string> {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  // MT4 のレポートは UTF-16 のことがある
+  if (buf[0] === 0xff && buf[1] === 0xfe) return new TextDecoder('utf-16le').decode(buf);
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buf);
+  } catch {
+    return new TextDecoder('shift_jis').decode(buf);
+  }
+}
+
+async function loadMt4File(file: File) {
+  const trades = parseHistoryFile(file.name, await readText(file));
+  if (!trades.length) return toast('取引が見つかりませんでした（詳細レポートの .htm か、ExportHistory.mq4 の .csv を選んでください）');
+  const mine = trades.filter((t) => t.symbol.toLowerCase() === md.symbol);
+  if (mine.length) {
+    const opens = mine.map((t) => serverToUtc(t.openServer, rule));
+    const closes = mine.map((t) => (t.closeServer === null ? NaN : serverToUtc(t.closeServer, rule))).filter(Number.isFinite);
+    await ensureLoaded(Math.min(...opens) - 86_400_000, Math.max(...opens, ...closes) + 86_400_000);
+  }
+  const det = detectOffsetHours(mine, (sv) => serverToUtc(sv, rule), priceLookup, spec.pip);
+  state.mt4 = { fileName: file.name, trades, offsetHours: det.hours, matched: Math.max(0, det.matched), checked: det.checked };
+  mt4EventCache = null;
+  state.terminalTab = 'mt4';
+  const symbols = [...new Set(trades.map((t) => t.symbol))].join(', ');
+  toast(
+    mine.length
+      ? `${trades.length} 件を読み込みました（${md.symbol.toUpperCase()} は ${mine.length} 件）。時刻のずれ ${det.hours} 時間`
+      : `${trades.length} 件を読み込みましたが、${md.symbol.toUpperCase()} の取引はありません（含まれる銘柄: ${symbols}）`,
+  );
+  refresh();
+  renderTerminal(true);
+  save(true);
+}
+
+async function jumpToTrade(ticket: number) {
+  const t = mt4Trades().find((x) => x.ticket === ticket);
+  if (!t) return;
+  const openUtc = mt4ToUtc(t.openServer);
+  setPlaying(false);
+  await ensureLoaded(openUtc, openUtc);
+  // エントリーする足の 1 本前に置く（→ で進めるとエントリーが現れる）
+  goTo(md.indexAtOrBefore(openUtc) - 1, false);
+  chart.timeScale().scrollToRealTime();
+}
+
+// ---------------- EasyOrder ----------------
+// 損切りの位置と、許容する損失（残高の % か金額）からロット数を計算して発注する。
+
+function roundPrice(p: number) {
+  return Math.round(p / 10 ** -md.digits) * 10 ** -md.digits;
+}
+
+function eoCalc() {
+  const e = eo();
+  const bid = md.bid[cursor].c;
+  const ask = md.ask[cursor].c;
+  if (e.sl === null) return { ok: false, error: '損切り（S/L）の価格を入れてください' } as const;
+  const ref = e.mode === 'market' ? bid : (e.entry ?? bid);
+  const side: Side = e.sl < ref ? 'buy' : 'sell';
+  const entry = e.mode === 'market' ? (side === 'buy' ? ask : bid) : ref;
+  const type: 'market' | PendingType =
+    e.mode === 'market' ? 'market' : side === 'buy' ? (entry < ask ? 'buylimit' : 'buystop') : entry > bid ? 'selllimit' : 'sellstop';
+  const rate = jpyRate(cursor);
+  const riskJpy = e.riskUnit === 'pct' ? (account.balance * e.risk) / 100 : e.risk;
+  const lots = lotsForRisk({ riskJpy, entry, sl: e.sl, contract: spec.contract, rate });
+  const dir = side === 'buy' ? 1 : -1;
+  const slPips = ((e.sl - entry) * dir) / spec.pip;
+  const tpPips = e.tp === null ? null : ((e.tp - entry) * dir) / spec.pip;
+  let error: string | null = null;
+  if (!Number.isFinite(rate)) error = '円に換算できません（USDJPY のデータが必要です）';
+  else if (lots < 0.01) error = '最小ロット（0.01）でも損失が指定を超えます。S/L を近づけるか、許容する損失を増やしてください';
+  return {
+    ok: true as const,
+    error,
+    side,
+    entry,
+    type,
+    lots,
+    riskJpy,
+    loss: lossAt(lots, entry, e.sl, spec.contract, rate),
+    reward: e.tp === null ? null : Math.abs(e.tp - entry) * lots * spec.contract * rate,
+    rr: tpPips === null ? null : tpPips / -slPips,
+    slPips,
+    tpPips,
+  };
+}
+
+const TYPE_JA: Record<string, string> = {
+  market: '成行',
+  buylimit: '買い指値',
+  buystop: '買い逆指値',
+  selllimit: '売り指値',
+  sellstop: '売り逆指値',
+};
+
+function eoSetDefaults() {
+  const e = eo();
+  const bid = md.bid[cursor].c;
+  if (e.sl === null) e.sl = roundPrice(bid - 20 * spec.pip);
+  if (e.tp === null) e.tp = roundPrice(bid + 40 * spec.pip);
+  if (e.mode === 'pending' && e.entry === null) e.entry = roundPrice(bid);
+}
+
+function eoPreview(): OrderPreview | null {
+  const e = eo();
+  if (!e.open) return null;
+  const c = eoCalc();
+  if (!c.ok) return { side: 'buy', entry: e.mode === 'pending' ? e.entry : null, sl: e.sl, tp: e.tp, labels: { entry: 'EO', sl: 'EO S/L', tp: 'EO T/P' } };
+  return {
+    side: c.side,
+    entry: e.mode === 'pending' ? c.entry : null,
+    sl: e.sl,
+    tp: e.tp,
+    labels: {
+      entry: `EO ${TYPE_JA[c.type]} ${c.lots.toFixed(2)}`,
+      sl: `EO S/L ${c.slPips.toFixed(1)}p ${formatMoney(-c.loss)}円`,
+      tp: c.tpPips === null ? '' : `EO T/P ${c.tpPips.toFixed(1)}p`,
+    },
+  };
+}
+
+function eoRender() {
+  const e = eo();
+  const panel = $('#easyorder');
+  panel.hidden = !e.open;
+  $('#easyorder-btn').setAttribute('aria-pressed', String(e.open));
+  if (!e.open) return;
+  const setVal = (id: string, v: number | null, digits = md.digits) => {
+    const el = $<HTMLInputElement>(id);
+    if (document.activeElement !== el) el.value = v === null ? '' : v.toFixed(digits);
+  };
+  $<HTMLSelectElement>('#eo-mode').value = e.mode;
+  $<HTMLSelectElement>('#eo-unit').value = e.riskUnit;
+  setVal('#eo-risk', e.risk, e.riskUnit === 'pct' ? 1 : 0);
+  setVal('#eo-sl', e.sl);
+  setVal('#eo-tp', e.tp);
+  setVal('#eo-entry', e.entry);
+  $('#eo-entry-row').hidden = e.mode !== 'pending';
+  for (const id of ['#eo-sl', '#eo-tp', '#eo-entry']) $<HTMLInputElement>(id).step = String(10 ** -md.digits);
+  const c = eoCalc();
+  const btn = $<HTMLButtonElement>('#eo-send');
+  if (!c.ok) {
+    $('#eo-calc').innerHTML = `<span class="err">${c.error}</span>`;
+    btn.disabled = true;
+    btn.textContent = '—';
+    return;
+  }
+  $('#eo-sl-pips').textContent = `${c.slPips.toFixed(1)} pips`;
+  $('#eo-tp-pips').textContent = c.tpPips === null ? '' : `${c.tpPips.toFixed(1)} pips`;
+  $('#eo-entry-info').textContent = e.mode === 'pending' ? TYPE_JA[c.type] : '';
+  const rr = c.rr === null ? '' : `　RR <b>${c.rr.toFixed(2)}</b>`;
+  const reward = c.reward === null ? '' : `　利益 <b>${formatMoney(c.reward)}</b> 円`;
+  $('#eo-calc').innerHTML =
+    `ロット <b>${c.lots.toFixed(2)}</b>　損失 <b class="neg">${formatMoney(c.loss)}</b> 円（上限 ${formatMoney(c.riskJpy)}）${reward}${rr}` +
+    (c.error ? `<br><span class="err">${c.error}</span>` : '');
+  btn.disabled = !!c.error;
+  btn.className = c.side;
+  btn.textContent = `${c.side === 'buy' ? '買い' : '売り'} ${c.lots.toFixed(2)} ロット（${TYPE_JA[c.type]}）`;
+}
+
+function eoSend() {
+  const e = eo();
+  const c = eoCalc();
+  if (!c.ok || c.error) return toast(c.error ?? '');
+  const ok =
+    c.type === 'market'
+      ? act({ kind: 'market', side: c.side, lots: c.lots, sl: e.sl, tp: e.tp })
+      : act({ kind: 'pending', type: c.type, price: c.entry, lots: c.lots, sl: e.sl, tp: e.tp });
+  if (ok) {
+    // 発注したら、注文の線と重ならないように閉じる（入力は次回のために残す）
+    e.open = false;
+    e.entry = null;
+    refresh();
+  }
+}
+
+function setupEasyOrder() {
+  const e = () => eo();
+  $('#easyorder-btn').addEventListener('click', () => {
+    e().open = !e().open;
+    if (e().open) {
+      // 前回の S/L・T/P が今の価格から遠すぎれば置き直す
+      const bid = md.bid[cursor].c;
+      const far = (p: number | null) => p !== null && Math.abs(p - bid) > 300 * spec.pip;
+      if (far(e().sl) || far(e().tp) || far(e().entry)) Object.assign(e(), { sl: null, tp: null, entry: null });
+      eoSetDefaults();
+    }
+    refresh();
+  });
+  $('#eo-close').addEventListener('click', () => {
+    e().open = false;
+    refresh();
+  });
+  $('#eo-mode').addEventListener('change', (ev) => {
+    e().mode = (ev.target as HTMLSelectElement).value as EasyOrderState['mode'];
+    eoSetDefaults();
+    refresh();
+  });
+  $('#eo-unit').addEventListener('change', (ev) => {
+    const unit = (ev.target as HTMLSelectElement).value as EasyOrderState['riskUnit'];
+    // 単位を変えても同じ金額になるように換算する
+    e().risk = unit === 'jpy' ? Math.round((account.balance * e().risk) / 100) : Math.round((e().risk / account.balance) * 1000) / 10;
+    e().riskUnit = unit;
+    refresh();
+  });
+  const bindNum = (id: string, field: 'risk' | 'sl' | 'tp' | 'entry', allowEmpty: boolean) =>
+    $(id).addEventListener('change', (ev) => {
+      const el = ev.target as HTMLInputElement;
+      const v = el.value.trim() === '' ? null : Number(el.value);
+      if (v === null && !allowEmpty) return refresh();
+      if (v !== null && !Number.isFinite(v)) return refresh();
+      (e() as unknown as Record<string, number | null>)[field] = v;
+      refresh();
+    });
+  bindNum('#eo-risk', 'risk', false);
+  bindNum('#eo-sl', 'sl', false);
+  bindNum('#eo-tp', 'tp', true);
+  bindNum('#eo-entry', 'entry', false);
+  $('#eo-send').addEventListener('click', eoSend);
+  overlay.onPreviewEdit = (field, price) => {
+    e()[field] = roundPrice(price);
+    refresh();
+  };
+}
+
+// ---------------- インジケーターの設定 ----------------
+function openIndicatorDialog(cfg: IndicatorConfig = state.indicators ?? DEFAULT_INDICATORS) {
+  const ma = $('#ind-ma');
+  ma.innerHTML =
+    '<tr><td></td><td>期間</td><td>種類</td><td>色</td></tr>' +
+    cfg.ma
+      .map(
+        (m, i) => `<tr><td><input type="checkbox" data-i="${i}" data-f="enabled" ${m.enabled ? 'checked' : ''} /></td>
+        <td><input type="number" min="1" step="1" data-i="${i}" data-f="period" value="${m.period}" /></td>
+        <td><select data-i="${i}" data-f="type"><option value="sma" ${m.type === 'sma' ? 'selected' : ''}>単純（SMA）</option><option value="ema" ${m.type === 'ema' ? 'selected' : ''}>指数（EMA）</option></select></td>
+        <td><input type="color" data-i="${i}" data-f="color" value="${m.color}" /></td></tr>`,
+      )
+      .join('');
+  const rci = $('#ind-rci');
+  rci.innerHTML =
+    '<tr><td></td><td>期間</td><td>色</td></tr>' +
+    cfg.rci.lines
+      .map(
+        (l, i) => `<tr><td><input type="checkbox" data-i="${i}" data-f="enabled" ${l.enabled ? 'checked' : ''} /></td>
+        <td><input type="number" min="2" step="1" data-i="${i}" data-f="period" value="${l.period}" /></td>
+        <td><input type="color" data-i="${i}" data-f="color" value="${l.color}" /></td></tr>`,
+      )
+      .join('');
+  $<HTMLInputElement>('#ind-rci-on').checked = cfg.rci.enabled;
+  const dlg = $<HTMLDialogElement>('#ind-dialog');
+  if (!dlg.open) dlg.showModal();
+}
+
+function readIndicatorDialog(): IndicatorConfig {
+  const rows = <T extends object>(table: string, base: T[]): T[] =>
+    base.map((b, i) => {
+      const out = { ...b } as Record<string, unknown>;
+      document.querySelectorAll<HTMLInputElement | HTMLSelectElement>(`${table} [data-i="${i}"]`).forEach((el) => {
+        const f = el.dataset.f!;
+        out[f] = el instanceof HTMLInputElement && el.type === 'checkbox' ? el.checked : f === 'period' ? Math.max(1, Math.round(Number(el.value))) : el.value;
+      });
+      return out as T;
+    });
+  const cur = state.indicators ?? DEFAULT_INDICATORS;
+  return {
+    ma: rows('#ind-ma', cur.ma),
+    rci: { enabled: $<HTMLInputElement>('#ind-rci-on').checked, lines: rows('#ind-rci', cur.rci.lines) },
+  };
+}
+
+// ---------------- プロジェクト ----------------
+// 検証（口座・時刻）・図形・インジケーター・MT4 履歴をまとめて保存する。切り替えるとページを読み直す。
+
+let leaving = false;
+
+function reloadInto(fn: () => void) {
+  save(true);
+  leaving = true;
+  fn();
+  location.reload();
+}
+
+function setupProjects() {
+  const sel = $<HTMLSelectElement>('#project');
+  const cur = currentMeta();
+  for (const p of listProjects()) sel.add(new Option(p.name, p.id));
+  sel.value = cur.id;
+  sel.addEventListener('change', () => reloadInto(() => switchProject(sel.value)));
+  $('#project-menu').addEventListener('click', (ev) => {
+    const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+    showMenu(r.left, r.bottom + 2, [
+      [
+        '新しいプロジェクト…',
+        () => {
+          const name = prompt('新しいプロジェクトの名前', `プロジェクト ${listProjects().length + 1}`);
+          if (!name) return;
+          // 銘柄・時間足・インジケーターは今の設定を引き継ぐ
+          const fresh: AppState = { ...defaultState(), symbol: state.symbol, tf: state.tf, zone: state.zone, indicators: state.indicators };
+          reloadInto(() => createProject(name, fresh));
+        },
+      ],
+      [
+        '名前を変更…',
+        () => {
+          const name = prompt('プロジェクトの名前', currentMeta().name);
+          if (!name) return;
+          renameProject(cur.id, name);
+          sel.selectedOptions[0].textContent = name;
+        },
+      ],
+      ['複製', () => reloadInto(() => createProject(`${currentMeta().name} のコピー`, structuredClone(state)))],
+      [
+        'ファイルに書き出す',
+        () => {
+          const blob = new Blob([exportProject(currentMeta().name, state)], { type: 'application/json' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `${currentMeta().name}.fxp.json`;
+          a.click();
+          URL.revokeObjectURL(a.href);
+        },
+      ],
+      ['ファイルから読み込む…', () => $('#project-file').click()],
+      [
+        'このプロジェクトを削除',
+        () => {
+          if (listProjects().length <= 1) return toast('最後のプロジェクトは削除できません');
+          if (!confirm(`「${currentMeta().name}」を削除しますか？元に戻せません`)) return;
+          leaving = true;
+          deleteProject(cur.id);
+          location.reload();
+        },
+      ],
+    ]);
+  });
+  $<HTMLInputElement>('#project-file').addEventListener('change', async (ev) => {
+    const file = (ev.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      reloadInto(() => importProject(text));
+    } catch (e) {
+      leaving = false;
+      toast(e instanceof Error ? e.message : String(e));
+    }
+  });
+}
+
 // ---------------- 操作 ----------------
 async function changeSymbol(symbol: string) {
   if (account.positions.length || account.orders.length) {
@@ -689,11 +1246,38 @@ function setupControls() {
   );
   termBody.addEventListener('dblclick', (e) => {
     const row = (e.target as HTMLElement).closest<HTMLElement>('tr[data-ticket]');
-    if (row && row.dataset.kind !== 'history') openModifyDialog(Number(row.dataset.ticket));
+    if (!row) return;
+    if (row.dataset.kind === 'mt4') jumpToTrade(Number(row.dataset.ticket));
+    else if (row.dataset.kind !== 'history') openModifyDialog(Number(row.dataset.ticket));
+  });
+  termBody.addEventListener('click', (e) => {
+    const action = (e.target as HTMLElement).closest<HTMLElement>('[data-action]')?.dataset.action;
+    if (action === 'mt4-load') $('#mt4-file').click();
+    if (action === 'mt4-clear' && confirm('読み込んだ MT4 の履歴を消しますか？')) {
+      state.mt4 = null;
+      mt4EventCache = null;
+      refresh();
+      renderTerminal(true);
+    }
+  });
+  $<HTMLInputElement>('#mt4-file').addEventListener('change', (e) => {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (file) loadMt4File(file).catch((err) => toast(`読み込めませんでした: ${err instanceof Error ? err.message : err}`));
+  });
+
+  $('#indicators-btn').addEventListener('click', () => openIndicatorDialog());
+  $('#ind-reset').addEventListener('click', () => openIndicatorDialog(structuredClone(DEFAULT_INDICATORS)));
+  $('#ind-apply').addEventListener('click', () => {
+    state.indicators = readIndicatorDialog();
+    indicators.setConfig(state.indicators);
+    $<HTMLDialogElement>('#ind-dialog').close();
+    save();
   });
   termBody.addEventListener('contextmenu', (e) => {
     const row = (e.target as HTMLElement).closest<HTMLElement>('tr[data-ticket]');
-    if (!row || row.dataset.kind === 'history') return;
+    if (!row || row.dataset.kind === 'history' || row.dataset.kind === 'mt4') return;
     e.preventDefault();
     const ticket = Number(row.dataset.ticket);
     const items: [string, () => void][] =
@@ -754,18 +1338,10 @@ function showMenu(x: number, y: number, items: [string, () => void][]) {
 async function jump() {
   const t = fromLocalInput($<HTMLInputElement>('#jump').value, state.zone, rule);
   if (!Number.isFinite(t)) return toast('日時を入力してください');
-  if (t < test().baseline.time) toast('検証を始めた時刻より前には戻れません（新しい検証で始め直せます）');
   setPlaying(false);
-  // 先の日時なら、そこまでのデータを読み込む（途中の約定も計算するため、間の月もすべて）
-  if (t > md.bid[md.bid.length - 1].t && md.hasLater) {
-    const key = new Date(t).toISOString().slice(0, 7);
-    const to = md.months.findLastIndex((m) => m <= key);
-    const from = md.months.indexOf(md.loadedMonths[0]);
-    await md.loadRange(from, Math.max(to, from));
-    await syncUsd();
-    dataChanged();
-  }
-  goTo(md.indexAtOrBefore(t));
+  // その日時までのデータを読み込む（途中の約定も計算するため、間の月もすべて）
+  await ensureLoaded(t, t);
+  goTo(md.indexAtOrBefore(t), false);
   chart.timeScale().scrollToRealTime();
 }
 
@@ -829,6 +1405,9 @@ async function start() {
   }
 
   setupControls();
+  setupProjects();
+  setupEasyOrder();
+  indicators.setConfig(state.indicators ?? DEFAULT_INDICATORS);
   $<HTMLSelectElement>('#zone').value = state.zone;
   speedEl.value = String(state.speed);
   $('#speed-label').textContent = speedLabel(SPEEDS[state.speed]);
@@ -848,8 +1427,15 @@ async function start() {
   }
   $<HTMLInputElement>('#jump').value = toLocalInput(md.bid[cursor].t, state.zone, rule);
 
-  const ms = Math.round(performance.now());
-  statusEl.textContent = `${manifest ? md.symbol.toUpperCase() : '仮データ'} ${md.loadedMonths.join('〜').replace(/〜.*〜/, '〜') || ''} / 表示まで ${ms} ms`;
+  updateStatus(Math.round(performance.now()));
+}
+
+let firstPaintMs = 0;
+function updateStatus(ms = firstPaintMs) {
+  firstPaintMs = ms;
+  const months = md.loadedMonths;
+  const range = months.length ? `${months[0]}〜${months[months.length - 1]}` : '';
+  statusEl.textContent = `${manifest ? md.symbol.toUpperCase() : '仮データ'} ${range} / 表示まで ${ms} ms`;
   if (!manifest) statusEl.textContent += '（npm run import-data で実データを入れてください）';
 }
 

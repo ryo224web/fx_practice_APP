@@ -148,3 +148,17 @@ describe('成績', () => {
     expect(s.maxConsecLosses).toBe(1);
   });
 });
+
+describe('リスクからロットを決める', () => {
+  it('残高 100 万円の 1%（1 万円）、損切り 20 pips なら USDJPY は 0.5 ロット', async () => {
+    const { lotsForRisk } = await import('../src/trade/risk');
+    expect(lotsForRisk({ riskJpy: 10_000, entry: 150, sl: 149.8, contract: 100_000, rate: 1 })).toBe(0.5);
+  });
+
+  it('割り切れないときは切り捨て（損失が指定を超えないように）', async () => {
+    const { lotsForRisk, lossAt } = await import('../src/trade/risk');
+    const lots = lotsForRisk({ riskJpy: 10_000, entry: 150, sl: 149.77, contract: 100_000, rate: 1 });
+    expect(lots).toBe(0.43);
+    expect(lossAt(lots, 150, 149.77, 100_000, 1)).toBeLessThanOrEqual(10_000);
+  });
+});

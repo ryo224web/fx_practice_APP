@@ -2,6 +2,8 @@
 // - 保有中のポジション・待機注文・S/L・T/P を価格線で表示し、ドラッグで変更できる
 // - ポジションの線をドラッグすると、動かした向きに応じて S/L か T/P を新しく置ける
 // - 決済済みの取引は、建てた所と決済した所を矢印と点線で結ぶ
+// - EasyOrder の S/L・T/P・エントリーの線（発注前）もドラッグで動かせる
+// - 読み込んだ MT4 の取引は紫で表示する（記録のままなので動かせない）
 
 import {
   LineStyle,
@@ -22,7 +24,30 @@ const BUY = '#4493f8';
 const SELL = '#f85149';
 const SL = '#f85149';
 const TP = '#3fb950';
+const MT4 = '#d2a8ff';
+const PREVIEW = '#9a9a9a';
 const HIT = 5;
+
+/** EasyOrder で発注する前の線 */
+export interface OrderPreview {
+  side: 'buy' | 'sell';
+  /** 指値・逆指値の価格。成行なら null */
+  entry: number | null;
+  sl: number | null;
+  tp: number | null;
+  labels: { entry: string; sl: string; tp: string };
+}
+
+/** 読み込んだ MT4 の取引のうち、今の時刻で保有中のもの */
+export interface ImportedOpen {
+  ticket: number;
+  side: 'buy' | 'sell';
+  lots: number;
+  openTime: number;
+  openPrice: number;
+  sl: number | null;
+  tp: number | null;
+}
 
 export interface TradeView {
   positions: Position[];
@@ -31,6 +56,8 @@ export interface TradeView {
   ask: number | null;
   askEstimated: boolean;
   digits: number;
+  preview?: OrderPreview | null;
+  imported?: { open: ImportedOpen[]; closed: HistoryRow[] } | null;
 }
 
 /** ドラッグで変えた内容 */
@@ -38,15 +65,20 @@ export type LineEdit =
   | { ticket: number; field: 'sl' | 'tp'; price: number | null }
   | { ticket: number; field: 'price'; price: number };
 
+type PreviewField = 'entry' | 'sl' | 'tp';
+
 interface LineInfo {
   key: string;
   ticket: number;
-  role: 'entry' | 'pending' | 'sl' | 'tp';
+  role: 'entry' | 'pending' | 'sl' | 'tp' | 'eo-entry' | 'eo-sl' | 'eo-tp';
   price: number;
 }
 
+type WantedLine = LineInfo & { color: string; title: string; style: LineStyle; width?: 1 | 2; fixed?: boolean };
+
 export class TradeOverlay implements ISeriesPrimitive<Time> {
   onEdit: (edit: LineEdit) => void = () => {};
+  onPreviewEdit: (field: PreviewField, price: number) => void = () => {};
   showHistory = true;
 
   private chart: IChartApi | null = null;
@@ -86,7 +118,7 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
   update(view: TradeView) {
     this.view = view;
     if (!this.series) return;
-    const want: (LineInfo & { color: string; title: string; style: LineStyle })[] = [];
+    const want: WantedLine[] = [];
     const lot = (n: number) => n.toFixed(2);
     for (const p of view.positions) {
       want.push({ key: `e${p.ticket}`, ticket: p.ticket, role: 'entry', price: p.openPrice, color: p.side === 'buy' ? BUY : SELL, title: `#${p.ticket} ${p.side} ${lot(p.lots)}`, style: LineStyle.Dashed });
@@ -98,6 +130,17 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
       if (o.sl !== null) want.push({ key: `s${o.ticket}`, ticket: o.ticket, role: 'sl', price: o.sl, color: SL, title: `#${o.ticket} sl`, style: LineStyle.Dashed });
       if (o.tp !== null) want.push({ key: `t${o.ticket}`, ticket: o.ticket, role: 'tp', price: o.tp, color: TP, title: `#${o.ticket} tp`, style: LineStyle.Dashed });
     }
+    const pv = view.preview;
+    if (pv) {
+      if (pv.entry !== null) want.push({ key: 'pe', ticket: 0, role: 'eo-entry', price: pv.entry, color: pv.side === 'buy' ? BUY : SELL, title: pv.labels.entry, style: LineStyle.Solid, width: 2 });
+      if (pv.sl !== null) want.push({ key: 'ps', ticket: 0, role: 'eo-sl', price: pv.sl, color: SL, title: pv.labels.sl, style: LineStyle.Solid, width: 2 });
+      if (pv.tp !== null) want.push({ key: 'pt', ticket: 0, role: 'eo-tp', price: pv.tp, color: TP, title: pv.labels.tp, style: LineStyle.Solid, width: 2 });
+    }
+    for (const m of view.imported?.open ?? []) {
+      want.push({ key: `me${m.ticket}`, ticket: m.ticket, role: 'entry', price: m.openPrice, color: MT4, title: `MT4 #${m.ticket} ${m.side} ${lot(m.lots)}`, style: LineStyle.Dashed, fixed: true });
+      if (m.sl !== null) want.push({ key: `ms${m.ticket}`, ticket: m.ticket, role: 'sl', price: m.sl, color: MT4, title: `MT4 #${m.ticket} sl`, style: LineStyle.Dotted, fixed: true });
+      if (m.tp !== null) want.push({ key: `mt${m.ticket}`, ticket: m.ticket, role: 'tp', price: m.tp, color: MT4, title: `MT4 #${m.ticket} tp`, style: LineStyle.Dotted, fixed: true });
+    }
     // ドラッグ中の線は、離すまで動かした位置に置いておく
     if (this.drag) {
       const d = this.drag;
@@ -105,7 +148,7 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
       const isEntry = d.info.role === 'entry';
       const existing = want.find((w) => w.key === key);
       if (existing) existing.price = d.price;
-      else if (isEntry) want.push({ ...d.info, key, price: d.price, color: '#9a9a9a', title: '', style: LineStyle.Dashed });
+      else if (isEntry) want.push({ ...d.info, key, price: d.price, color: PREVIEW, title: '', style: LineStyle.Dashed });
     }
     if (view.ask !== null) {
       want.push({ key: 'ask', ticket: 0, role: 'entry', price: view.ask, color: view.askEstimated ? '#d29922' : SELL, title: view.askEstimated ? 'Ask(推定)' : 'Ask', style: view.askEstimated ? LineStyle.Dashed : LineStyle.Solid });
@@ -119,12 +162,12 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
       }
     }
     for (const w of want) {
-      const opts = { price: w.price, color: w.color, title: w.title, lineStyle: w.style, lineWidth: 1 as const, axisLabelVisible: true };
+      const opts = { price: w.price, color: w.color, title: w.title, lineStyle: w.style, lineWidth: w.width ?? 1, axisLabelVisible: true };
       const l = this.lines.get(w.key);
       if (l) l.applyOptions(opts);
       else this.lines.set(w.key, this.series.createPriceLine(opts));
     }
-    this.infos = want.filter((w) => w.key !== 'ask' && !w.key.startsWith('drag'));
+    this.infos = want.filter((w) => w.key !== 'ask' && !w.key.startsWith('drag') && !w.fixed);
     this.requestUpdate();
   }
 
@@ -133,7 +176,7 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
     const r = this.el.getBoundingClientRect();
     const x = e.clientX - r.left;
     const y = e.clientY - r.top;
-    if (x > this.chart.timeScale().width()) return null;
+    if (x > this.chart.timeScale().width() || y > (this.chart.panes()[0]?.getHeight() ?? Infinity)) return null;
     const price = this.series.coordinateToPrice(y);
     return price === null ? null : { y, price };
   }
@@ -143,7 +186,7 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
     const m = this.priceAt(e);
     if (!m) return;
     // S/L・T/P を優先して拾う（建値と重なっていることがあるため）
-    const order = { sl: 0, tp: 0, pending: 1, entry: 2 };
+    const order = { 'eo-sl': 0, 'eo-tp': 0, 'eo-entry': 1, sl: 2, tp: 2, pending: 3, entry: 4 };
     const hits = this.infos
       .filter((i) => {
         const y = this.series!.priceToCoordinate(i.price);
@@ -176,7 +219,8 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
     this.el.style.cursor = '';
     if (d.moved && this.view) {
       const { info, price } = d;
-      if (info.role === 'sl' || info.role === 'tp') this.onEdit({ ticket: info.ticket, field: info.role, price });
+      if (info.role.startsWith('eo-')) this.onPreviewEdit(info.role.slice(3) as PreviewField, price);
+      else if (info.role === 'sl' || info.role === 'tp') this.onEdit({ ticket: info.ticket, field: info.role, price });
       else if (info.role === 'pending') this.onEdit({ ticket: info.ticket, field: 'price', price });
       else {
         const p = this.view.positions.find((x) => x.ticket === info.ticket);
@@ -233,6 +277,27 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
           for (const p of v.positions) {
             const a = pt(p.openTime, p.openPrice);
             if (a) arrow(a.x, a.y, p.side === 'buy', p.side === 'buy' ? BUY : SELL);
+          }
+          // MT4 の取引（記録の時刻・価格のまま）
+          for (const h of v.imported?.closed ?? []) {
+            if (h.kind !== 'trade') continue;
+            const a = pt(h.openTime, h.openPrice);
+            const b = pt(h.closeTime, h.closePrice);
+            if (a && b) {
+              ctx.strokeStyle = MT4;
+              ctx.setLineDash([2, 3]);
+              ctx.beginPath();
+              ctx.moveTo(a.x, a.y);
+              ctx.lineTo(b.x, b.y);
+              ctx.stroke();
+              ctx.setLineDash([]);
+            }
+            if (a) arrow(a.x, a.y, h.side === 'buy', MT4);
+            if (b) arrow(b.x, b.y, h.side !== 'buy', '#d29922');
+          }
+          for (const m of v.imported?.open ?? []) {
+            const a = pt(m.openTime, m.openPrice);
+            if (a) arrow(a.x, a.y, m.side === 'buy', MT4);
           }
         });
       },
