@@ -206,6 +206,7 @@ export class Account {
       }
       case 'pending': {
         if (!(a.lots > 0)) return 'ロット数が正しくありません';
+        if (!Number.isFinite(rate)) return `${this.spec.quote} を円に換算できないため取引できません（USDJPY のデータが必要です）`;
         const err = checkPending(a.type, a.price, bid, ask) ?? checkStops(a.type.startsWith('buy') ? 'buy' : 'sell', a.price, a.sl, a.tp);
         if (err) return err;
         this.orders.push({

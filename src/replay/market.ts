@@ -96,10 +96,11 @@ export class MarketData {
     this.bid = bid;
     this.askEstimated = new Uint8Array(bid.length);
     // 推定に使うスプレッド: 直前の実データの値。先頭が欠けていれば最初の実データの値
-    const firstReal = ask.findIndex((a) => a);
+    const firstReal = ask.findIndex((a, k) => a && a.c >= bid[k].c && a.l >= bid[k].l);
     let spread = firstReal >= 0 ? ask[firstReal]!.c - bid[firstReal].c : (fallbackSpread ?? 10 ** -(this.digits - 1));
     this.ask = bid.map((b, k) => {
-      const a = ask[k];
+      // Bid より安い Ask はありえないので、データの誤りとして推定に回す
+      const a = ask[k] && ask[k]!.c >= b.c && ask[k]!.l >= b.l ? ask[k] : null;
       if (a) {
         spread = a.c - b.c;
         return a;

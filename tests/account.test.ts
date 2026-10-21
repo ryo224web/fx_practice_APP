@@ -152,3 +152,11 @@ describe('逆指値が約定した足の S/L', () => {
     expect(a.processBar(feed, 2).map((e) => e.kind)).toEqual(['sl']);
   });
 });
+
+describe('円に換算できないとき', () => {
+  it('指値・逆指値も受け付けない（約定してから損益が出せなくなるため）', () => {
+    const feed = { ...feedOf([[150, 150, 150, 150]]), jpyRate: () => NaN };
+    const a = newAccount();
+    expect(a.apply(feed, 0, { t: T0, kind: 'pending', type: 'buylimit', price: 149, lots: 0.1, sl: null, tp: null })).toMatch(/換算/);
+  });
+});

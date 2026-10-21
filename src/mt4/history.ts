@@ -95,7 +95,8 @@ export function parseStatementHtml(html: string): Mt4Trade[] {
       tp: stopOrNull(cells[7]),
       closeServer: open ? closeServer : null,
       closePrice: open ? num(cells[9]) : null,
-      commission: num(cells[10]) || 0,
+      // 税金（Taxes）は手数料に含める（損益の合計 = 損益 + スワップ + 手数料 + 税金）
+      commission: (num(cells[10]) || 0) + (num(cells[11]) || 0),
       swap: num(cells[12]) || 0,
       profit: num(cells[13]) || 0,
       comment: '',

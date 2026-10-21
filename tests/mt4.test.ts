@@ -74,3 +74,12 @@ describe('銘柄名の読み替え', () => {
     expect(normalizeSymbol('XAUUSD')).toBe('XAUUSD');
   });
 });
+
+describe('詳細レポートの税金', () => {
+  it('税金（Taxes）は手数料に含める', () => {
+    const row = `<tr><td>1</td><td>2026.10.20 15:30:12</td><td>buy</td><td>0.10</td><td>usdjpy</td><td>158.000</td><td>0.000</td><td>0.000</td><td>2026.10.20 16:00:00</td><td>158.100</td><td>-50</td><td>-20</td><td>0</td><td>1 000</td></tr>`;
+    const [t] = parseStatementHtml(`<table>${row}</table>`);
+    expect(t.commission).toBe(-70);
+    expect(t.profit).toBe(1000);
+  });
+});

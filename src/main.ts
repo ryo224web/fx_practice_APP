@@ -106,7 +106,8 @@ function jpyRate(i: number): number {
   if (spec.quote === 'JPY') return 1;
   if (!usd || usd.bid.length === 0) return NaN;
   const j = usd.indexAtOrBefore(md.bid[i].t);
-  if (j < 0) return NaN;
+  // その時点の USDJPY が無い（3 日以上前の値しか無い）ときは、古い値で換算しない
+  if (j < 0 || md.bid[i].t - usd.bid[j].t > 3 * 86_400_000) return NaN;
   const usdjpy = usd.bid[j].c;
   if (spec.quote === 'USD') return usdjpy;
   if (spec.name.startsWith('USD')) return usdjpy / md.bid[i].c;
