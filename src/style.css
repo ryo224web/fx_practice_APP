@@ -495,6 +495,12 @@ td.sell {
   border-bottom: 1px solid var(--grid);
 }
 
+.mt4-bar .sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+}
+
 .mt4-bar .hint {
   color: var(--muted);
 }
@@ -504,6 +510,21 @@ td.sell {
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 4px 16px;
   padding: 10px;
+}
+
+.stats.quick .neg {
+  color: var(--neg);
+}
+
+.stats.quick .pos {
+  color: var(--pos);
+}
+
+.detail-head {
+  margin: 6px 10px 0;
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .stat {

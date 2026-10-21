@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { Bar } from '../src/core/candles';
 import { symbolSpec } from '../src/core/symbols';
 import { Account, replayAccount, type Action, type Baseline, type PriceFeed } from '../src/trade/account';
-import { computeStats } from '../src/trade/stats';
 
 const spec = symbolSpec('usdjpy', 3);
 const T0 = Date.UTC(2026, 9, 20, 0, 0);
@@ -119,33 +118,6 @@ describe('仮想口座', () => {
     expect(h.kind === 'trade' && h.reason).toBe('tp');
     // 1 本目までなら、まだ保有中
     expect(replayAccount(spec, { leverage: 500 }, baseline, actions, feed, 0, 1).account.positions).toHaveLength(1);
-  });
-});
-
-describe('成績', () => {
-  it('勝率・プロフィットファクター・最大ドローダウン', () => {
-    const trade = (profit: number, t: number) => ({
-      kind: 'trade' as const,
-      ticket: t,
-      symbol: 'USDJPY',
-      side: 'buy' as const,
-      lots: 0.1,
-      openTime: t,
-      openPrice: 150,
-      sl: null,
-      tp: null,
-      closeTime: t,
-      closePrice: 150,
-      profit,
-      reason: 'manual' as const,
-      comment: '',
-    });
-    const s = computeStats([baseline.history[0], trade(1000, T0 + 1), trade(-3000, T0 + 2), trade(500, T0 + 3)]);
-    expect(s.trades).toBe(3);
-    expect(s.winRate).toBeCloseTo(66.67, 1);
-    expect(s.profitFactor).toBeCloseTo(0.5);
-    expect(s.maxDrawdown).toBe(3000);
-    expect(s.maxConsecLosses).toBe(1);
   });
 });
 

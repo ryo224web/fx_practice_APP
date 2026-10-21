@@ -50,7 +50,8 @@ export type Layout = '1' | '2h' | '2v' | '4';
 /** チャートごとの設定 */
 export interface PaneState {
   tf: Timeframe;
-  indicators: IndicatorConfig;
+  /** 以前の保存（チャートごとのインジケーター）。今は時間足ごとの indicatorSets を使う */
+  indicators?: IndicatorConfig;
 }
 
 export interface AppState {
@@ -66,16 +67,18 @@ export interface AppState {
   pauseOnFill: boolean;
   lots: number;
   terminalTab: string;
+  /** 成績タブで見る取引（仮想の取引か、読み込んだ MT4 の履歴か） */
+  statsSource?: 'virtual' | 'mt4';
   terminalHeight: number;
   test: TestState | null;
   drawings: Record<string, Drawing[]>;
   /** 以前の保存のインジケーター。今は panes を使う */
   indicators?: IndicatorConfig;
   layout?: Layout;
+  /** 時間足ごとのインジケーターの設定（チャートの時間足を変えると、その時間足の設定に切り替わる） */
+  indicatorSets?: Record<string, IndicatorConfig>;
   /** 時間足ごとの図形の色（決めていない時間足は初期値） */
   tfColors?: Record<string, string>;
-  /** チャートを動かしたとき、ほかのチャートも同じ時刻に合わせる（初期値は合わせる） */
-  syncCharts?: boolean;
   /** チャートの右側の余白（足の本数）。全部のチャートで共通 */
   rightOffset?: number;
   /** 4 枚分（表示していないチャートの設定も残す） */

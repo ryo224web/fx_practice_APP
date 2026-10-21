@@ -31,10 +31,10 @@
         <option value="2v">上下に 2 画面</option>
         <option value="4">4 画面</option>
       </select>
-      <button id="sync-charts" title="チャートを動かすと、ほかのチャートも同じ時刻に合わせて動く" aria-pressed="true">連動</button>
       <div class="group">
         <button id="zoom-in" title="拡大">＋</button>
         <button id="zoom-out" title="縮小">－</button>
+        <button id="zoom-reset" title="拡大縮小と価格の目盛りを初めの状態に戻す（見ている場所はそのまま）">標準</button>
         <button id="toggle-history" title="決済した取引を矢印で表示" aria-pressed="true">履歴矢印</button>
       </div>
       <button id="indicators-btn" title="移動平均・RCI の設定">インジケーター</button>
@@ -123,10 +123,10 @@
         <h2 id="ind-title">インジケーター</h2>
         <h3>移動平均（メインチャート）</h3>
         <table class="ind-table" id="ind-ma"></table>
-        <h3>RCI（サブウィンドウ）<label class="inline"><input id="ind-rci-on" type="checkbox" /> 表示する</label></h3>
-        <table class="ind-table" id="ind-rci"></table>
+        <div id="ind-rci-wrap"></div>
         <div class="buttons">
           <button type="button" id="ind-reset">初期設定に戻す</button>
+          <button type="button" id="ind-copy-all" title="この設定を M1〜MN のすべての時間足に使う">全時間足にコピー</button>
           <button value="cancel" formnovalidate>キャンセル</button>
           <button type="button" id="ind-apply" class="primary">適用</button>
         </div>

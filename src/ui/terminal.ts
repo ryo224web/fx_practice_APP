@@ -2,7 +2,6 @@
 
 import { formatMoney, formatPrice } from '../core/format';
 import type { Account, HistoryRow, PriceFeed } from '../trade/account';
-import { computeStats } from '../trade/stats';
 
 export type TerminalTab = 'trade' | 'history' | 'stats' | 'mt4';
 
@@ -84,18 +83,6 @@ export function renderHistory(c: Ctx): string {
   const summary = `<tr class="summary"><td colspan="13">損益: <b class="${pl < 0 ? 'neg' : ''}">${formatMoney(pl)}</b>　入金: <b>${formatMoney(dep)}</b>　出金: <b>0</b>　残高: <b>${formatMoney(c.account.balance)}</b> JPY</td></tr>`;
   return `<table><thead><tr><th>注文番号</th><th>注文時間</th><th>取引種別</th><th>数量</th><th>通貨ペア</th><th>価格</th><th>決済逆指値(S/L)</th><th>決済指値(T/P)</th><th>決済時間</th><th>価格</th><th>手数料</th><th>スワップ</th><th>損益</th></tr></thead>
     <tbody>${rows.join('')}${summary}</tbody></table>`;
-}
-
-export function renderStats(c: Ctx): string {
-  const s = computeStats(c.account.history);
-  const n = (v: number, d = 0) => (Number.isFinite(v) ? v.toLocaleString('ja-JP', { maximumFractionDigits: d, minimumFractionDigits: d }) : '—');
-  const item = (k: string, v: string) => `<div class="stat"><span>${k}</span><b>${v}</b></div>`;
-  return `<div class="stats">
-    ${item('取引回数', n(s.trades))}${item('勝ち', n(s.wins))}${item('負け', n(s.losses))}${item('勝率', `${n(s.winRate, 1)}%`)}
-    ${item('純損益', n(s.net))}${item('総利益', n(s.grossProfit))}${item('総損失', n(s.grossLoss))}${item('プロフィットファクター', s.profitFactor === Infinity ? '∞' : n(s.profitFactor, 2))}
-    ${item('平均利益', n(s.avgWin))}${item('平均損失', n(s.avgLoss))}${item('期待値（1 回あたり）', n(s.expectancy))}${item('最大ドローダウン', `${n(s.maxDrawdown)}（${n(s.maxDrawdownPct, 2)}%）`)}
-    ${item('最大利益', n(s.maxWin))}${item('最大損失', n(s.maxLoss))}${item('最大連勝', n(s.maxConsecWins))}${item('最大連敗', n(s.maxConsecLosses))}
-  </div>`;
 }
 
 function closeTime(h: HistoryRow): number {

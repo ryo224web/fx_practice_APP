@@ -39,6 +39,9 @@ export interface PaneHost {
   lead(pane: ChartPane): void;
 }
 
+/** 足 1 本の幅（px）の初期値。ライブラリの初期値と同じ */
+const DEFAULT_BAR_SPACING = 6;
+
 const css = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 /** 昇順の配列で、v 以下の最後の位置 */
@@ -64,6 +67,11 @@ export class ChartPane {
   /** MT4 の「チャートの右端をずらす」三角のつまみ */
   private readonly shiftHandle: HTMLElement;
   private shown = { tf: '' as Timeframe | '', k: -1, version: -1 };
+  /**
+   * 今の足 1 本の幅。マウスホイールで変えた分は設定値に入らないので、表示の範囲が変わるたびに
+   * 見えている本数から求め直す（＋・－ を続けて押しても 1 回ずつ効くように、ここで覚えておく）
+   */
+  private spacing = DEFAULT_BAR_SPACING;
   private hovering = false;
 
   constructor(
@@ -85,7 +93,8 @@ export class ChartPane {
     this.chart = createChart(box, {
       autoSize: true,
       layout: { background: { color: 'transparent' }, textColor: css('--fg') },
-      grid: { vertLines: { color: css('--grid') }, horzLines: { color: css('--grid') } },
+      // 背景のグリッドは出さない（見やすさのため）
+      grid: { vertLines: { visible: false }, horzLines: { visible: false } },
       timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 12, shiftVisibleRangeOnNewBar: true },
       crosshair: { mode: CrosshairMode.Normal },
       localization: { locale: 'ja-JP' },
@@ -110,6 +119,8 @@ export class ChartPane {
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
       if (r && r.from < 30) host.nearLeftEdge();
       this.placeShiftHandle();
+      const w = this.chart.timeScale().width();
+      if (r && r.to > r.from && w > 0) this.spacing = w / (r.to - r.from);
       host.rangeChanged(this);
     });
     this.shiftHandle.addEventListener('mousedown', (e) => {
@@ -197,12 +208,18 @@ export class ChartPane {
     ts.setVisibleLogicalRange({ from: to - (r.to - r.from), to });
   }
 
-  /** from〜to（UTC）が真ん中あたりに収まるように表示を動かす */
+  /**
+   * from〜to（UTC）が真ん中に来るように表示を動かす。拡大率はそのまま
+   * （取引の期間が画面に収まらないときだけ、収まるまで縮小する）
+   */
   showTimeRange(from: number, to: number) {
+    const ts = this.chart.timeScale();
     const a = this.mapper.toLogical(from);
     const b = this.mapper.toLogical(to);
-    const pad = Math.max(15, (b - a) * 0.5);
-    this.chart.timeScale().setVisibleLogicalRange({ from: a - pad, to: b + pad });
+    const r = ts.getVisibleLogicalRange();
+    const width = Math.max(r ? r.to - r.from : 0, (b - a) * 1.2 + 10);
+    const mid = (a + b) / 2;
+    ts.setVisibleLogicalRange({ from: mid - width / 2, to: mid + width / 2 });
   }
 
   scrollToNow() {
@@ -223,9 +240,22 @@ export class ChartPane {
     this.shiftHandle.style.left = `${ts.width() - o.rightOffset * o.barSpacing}px`;
   }
 
-  zoom(factor: number) {
+  /**
+   * 拡大縮小と価格の目盛り（ドラッグで伸ばした分）を初めの状態に戻す。
+   * 見ている場所はそのまま（右端の位置を変えずに、足の幅だけ初めの大きさにする）
+   */
+  resetZoom() {
     const ts = this.chart.timeScale();
-    ts.applyOptions({ barSpacing: Math.max(1, Math.min(60, ts.options().barSpacing * factor)) });
+    const r = ts.getVisibleLogicalRange();
+    this.spacing = DEFAULT_BAR_SPACING;
+    if (r && ts.width() > 0) ts.setVisibleLogicalRange({ from: r.to - ts.width() / DEFAULT_BAR_SPACING, to: r.to });
+    else ts.applyOptions({ barSpacing: DEFAULT_BAR_SPACING });
+    for (const pane of this.chart.panes()) for (const s of pane.getSeries()) s.priceScale().applyOptions({ autoScale: true });
+  }
+
+  zoom(factor: number) {
+    this.spacing = Math.max(1, Math.min(60, this.spacing * factor));
+    this.chart.timeScale().applyOptions({ barSpacing: this.spacing });
   }
 
   setActive(on: boolean) {

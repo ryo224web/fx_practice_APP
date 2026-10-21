@@ -18,10 +18,20 @@ export interface RciLine {
   color: string;
 }
 
+/** RCI のサブウィンドウ 1 段（線は 4 本） */
+export interface RciPane {
+  enabled: boolean;
+  lines: RciLine[];
+}
+
 export interface IndicatorConfig {
   ma: MaConfig[];
-  rci: { enabled: boolean; lines: RciLine[] };
+  /** RCI のサブウィンドウ（上から順に。今は 2 段） */
+  rci: RciPane[];
 }
+
+const rciLines = (periods: number[]): RciLine[] =>
+  periods.map((period, i) => ({ enabled: true, period, color: ['#f85149', '#3fb950', '#4493f8', '#e5a50a'][i] }));
 
 export const DEFAULT_INDICATORS: IndicatorConfig = {
   ma: [
@@ -30,16 +40,21 @@ export const DEFAULT_INDICATORS: IndicatorConfig = {
     { enabled: true, period: 100, type: 'sma', color: '#a371f7' },
     { enabled: true, period: 200, type: 'sma', color: '#f85149' },
   ],
-  rci: {
-    enabled: true,
-    lines: [
-      { enabled: true, period: 9, color: '#f85149' },
-      { enabled: true, period: 26, color: '#3fb950' },
-      { enabled: true, period: 52, color: '#4493f8' },
-      { enabled: true, period: 78, color: '#e5a50a' },
-    ],
-  },
+  rci: [
+    { enabled: true, lines: rciLines([9, 26, 52, 78]) },
+    { enabled: true, lines: rciLines([9, 26, 52, 78]) },
+  ],
 };
+
+/** RCI の段の数 */
+export const RCI_PANES = 2;
+
+/** 以前の保存（RCI が 1 段）を今の形にそろえる */
+export function normalizeIndicators(cfg: IndicatorConfig | (Omit<IndicatorConfig, 'rci'> & { rci: RciPane | RciPane[] })): IndicatorConfig {
+  const rci = Array.isArray(cfg.rci) ? cfg.rci.slice() : [cfg.rci];
+  while (rci.length < RCI_PANES) rci.push(structuredClone(DEFAULT_INDICATORS.rci[rci.length]));
+  return { ma: cfg.ma, rci: rci.slice(0, RCI_PANES) };
+}
 
 /** RCI の目安の線 */
 const RCI_LEVELS = [95, 80, 0, -80, -95];
@@ -96,27 +111,31 @@ export class IndicatorLayer {
       const series = this.chart.addSeries(LineSeries, { ...common, color: m.color }, 0);
       this.lines.push({ series, values: (inp, j) => this.maValue(inp, j, m) });
     }
-    const rci = config.rci.lines.filter((l) => config.rci.enabled && l.enabled && l.period >= 2);
-    rci.forEach((l, n) => {
-      const series = this.chart.addSeries(
-        LineSeries,
-        { ...common, color: l.color, autoscaleInfoProvider: () => ({ priceRange: { minValue: -100, maxValue: 100 } }) },
-        1,
-      );
-      if (n === 0) {
-        // MT4 と同じく、目安の線はすべて点線
-        for (const p of RCI_LEVELS) series.createPriceLine({ price: p, color: '#8d96a0', lineStyle: LineStyle.Dotted, lineWidth: 1, axisLabelVisible: false, title: '' });
-        // 目盛りは -100〜100。100 と -100 の数字が切れない程度の、ごくわずかな余白だけ付ける
-        series.priceScale().applyOptions({ scaleMargins: { top: 0.04, bottom: 0.04 } });
-      }
-      this.lines.push({ series, values: (inp, j) => this.rciValue(inp, j, l.period) });
-    });
-    // 高さは比率で決める（隠れているチャートは大きさが 0 なので、ピクセルでは決められない）。
-    // 境目の線をドラッグすれば変えられる
-    if (rci.length) {
-      this.chart.panes()[0]?.setStretchFactor(3);
-      this.chart.panes()[1]?.setStretchFactor(1);
+    // RCI は段ごとにサブウィンドウを 1 つ使う（表示する段だけ、上から 1, 2 …）
+    let paneIndex = 0;
+    for (const rp of normalizeIndicators(config).rci) {
+      const lines = rp.lines.filter((l) => rp.enabled && l.enabled && l.period >= 2);
+      if (!lines.length) continue;
+      paneIndex++;
+      lines.forEach((l, n) => {
+        const series = this.chart.addSeries(
+          LineSeries,
+          { ...common, color: l.color, autoscaleInfoProvider: () => ({ priceRange: { minValue: -100, maxValue: 100 } }) },
+          paneIndex,
+        );
+        if (n === 0) {
+          // MT4 と同じく、目安の線はすべて点線
+          for (const p of RCI_LEVELS) series.createPriceLine({ price: p, color: '#8d96a0', lineStyle: LineStyle.Dotted, lineWidth: 1, axisLabelVisible: false, title: '' });
+          // 目盛りは -100〜100。100 と -100 の数字が切れない程度の、ごくわずかな余白だけ付ける
+          series.priceScale().applyOptions({ scaleMargins: { top: 0.04, bottom: 0.04 } });
+        }
+        this.lines.push({ series, values: (inp, j) => this.rciValue(inp, j, l.period) });
+      });
     }
+    // 高さは比率で決める（隠れているチャートは大きさが 0 なので、ピクセルでは決められない）。
+    // ローソク足 3 : RCI 1 段ずつ 1。境目の線をドラッグすれば変えられる
+    this.chart.panes()[0]?.setStretchFactor(3);
+    for (let i = 1; i <= paneIndex; i++) this.chart.panes()[i]?.setStretchFactor(1);
     this.shown.key = '';
     if (this.last) this.render(this.last);
   }

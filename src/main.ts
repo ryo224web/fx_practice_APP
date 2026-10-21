@@ -1,6 +1,6 @@
 import { type CandlestickData, type Time, type UTCTimestamp } from 'lightweight-charts';
 import { DEFAULT_TF_COLORS, type DrawingKind } from './chart/drawings';
-import { DEFAULT_INDICATORS, type IndicatorConfig } from './chart/indicators';
+import { DEFAULT_INDICATORS, normalizeIndicators, type IndicatorConfig } from './chart/indicators';
 import { ChartPane, type PaneHost } from './chart/pane';
 import { type LineEdit, type OrderPreview } from './chart/trades';
 import { aggregateWithIndex, mergeBars, TIMEFRAMES, type Aggregated, type Bar, type Timeframe } from './core/candles';
@@ -33,8 +33,13 @@ import {
 } from './state';
 import { Account, replayAccount, type Action, type FillEvent, type NewAction, type PendingType, type PriceFeed, type Side } from './trade/account';
 import { lossAt, lotsForRisk } from './trade/risk';
-import { renderHistory, renderMt4, renderStats, renderTrade, type Mt4Row, type TerminalTab } from './ui/terminal';
+import { analyze, tradesCsv, type Analysis, type TradeRecord } from './trade/analysis';
+import { renderHistory, renderMt4, renderTrade, type Mt4Row, type TerminalTab } from './ui/terminal';
+import { quickSummary, REPORT_CSS, reportBody, reportHtml } from './ui/report';
 import './style.css';
+
+// 成績レポートの見た目（書き出すファイルと同じものを画面にも使う）
+document.head.append(Object.assign(document.createElement('style'), { textContent: REPORT_CSS }));
 
 const rule = DEFAULT_SERVER_RULE;
 /** 再生速度（1 秒に進む 1 分足の本数） */
@@ -127,7 +132,8 @@ function defaultState(): AppState {
     test: null,
     drawings: {},
     layout: '1',
-    panes: DEFAULT_PANE_TFS.map((tf) => ({ tf, indicators: structuredClone(DEFAULT_INDICATORS) })),
+    panes: DEFAULT_PANE_TFS.map((tf) => ({ tf })),
+    indicatorSets: Object.fromEntries(Object.keys(TIMEFRAMES).map((tf) => [tf, structuredClone(DEFAULT_INDICATORS)])),
     activePane: 0,
     easyOrder: DEFAULT_EO,
     mt4: null,
@@ -136,15 +142,31 @@ function defaultState(): AppState {
 
 const DEFAULT_EO: EasyOrderState = { open: false, mode: 'market', risk: 1, riskUnit: 'pct', entry: null, sl: null, tp: null };
 
-/** 以前の保存（チャート 1 枚）を、チャートごとの設定に移す */
+/**
+ * 以前の保存を今の形に移す。
+ * - チャート 1 枚 → チャート 4 枚分の設定
+ * - チャートごとのインジケーター → 時間足ごとのインジケーター（そのチャートの時間足の設定にする。無い時間足は 1 枚目の設定）
+ */
 function migratePanes() {
-  if (state.panes?.length === 4) return;
-  state.panes = DEFAULT_PANE_TFS.map((tf, i) => ({
-    tf: i === 0 ? state.tf : tf,
-    indicators: structuredClone(i === 0 && state.indicators ? state.indicators : DEFAULT_INDICATORS),
-  }));
-  state.layout ??= '1';
-  state.activePane = 0;
+  if (state.panes?.length !== 4) {
+    state.panes = DEFAULT_PANE_TFS.map((tf, i) => ({ tf: i === 0 ? state.tf : tf, indicators: i === 0 ? state.indicators : undefined }));
+    state.layout ??= '1';
+    state.activePane = 0;
+  }
+  if (!state.indicatorSets) {
+    const sets: Record<string, IndicatorConfig> = {};
+    for (const ps of state.panes) if (ps.indicators && !sets[ps.tf]) sets[ps.tf] = ps.indicators;
+    const base = state.panes[0].indicators ?? state.indicators ?? DEFAULT_INDICATORS;
+    for (const tf of Object.keys(TIMEFRAMES)) sets[tf] ??= structuredClone(base);
+    state.indicatorSets = sets;
+  }
+  for (const ps of state.panes) delete ps.indicators;
+}
+
+/** その時間足のインジケーターの設定 */
+function indicatorsFor(tf: Timeframe): IndicatorConfig {
+  const sets = (state.indicatorSets ??= {});
+  return (sets[tf] = normalizeIndicators(sets[tf] ?? structuredClone(DEFAULT_INDICATORS)));
 }
 
 /** 起動時用: 並べ方を反映する（描画はこの後でまとめて行う） */
@@ -444,12 +466,146 @@ function renderTerminal(force = false) {
     tab === 'history'
       ? renderHistory(ctx)
       : tab === 'stats'
-        ? renderStats(ctx)
+        ? renderStatsTab()
         : tab === 'mt4'
           ? renderMt4(mt4Rows(), mt4Info(), md.digits, ctx.time)
           : renderTrade(ctx);
   termBody.scrollTop = scroll;
   document.querySelectorAll<HTMLButtonElement>('#terminal-tabs button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tab === tab)));
+}
+
+// ---------------- 成績 ----------------
+
+/** 保有中に一番不利・有利だった値幅（pips）。今の銘柄で、その期間の価格データがあるときだけ */
+function excursion(symbol: string, side: 'buy' | 'sell', openTime: number, closeTime: number, openPrice: number) {
+  if (symbol.toLowerCase() !== md.symbol) return { mae: null, mfe: null };
+  const i0 = md.indexAtOrBefore(openTime);
+  const i1 = md.indexAtOrBefore(closeTime);
+  if (i0 < 0 || i1 < i0 || openTime - md.bid[i0].t > 60_000) return { mae: null, mfe: null };
+  const bars = side === 'buy' ? md.bid : md.ask;
+  let hi = -Infinity;
+  let lo = Infinity;
+  for (let i = i0; i <= i1; i++) {
+    if (bars[i].h > hi) hi = bars[i].h;
+    if (bars[i].l < lo) lo = bars[i].l;
+  }
+  const dir = side === 'buy' ? 1 : -1;
+  const a = ((side === 'buy' ? lo : hi) - openPrice) * dir;
+  const f = ((side === 'buy' ? hi : lo) - openPrice) * dir;
+  return { mae: a / spec.pip, mfe: f / spec.pip };
+}
+
+/** 銘柄ごとの 1 pip（口座履歴にほかの銘柄が混ざっていても pips を正しく出すため） */
+function pipOf(symbol: string): number {
+  const s = symbol.toLowerCase();
+  const digits = manifest?.symbols[s]?.digits ?? (/jpy/i.test(s) || /xau/i.test(s) ? 3 : 5);
+  return symbolSpec(s, digits).pip;
+}
+
+function statsRecords(source: 'virtual' | 'mt4'): TradeRecord[] {
+  if (source === 'mt4') {
+    return (state.mt4?.trades ?? [])
+      .filter((t) => t.closeServer !== null && t.closePrice !== null)
+      .map((t) => {
+        const openTime = mt4ToUtc(t.openServer);
+        const closeTime = mt4ToUtc(t.closeServer!);
+        const dir = t.side === 'buy' ? 1 : -1;
+        return {
+          ticket: t.ticket,
+          side: t.side,
+          lots: t.lots,
+          openTime,
+          closeTime,
+          openPrice: t.openPrice,
+          closePrice: t.closePrice!,
+          sl: t.sl,
+          tp: t.tp,
+          profit: t.profit + t.swap + t.commission,
+          pips: ((t.closePrice! - t.openPrice) * dir) / pipOf(t.symbol),
+          // MT4 の履歴には決済の理由が無いので、記録の価格が S/L・T/P と同じかで見分ける
+          reason: t.sl !== null && Math.abs(t.closePrice! - t.sl) < pipOf(t.symbol) * 0.5 ? 'sl' : t.tp !== null && Math.abs(t.closePrice! - t.tp) < pipOf(t.symbol) * 0.5 ? 'tp' : 'manual',
+          ...excursion(t.symbol, t.side, openTime, closeTime, t.openPrice),
+        } satisfies TradeRecord;
+      });
+  }
+  return account.history.flatMap((h) => {
+    if (h.kind !== 'trade') return [];
+    const dir = h.side === 'buy' ? 1 : -1;
+    return [
+      {
+        ticket: h.ticket,
+        side: h.side,
+        lots: h.lots,
+        openTime: h.openTime,
+        closeTime: h.closeTime,
+        openPrice: h.openPrice,
+        closePrice: h.closePrice,
+        sl: h.sl,
+        tp: h.tp,
+        profit: h.profit,
+        pips: ((h.closePrice - h.openPrice) * dir) / pipOf(h.symbol),
+        reason: h.reason,
+        ...excursion(h.symbol, h.side, h.openTime, h.closeTime, h.openPrice),
+      } satisfies TradeRecord,
+    ];
+  });
+}
+
+let statsCache: { key: string; a: Analysis } | null = null;
+
+function currentAnalysis(): { a: Analysis; source: 'virtual' | 'mt4'; initial: number } {
+  const source = state.statsSource === 'mt4' && state.mt4 ? 'mt4' : 'virtual';
+  const initial = source === 'virtual' ? test().initialBalance : 0;
+  const key = `${source}:${account.history.length}:${state.mt4?.fileName}:${state.mt4?.trades.length}:${mt4Offset().hours}:${state.zone}:${dataVersion}:${md.symbol}`;
+  if (statsCache?.key !== key) {
+    statsCache = { key, a: analyze(statsRecords(source), initial, spec.pip, (t) => toDisplay(t, state.zone, rule)) };
+  }
+  return { a: statsCache.a, source, initial };
+}
+
+function statsInfo(source: 'virtual' | 'mt4') {
+  return {
+    sourceLabel: source === 'mt4' ? `MT4 の履歴（${state.mt4?.fileName ?? ''}）` : '仮想の取引',
+    symbolLabel: md.symbol.toUpperCase(),
+    hasBalance: source === 'virtual',
+  };
+}
+
+function renderStatsTab(): string {
+  const { a, source, initial } = currentAnalysis();
+  const btn = (src: string, label: string, disabled = false) =>
+    `<button type="button" data-action="stats-src" data-src="${src}" aria-pressed="${source === src}" ${disabled ? 'disabled title="MT4 履歴タブで読み込むと選べます"' : ''}>${label}</button>`;
+  const bar = `<div class="mt4-bar">${btn('virtual', '仮想の取引')}${btn('mt4', 'MT4 の履歴', !state.mt4)}
+    <span class="sep"></span>
+    <button type="button" data-action="export-csv" title="取引の一覧を CSV で保存（Excel で開ける）">CSV で書き出す</button>
+    <button type="button" data-action="export-html" title="グラフ付きのレポートを 1 つの HTML ファイルで保存">レポートを書き出す</button>
+    <span class="hint">MAE・MFE（含み損益の最大）は、今の銘柄で価格データがある取引だけ計算します</span></div>`;
+  // 一番上は簡単な一覧。詳しい分析はその下（書き出したレポートと同じ内容）
+  const detail = a.summary.trades ? `<h3 class="detail-head">詳しい分析</h3>${reportBody(a, statsInfo(source), initial)}` : reportBody(a, statsInfo(source), initial);
+  return bar + (a.summary.trades ? quickSummary(a.summary, statsInfo(source)) : '') + detail;
+}
+
+function download(name: string, text: string, type: string) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function exportStats(kind: 'csv' | 'html') {
+  const { a, source, initial } = currentAnalysis();
+  const info = statsInfo(source);
+  const date = new Date().toISOString().slice(0, 10);
+  const base = `成績_${currentMeta().name}_${source === 'mt4' ? 'MT4' : '仮想'}_${date}`.replace(/[\\/:*?"<>|]/g, '_');
+  const time = (t: number) => formatTime(t, state.zone, rule);
+  if (kind === 'csv') {
+    download(`${base}.csv`, tradesCsv(a.trades, time, md.digits, spec.pip, (t) => toDisplay(t, state.zone, rule)), 'text/csv');
+  } else {
+    const zone = state.zone === 'jst' ? '日本時間' : 'サーバー時間';
+    const subtitle = `${currentMeta().name} ・ ${info.sourceLabel} ・ ${a.summary.trades} 回 ・ 時刻は${zone} ・ ${date} 作成`;
+    download(`${base}.html`, reportHtml(`成績レポート（${info.symbolLabel}）`, subtitle, reportBody(a, info, initial)), 'text/html');
+  }
 }
 
 function mt4Info() {
@@ -1042,8 +1198,9 @@ function paneState(p: ChartPane): PaneState {
   return state.panes![p.index];
 }
 
-function openIndicatorDialog(cfg: IndicatorConfig = paneState(active).indicators) {
-  $('#ind-title').textContent = `インジケーター（${md.symbol.toUpperCase()},${active.tf} ・ チャート ${active.index + 1}）`;
+function openIndicatorDialog(cfg: IndicatorConfig = indicatorsFor(active.tf)) {
+  cfg = normalizeIndicators(cfg);
+  $('#ind-title').textContent = `インジケーター（${active.tf} 用 ・ ${active.tf} のチャートすべてに使う）`;
   const ma = $('#ind-ma');
   ma.innerHTML =
     '<tr><td></td><td>期間</td><td>種類</td><td>色</td></tr>' +
@@ -1055,17 +1212,18 @@ function openIndicatorDialog(cfg: IndicatorConfig = paneState(active).indicators
         <td><input type="color" data-i="${i}" data-f="color" value="${m.color}" /></td></tr>`,
       )
       .join('');
-  const rci = $('#ind-rci');
-  rci.innerHTML =
-    '<tr><td></td><td>期間</td><td>色</td></tr>' +
-    cfg.rci.lines
-      .map(
-        (l, i) => `<tr><td><input type="checkbox" data-i="${i}" data-f="enabled" ${l.enabled ? 'checked' : ''} /></td>
-        <td><input type="number" min="2" step="1" data-i="${i}" data-f="period" value="${l.period}" /></td>
-        <td><input type="color" data-i="${i}" data-f="color" value="${l.color}" /></td></tr>`,
-      )
-      .join('');
-  $<HTMLInputElement>('#ind-rci-on').checked = cfg.rci.enabled;
+  $('#ind-rci-wrap').innerHTML = cfg.rci
+    .map(
+      (rp, k) => `<h3>RCI ${k + 1} 段目（サブウィンドウ）<label class="inline"><input class="ind-rci-on" data-k="${k}" type="checkbox" ${rp.enabled ? 'checked' : ''} /> 表示する</label></h3>
+      <table class="ind-table" id="ind-rci-${k}"><tr><td></td><td>期間</td><td>色</td></tr>${rp.lines
+        .map(
+          (l, i) => `<tr><td><input type="checkbox" data-i="${i}" data-f="enabled" ${l.enabled ? 'checked' : ''} /></td>
+          <td><input type="number" min="2" step="1" data-i="${i}" data-f="period" value="${l.period}" /></td>
+          <td><input type="color" data-i="${i}" data-f="color" value="${l.color}" /></td></tr>`,
+        )
+        .join('')}</table>`,
+    )
+    .join('');
   const dlg = $<HTMLDialogElement>('#ind-dialog');
   if (!dlg.open) dlg.showModal();
 }
@@ -1080,11 +1238,21 @@ function readIndicatorDialog(): IndicatorConfig {
       });
       return out as T;
     });
-  const cur = paneState(active).indicators;
+  const cur = indicatorsFor(active.tf);
   return {
     ma: rows('#ind-ma', cur.ma),
-    rci: { enabled: $<HTMLInputElement>('#ind-rci-on').checked, lines: rows('#ind-rci', cur.rci.lines) },
+    rci: cur.rci.map((rp, k) => ({
+      enabled: document.querySelector<HTMLInputElement>(`.ind-rci-on[data-k="${k}"]`)!.checked,
+      lines: rows(`#ind-rci-${k}`, rp.lines),
+    })),
   };
+}
+
+/** 時間足の設定を変えて、その時間足のチャートに反映する */
+function applyIndicators(tfs: string[], cfg: IndicatorConfig) {
+  for (const tf of tfs) state.indicatorSets![tf] = structuredClone(cfg);
+  for (const p of panes) if (tfs.includes(p.tf)) p.indicators.setConfig(indicatorsFor(p.tf));
+  save();
 }
 
 // ---------------- 図形の色（時間足ごと） ----------------
@@ -1139,6 +1307,7 @@ function setupProjects() {
             zone: state.zone,
             layout: state.layout,
             panes: structuredClone(state.panes),
+            indicatorSets: structuredClone(state.indicatorSets),
             tfColors: structuredClone(state.tfColors),
             rightOffset: state.rightOffset,
           };
@@ -1231,6 +1400,8 @@ function syncTfButtons() {
 function setTf(tf: Timeframe) {
   active.tf = tf;
   paneState(active).tf = tf;
+  // インジケーターは時間足ごと。その時間足の設定に切り替える
+  active.indicators.setConfig(indicatorsFor(tf));
   syncTfButtons();
   active.render(true);
   active.scrollToNow();
@@ -1266,8 +1437,8 @@ function createPanes() {
     nearLeftEdge: loadEarlier,
     lead: (p) => (leader = p),
     rangeChanged: (p) => {
-      // マウスで動かしているチャートにだけ、ほかを合わせる（合わせた側の動きでは何もしない）
-      if (p !== leader || state.syncCharts === false || p.el.hidden) return;
+      // チャートはいつも連動する。マウスで動かしているチャートにだけ、ほかを合わせる（合わせた側の動きでは何もしない）
+      if (p !== leader || p.el.hidden) return;
       const t = p.anchorTime();
       if (t === null) return;
       for (const x of visiblePanes()) if (x !== p) x.alignTo(t);
@@ -1282,7 +1453,7 @@ function createPanes() {
     const el = document.createElement('div');
     el.className = 'pane';
     chartsEl.append(el);
-    const p = new ChartPane(i, el, host, ps.tf, ps.indicators);
+    const p = new ChartPane(i, el, host, ps.tf, indicatorsFor(ps.tf));
     p.overlay.onEdit = onLineEdit;
     p.drawings.colorOf = (d) => (d.tf ? (state.tfColors?.[d.tf] ?? DEFAULT_TF_COLORS[d.tf] ?? d.color) : d.color);
     p.setRightOffset(state.rightOffset ?? 12);
@@ -1342,15 +1513,8 @@ function setupControls() {
     renderQuotes();
   });
   $<HTMLSelectElement>('#layout').addEventListener('change', (e) => setLayout((e.target as HTMLSelectElement).value as Layout));
-  const syncBtn = $('#sync-charts');
-  syncBtn.setAttribute('aria-pressed', String(state.syncCharts !== false));
-  syncBtn.addEventListener('click', () => {
-    state.syncCharts = state.syncCharts === false;
-    syncBtn.setAttribute('aria-pressed', String(state.syncCharts));
-    // 入れたときは、操作の対象のチャートに合わせる
-    const t = state.syncCharts ? active.anchorTime() : null;
-    if (t !== null) for (const x of visiblePanes()) if (x !== active) x.alignTo(t);
-    save();
+  $('#zoom-reset').addEventListener('click', () => {
+    for (const p of visiblePanes()) p.resetZoom();
   });
 
   const zoneEl = $<HTMLSelectElement>('#zone');
@@ -1411,6 +1575,13 @@ function setupControls() {
     if (action === 'close') act({ kind: 'close', ticket: Number(target!.dataset.ticket) });
     if (action === 'cancel') act({ kind: 'cancel', ticket: Number(target!.dataset.ticket) });
     if (action === 'mt4-load') $('#mt4-file').click();
+    if (action === 'stats-src') {
+      state.statsSource = target!.dataset.src as 'virtual' | 'mt4';
+      renderTerminal(true);
+      save();
+    }
+    if (action === 'export-csv') exportStats('csv');
+    if (action === 'export-html') exportStats('html');
     if (action === 'mt4-clear' && confirm('読み込んだ MT4 の履歴を消しますか？')) {
       state.mt4 = null;
       mt4EventCache = null;
@@ -1438,10 +1609,13 @@ function setupControls() {
   });
   $('#ind-reset').addEventListener('click', () => openIndicatorDialog(structuredClone(DEFAULT_INDICATORS)));
   $('#ind-apply').addEventListener('click', () => {
-    paneState(active).indicators = readIndicatorDialog();
-    active.indicators.setConfig(paneState(active).indicators);
+    applyIndicators([active.tf], readIndicatorDialog());
     $<HTMLDialogElement>('#ind-dialog').close();
-    save();
+  });
+  $('#ind-copy-all').addEventListener('click', () => {
+    if (!confirm(`この設定を M1〜MN のすべての時間足に使いますか？（ほかの時間足の今の設定は上書きされます）`)) return;
+    applyIndicators(Object.keys(TIMEFRAMES), readIndicatorDialog());
+    $<HTMLDialogElement>('#ind-dialog').close();
   });
   termBody.addEventListener('contextmenu', (e) => {
     const row = (e.target as HTMLElement).closest<HTMLElement>('tr[data-ticket]');
