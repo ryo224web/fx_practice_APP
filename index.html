@@ -23,6 +23,12 @@
         <button data-tool="fibo" title="フィボナッチ・リトレースメント">Fib</button>
         <button id="clear-drawings" title="この銘柄の図形をすべて削除">全消去</button>
       </div>
+      <select id="layout" aria-label="チャートの並べ方" title="チャートの並べ方（時間足とインジケーターはチャートごと。クリックしたチャートが操作の対象）">
+        <option value="1">1 画面</option>
+        <option value="2h">左右に 2 画面</option>
+        <option value="2v">上下に 2 画面</option>
+        <option value="4">4 画面</option>
+      </select>
       <div class="group">
         <button id="zoom-in" title="拡大">＋</button>
         <button id="zoom-out" title="縮小">－</button>
@@ -42,8 +48,7 @@
     </header>
 
     <main id="chart-area">
-      <div id="chart"></div>
-      <div id="legend"></div>
+      <div id="charts" class="layout-1"></div>
       <div id="oneclick">
         <button id="sell-btn" class="sell" title="成行で売り（Bid）"><span>SELL</span><b id="bid-big">—</b></button>
         <div class="lots">
@@ -99,7 +104,7 @@
 
     <dialog id="ind-dialog">
       <form method="dialog">
-        <h2>インジケーター</h2>
+        <h2 id="ind-title">インジケーター</h2>
         <h3>移動平均（メインチャート）</h3>
         <table class="ind-table" id="ind-ma"></table>
         <h3>RCI（サブウィンドウ）<label class="inline"><input id="ind-rci-on" type="checkbox" /> 表示する</label></h3>

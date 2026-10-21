@@ -136,12 +136,50 @@ td.sell {
   min-height: 120px;
 }
 
-#chart {
+#charts {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  gap: 2px;
+  background: var(--border);
+}
+
+#charts.layout-1 {
+  grid-template: 1fr / 1fr;
+}
+
+#charts.layout-2h {
+  grid-template: 1fr / 1fr 1fr;
+}
+
+#charts.layout-2v {
+  grid-template: 1fr 1fr / 1fr;
+}
+
+#charts.layout-4 {
+  grid-template: 1fr 1fr / 1fr 1fr;
+}
+
+.pane {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+  outline: 1px solid transparent;
+  outline-offset: -1px;
+}
+
+/* 2 枚以上のとき、操作の対象のチャートに枠を付ける */
+.pane.active {
+  outline-color: var(--accent);
+}
+
+.pane-chart {
   position: absolute;
   inset: 0;
 }
 
-#legend {
+.pane .legend {
   position: absolute;
   top: 6px;
   left: 10px;
@@ -151,7 +189,7 @@ td.sell {
   color: var(--muted);
 }
 
-#legend b {
+.pane .legend b {
   color: var(--fg);
   font-weight: 600;
 }

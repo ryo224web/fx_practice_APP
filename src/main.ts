@@ -1,8 +1,8 @@
-import { CandlestickSeries, CrosshairMode, createChart, type CandlestickData, type Time, type UTCTimestamp } from 'lightweight-charts';
-import { DrawingManager, type DrawingKind } from './chart/drawings';
-import { DEFAULT_INDICATORS, IndicatorLayer, type IndicatorConfig } from './chart/indicators';
-import { TimeMapper } from './chart/mapper';
-import { TradeOverlay, type LineEdit, type OrderPreview } from './chart/trades';
+import { type CandlestickData, type Time, type UTCTimestamp } from 'lightweight-charts';
+import { type DrawingKind } from './chart/drawings';
+import { DEFAULT_INDICATORS, type IndicatorConfig } from './chart/indicators';
+import { ChartPane, type PaneHost } from './chart/pane';
+import { type LineEdit, type OrderPreview } from './chart/trades';
 import { aggregateWithIndex, mergeBars, TIMEFRAMES, type Aggregated, type Bar, type Timeframe } from './core/candles';
 import { formatMoney, formatPrice, formatTime, fromLocalInput, toLocalInput } from './core/format';
 import { sampleM1 } from './core/sample';
@@ -16,14 +16,19 @@ import {
   currentMeta,
   deleteProject,
   exportProject,
+  flushSave,
   importProject,
+  initStore,
   listProjects,
   loadState,
   renameProject,
   saveState,
+  storeInfo,
   switchProject,
   type AppState,
   type EasyOrderState,
+  type Layout,
+  type PaneState,
   type TestState,
 } from './state';
 import { Account, replayAccount, type Action, type FillEvent, type NewAction, type PendingType, type PriceFeed, type Side } from './trade/account';
@@ -39,10 +44,8 @@ const DEFAULT_LEVERAGE = 500;
 const DAY_BARS = 1440;
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
-const chartEl = $('#chart');
 const statusEl = $('#status');
 const symbolEl = $<HTMLSelectElement>('#symbol');
-const legendEl = $('#legend');
 const clockEl = $('#clock');
 const playBtn = $<HTMLButtonElement>('#play');
 const speedEl = $<HTMLInputElement>('#speed');
@@ -50,32 +53,18 @@ const lotsEl = $<HTMLInputElement>('#lots');
 const termBody = $('#terminal-body');
 const ctxMenu = $('#ctx-menu');
 
-// ---------------- チャート ----------------
-const css = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-const chart = createChart(chartEl, {
-  autoSize: true,
-  layout: { background: { color: 'transparent' }, textColor: css('--fg') },
-  grid: { vertLines: { color: css('--grid') }, horzLines: { color: css('--grid') } },
-  timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 12, shiftVisibleRangeOnNewBar: true },
-  crosshair: { mode: CrosshairMode.Normal },
-  localization: { locale: 'ja-JP' },
-});
-const series = chart.addSeries(CandlestickSeries, {
-  upColor: '#26a69a',
-  downColor: '#ef5350',
-  borderVisible: false,
-  wickUpColor: '#26a69a',
-  wickDownColor: '#ef5350',
-});
-const mapper = new TimeMapper();
-// 注文の線のドラッグを図形より優先するため、先に登録する
-const overlay = new TradeOverlay(chartEl, mapper);
-series.attachPrimitive(overlay);
-const drawings = new DrawingManager(chartEl, mapper);
-series.attachPrimitive(drawings);
-const indicators = new IndicatorLayer(chart);
-// 開発中の調査用（本番のビルドには入らない）
-if (import.meta.env.DEV) Object.assign(window, { __fx: { chart, series, mapper, drawings, overlay } });
+// ---------------- チャート（画面を分けて最大 4 枚） ----------------
+const chartsEl = $('#charts');
+let panes: ChartPane[] = [];
+let active: ChartPane;
+
+/** 表示しているチャート */
+function visiblePanes(): ChartPane[] {
+  return panes.filter((p) => !p.el.hidden);
+}
+
+const LAYOUT_PANES: Record<Layout, number> = { '1': 1, '2h': 2, '2v': 2, '4': 4 };
+const DEFAULT_PANE_TFS: Timeframe[] = ['M15', 'H4', 'H1', 'M5'];
 
 // ---------------- 状態 ----------------
 let state: AppState;
@@ -92,7 +81,6 @@ const aggCache = new Map<
   Timeframe,
   { agg: Aggregated; times: number[]; data: CandlestickData[]; closes: Float64Array; chartTimes: Time[]; version: number }
 >();
-const shown = { tf: '' as Timeframe | '', k: -1, version: -1 };
 let loadingEarlier = false;
 let loadingLater = false;
 let lastTerminalRender = 0;
@@ -136,13 +124,38 @@ function defaultState(): AppState {
     terminalHeight: 220,
     test: null,
     drawings: {},
-    indicators: DEFAULT_INDICATORS,
+    layout: '1',
+    panes: DEFAULT_PANE_TFS.map((tf) => ({ tf, indicators: structuredClone(DEFAULT_INDICATORS) })),
+    activePane: 0,
     easyOrder: DEFAULT_EO,
     mt4: null,
   };
 }
 
 const DEFAULT_EO: EasyOrderState = { open: false, mode: 'market', risk: 1, riskUnit: 'pct', entry: null, sl: null, tp: null };
+
+/** 以前の保存（チャート 1 枚）を、チャートごとの設定に移す */
+function migratePanes() {
+  if (state.panes?.length === 4) return;
+  state.panes = DEFAULT_PANE_TFS.map((tf, i) => ({
+    tf: i === 0 ? state.tf : tf,
+    indicators: structuredClone(i === 0 && state.indicators ? state.indicators : DEFAULT_INDICATORS),
+  }));
+  state.layout ??= '1';
+  state.activePane = 0;
+}
+
+/** 起動時用: 並べ方を反映する（描画はこの後でまとめて行う） */
+function setLayoutQuiet(layout: Layout) {
+  state.layout = layout;
+  chartsEl.className = `layout-${layout}`;
+  const n = LAYOUT_PANES[layout];
+  panes.forEach((p, i) => (p.el.hidden = i >= n));
+  if (active.el.hidden) active = panes[0];
+  for (const x of panes) x.setActive(x === active && n > 1);
+  $<HTMLSelectElement>('#layout').value = layout;
+  syncTfButtons();
+}
 
 function eo(): EasyOrderState {
   return (state.easyOrder ??= { ...DEFAULT_EO });
@@ -167,9 +180,11 @@ async function openSymbol(symbol: string, around: number | null) {
   usd = null;
   await syncUsd();
   dataChanged();
-  series.applyOptions({ priceFormat: { type: 'price', precision: md.digits, minMove: 10 ** -md.digits } });
-  drawings.digits = md.digits;
-  drawings.setDrawings(state.drawings[md.symbol] ?? []);
+  const list = (state.drawings[md.symbol] ??= []);
+  for (const p of panes) {
+    p.setDigits(md.digits);
+    p.drawings.setDrawings(list);
+  }
   // 読み込み済みの MT4 履歴に、この銘柄の取引があれば時刻のずれを判定する（まだなら）
   if (state.mt4) await detectMt4ForSymbol();
 }
@@ -314,7 +329,7 @@ function goTo(target: number, pause = true): boolean {
 
 /** 今の時間足で 1 本進む（作りかけの足なら、その足の終わりまで） */
 function stepBar(dir: 1 | -1) {
-  const { agg } = getAgg(state.tf);
+  const { agg } = getAgg(active.tf);
   const k = lastLE(agg.starts, cursor);
   const endOf = (j: number) => (j + 1 < agg.starts.length ? agg.starts[j + 1] - 1 : md.bid.length - 1);
   if (dir > 0) goTo(cursor < endOf(k) ? endOf(k) : endOf(k + 1));
@@ -352,7 +367,7 @@ function setPlaying(on: boolean) {
     requestAnimationFrame(frame);
   } else if (account) {
     renderTerminal(true);
-    save();
+    save(true);
   }
 }
 
@@ -384,30 +399,13 @@ function loadEarlier() {
     .finally(() => (loadingEarlier = false));
 }
 
-chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
-  if (r && r.from < 30) loadEarlier();
-});
-
 // ---------------- 表示 ----------------
 function renderChart(reset = false, keepView = false) {
-  const { agg, times, data, closes, chartTimes } = getAgg(state.tf);
-  mapper.times = times;
-  mapper.size = TIMEFRAMES[state.tf] * 60_000;
-  const k = lastLE(agg.starts, cursor);
-  const partial = toChart(mergeBars(md.bid, agg.starts[k], cursor, agg.bars[k].t));
-  if (reset || shown.tf !== state.tf || shown.version !== dataVersion || k < shown.k) {
-    const view = keepView ? chart.timeScale().getVisibleRange() : null;
-    series.setData([...data.slice(0, k), partial]);
-    if (view) chart.timeScale().setVisibleRange(view);
-  } else {
-    for (let j = shown.k; j < k; j++) series.update(data[j]);
-    series.update(partial);
-  }
-  shown.tf = state.tf;
-  shown.k = k;
-  shown.version = dataVersion;
-  indicators.render({ key: `${state.tf}:${dataVersion}`, closes, times: chartTimes, k, partialClose: partial.close });
-  drawings.refresh();
+  for (const p of visiblePanes()) p.render(reset, keepView);
+}
+
+function scrollToNow() {
+  for (const p of visiblePanes()) p.scrollToNow();
 }
 
 function renderQuotes() {
@@ -419,7 +417,7 @@ function renderQuotes() {
   $('#spread').textContent = `${((ask - bid) / spec.pip).toFixed(1)} pips${est ? '（推定）' : ''}`;
   $('#spread').title = est ? 'この時間の Ask はデータに無いため、直前のスプレッドで推定しています' : '';
   clockEl.textContent = formatTime(md.bid[cursor].t + 60_000, state.zone, rule);
-  overlay.update({
+  const view = {
     positions: account.positions,
     orders: account.orders,
     history: account.history,
@@ -428,28 +426,10 @@ function renderQuotes() {
     digits: md.digits,
     preview: eoPreview(),
     imported: mt4View(),
-  });
+  };
+  for (const p of visiblePanes()) p.overlay.update(view);
   eoRender();
-  if (!hovering) showLegend(null);
 }
-
-let hovering = false;
-function showLegend(bar: { open: number; high: number; low: number; close: number } | null) {
-  const { agg } = getAgg(state.tf);
-  const k = lastLE(agg.starts, cursor);
-  const b = bar ?? (() => {
-    const m = mergeBars(md.bid, agg.starts[k], cursor, agg.bars[k].t);
-    return { open: m.o, high: m.h, low: m.l, close: m.c };
-  })();
-  const f = (p: number) => formatPrice(p, md.digits);
-  legendEl.innerHTML = `<b>${md.symbol.toUpperCase()},${state.tf}</b>　${f(b.open)} ${f(b.high)} ${f(b.low)} <b>${f(b.close)}</b>`;
-}
-
-chart.subscribeCrosshairMove((p) => {
-  const d = p.seriesData.get(series) as CandlestickData | undefined;
-  hovering = !!(p.time && d);
-  showLegend(hovering && d ? d : null);
-});
 
 function renderTerminal(force = false) {
   const now = performance.now();
@@ -595,7 +575,7 @@ $('#md-apply').addEventListener('click', () => modifyAction('modify'));
 $('#md-close').addEventListener('click', () => modifyAction('close'));
 $('#md-delete').addEventListener('click', () => modifyAction('cancel'));
 
-overlay.onEdit = (e: LineEdit) => {
+function onLineEdit(e: LineEdit) {
   const p = account.positions.find((x) => x.ticket === e.ticket);
   const o = account.orders.find((x) => x.ticket === e.ticket);
   const cur = p ?? o;
@@ -604,7 +584,7 @@ overlay.onEdit = (e: LineEdit) => {
   else act({ kind: 'modify', ticket: e.ticket, sl: e.field === 'sl' ? e.price : cur.sl, tp: e.field === 'tp' ? e.price : cur.tp });
   // 失敗したときも線を元の位置に戻す
   renderQuotes();
-};
+}
 
 // ---------------- 新しい検証 ----------------
 function openNewTestDialog() {
@@ -640,7 +620,7 @@ async function startTest(symbol: string, start: number, balance: number, leverag
   };
   rebuildAccount();
   renderChart(true);
-  chart.timeScale().scrollToRealTime();
+  scrollToNow();
   refresh();
   save(true);
   return null;
@@ -858,7 +838,7 @@ async function jumpToTrade(ticket: number) {
   await ensureLoaded(openUtc, openUtc);
   // エントリーする足の 1 本前に置く（→ で進めるとエントリーが現れる）
   goTo(md.indexAtOrBefore(openUtc) - 1, false);
-  chart.timeScale().scrollToRealTime();
+  scrollToNow();
 }
 
 // ---------------- EasyOrder ----------------
@@ -1035,14 +1015,21 @@ function setupEasyOrder() {
   bindNum('#eo-tp', 'tp', true);
   bindNum('#eo-entry', 'entry', false);
   $('#eo-send').addEventListener('click', eoSend);
-  overlay.onPreviewEdit = (field, price) => {
-    e()[field] = roundPrice(price);
-    refresh();
-  };
+  for (const p of panes)
+    p.overlay.onPreviewEdit = (field, price) => {
+      e()[field] = roundPrice(price);
+      refresh();
+    };
 }
 
 // ---------------- インジケーターの設定 ----------------
-function openIndicatorDialog(cfg: IndicatorConfig = state.indicators ?? DEFAULT_INDICATORS) {
+/** チャートごとの設定（時間足とインジケーター） */
+function paneState(p: ChartPane): PaneState {
+  return state.panes![p.index];
+}
+
+function openIndicatorDialog(cfg: IndicatorConfig = paneState(active).indicators) {
+  $('#ind-title').textContent = `インジケーター（${md.symbol.toUpperCase()},${active.tf} ・ チャート ${active.index + 1}）`;
   const ma = $('#ind-ma');
   ma.innerHTML =
     '<tr><td></td><td>期間</td><td>種類</td><td>色</td></tr>' +
@@ -1079,7 +1066,7 @@ function readIndicatorDialog(): IndicatorConfig {
       });
       return out as T;
     });
-  const cur = state.indicators ?? DEFAULT_INDICATORS;
+  const cur = paneState(active).indicators;
   return {
     ma: rows('#ind-ma', cur.ma),
     rci: { enabled: $<HTMLInputElement>('#ind-rci-on').checked, lines: rows('#ind-rci', cur.rci.lines) },
@@ -1091,10 +1078,20 @@ function readIndicatorDialog(): IndicatorConfig {
 
 let leaving = false;
 
-function reloadInto(fn: () => void) {
-  save(true);
+/** 今のプロジェクトを保存し終えてから fn（切り替えなど）を行い、ページを読み直す */
+async function reloadInto(fn: () => Promise<unknown>) {
+  if (leaving) return;
+  setPlaying(false);
+  saveState(state);
+  await flushSave();
   leaving = true;
-  fn();
+  try {
+    await fn();
+  } catch (e) {
+    leaving = false;
+    toast(e instanceof Error ? e.message : String(e));
+    return;
+  }
   location.reload();
 }
 
@@ -1113,7 +1110,7 @@ function setupProjects() {
           const name = prompt('新しいプロジェクトの名前', `プロジェクト ${listProjects().length + 1}`);
           if (!name) return;
           // 銘柄・時間足・インジケーターは今の設定を引き継ぐ
-          const fresh: AppState = { ...defaultState(), symbol: state.symbol, tf: state.tf, zone: state.zone, indicators: state.indicators };
+          const fresh: AppState = { ...defaultState(), symbol: state.symbol, zone: state.zone, layout: state.layout, panes: structuredClone(state.panes) };
           reloadInto(() => createProject(name, fresh));
         },
       ],
@@ -1122,8 +1119,8 @@ function setupProjects() {
         () => {
           const name = prompt('プロジェクトの名前', currentMeta().name);
           if (!name) return;
-          renameProject(cur.id, name);
           sel.selectedOptions[0].textContent = name;
+          renameProject(cur.id, name).catch((e) => toast(e instanceof Error ? e.message : String(e)));
         },
       ],
       ['複製', () => reloadInto(() => createProject(`${currentMeta().name} のコピー`, structuredClone(state)))],
@@ -1144,23 +1141,25 @@ function setupProjects() {
         () => {
           if (listProjects().length <= 1) return toast('最後のプロジェクトは削除できません');
           if (!confirm(`「${currentMeta().name}」を削除しますか？元に戻せません`)) return;
+          // 消すプロジェクトは保存しない
           leaving = true;
-          deleteProject(cur.id);
-          location.reload();
+          deleteProject(cur.id).then(
+            () => location.reload(),
+            (e) => {
+              leaving = false;
+              toast(e instanceof Error ? e.message : String(e));
+            },
+          );
         },
       ],
+      ['保存先を表示', () => toast(storeInfo().remote ? `保存先: ${storeInfo().dir}` : '保存先のフォルダに届かないため、ブラウザの中だけに保存しています')],
     ]);
   });
   $<HTMLInputElement>('#project-file').addEventListener('change', async (ev) => {
     const file = (ev.target as HTMLInputElement).files?.[0];
     if (!file) return;
-    try {
-      const text = await file.text();
-      reloadInto(() => importProject(text));
-    } catch (e) {
-      leaving = false;
-      toast(e instanceof Error ? e.message : String(e));
-    }
+    const text = await file.text();
+    await reloadInto(() => importProject(text));
   });
 }
 
@@ -1180,17 +1179,72 @@ async function changeSymbol(symbol: string) {
   test().baseline.time = md.bid[cursor].t;
   rebuildAccount();
   renderChart(true);
-  chart.timeScale().scrollToRealTime();
+  scrollToNow();
   refresh();
 }
 
+/** 操作の対象のチャート（時間足・インジケーター・拡大縮小・←→ はこのチャートに効く） */
+function setActivePane(p: ChartPane) {
+  if (active === p) return;
+  active = p;
+  state.activePane = p.index;
+  for (const x of panes) x.setActive(x === p && visiblePanes().length > 1);
+  syncTfButtons();
+  save();
+}
+
+function syncTfButtons() {
+  document.querySelectorAll<HTMLButtonElement>('[data-tf]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tf === active.tf)));
+}
+
 function setTf(tf: Timeframe) {
-  state.tf = tf;
-  document.querySelectorAll<HTMLButtonElement>('[data-tf]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tf === tf)));
-  renderChart(true);
-  chart.timeScale().scrollToRealTime();
+  active.tf = tf;
+  paneState(active).tf = tf;
+  syncTfButtons();
+  active.render(true);
+  active.scrollToNow();
   renderQuotes();
   save();
+}
+
+function setLayout(layout: Layout) {
+  state.layout = layout;
+  chartsEl.className = `layout-${layout}`;
+  const n = LAYOUT_PANES[layout];
+  panes.forEach((p, i) => (p.el.hidden = i >= n));
+  if (active.el.hidden) setActivePane(panes[0]);
+  for (const x of panes) x.setActive(x === active && n > 1);
+  $<HTMLSelectElement>('#layout').value = layout;
+  renderChart(true);
+  scrollToNow();
+  renderQuotes();
+  save();
+}
+
+/** チャートを 4 枚作る（表示するのは並べ方の枚数だけ） */
+function createPanes() {
+  const host: PaneHost = {
+    agg: getAgg,
+    dataVersion: () => dataVersion,
+    cursor: () => cursor,
+    bid: () => md.bid,
+    toChart,
+    symbol: () => md.symbol,
+    digits: () => md.digits,
+    activate: setActivePane,
+    nearLeftEdge: loadEarlier,
+  };
+  panes = state.panes!.map((ps, i) => {
+    const el = document.createElement('div');
+    el.className = 'pane';
+    chartsEl.append(el);
+    const p = new ChartPane(i, el, host, ps.tf, ps.indicators);
+    p.overlay.onEdit = onLineEdit;
+    return p;
+  });
+  active = panes[Math.min(state.activePane ?? 0, panes.length - 1)];
+  // 開発中の調査用（本番のビルドには入らない）
+  if (import.meta.env.DEV) Object.assign(window, { __fx: { panes, active: () => active } });
 }
 
 function setupControls() {
@@ -1203,38 +1257,52 @@ function setupControls() {
     tfBar.append(btn);
   }
 
+  // 図形はすべてのチャートで共通（どのチャートに描いても全部に出る）
   document.querySelectorAll<HTMLButtonElement>('[data-tool]').forEach((b) =>
-    b.addEventListener('click', () => drawings.setTool((b.dataset.tool || null) as DrawingKind | null)),
+    b.addEventListener('click', () => {
+      const tool = (b.dataset.tool || null) as DrawingKind | null;
+      for (const p of panes) p.drawings.setTool(tool);
+    }),
   );
-  drawings.onToolChange = (tool) =>
+  const showTool = (tool: DrawingKind | null) =>
     document.querySelectorAll<HTMLButtonElement>('[data-tool]').forEach((b) => b.setAttribute('aria-pressed', String((b.dataset.tool || null) === tool)));
-  drawings.onToolChange(null);
-  drawings.onChange = () => {
-    state.drawings[md.symbol] = drawings.drawings;
-    save();
-  };
+  for (const p of panes) {
+    p.drawings.onToolChange = (tool) => {
+      // 1 枚で描き終えたら、ほかのチャートのツールも戻す
+      if (tool === null) for (const x of panes) if (x.drawings.tool !== null) x.drawings.setTool(null);
+      showTool(tool);
+    };
+    p.drawings.onChange = () => {
+      state.drawings[md.symbol] = p.drawings.drawings;
+      for (const x of panes) {
+        if (x === p) continue;
+        x.drawings.drawings = p.drawings.drawings;
+        x.drawings.refresh();
+      }
+      save();
+    };
+  }
+  showTool(null);
   $('#clear-drawings').addEventListener('click', () => {
-    if (drawings.drawings.length && confirm(`${md.symbol.toUpperCase()} の図形をすべて消しますか？`)) drawings.clearAll();
+    if (active.drawings.drawings.length && confirm(`${md.symbol.toUpperCase()} の図形をすべて消しますか？`)) active.drawings.clearAll();
   });
 
-  const zoom = (f: number) => {
-    const ts = chart.timeScale();
-    ts.applyOptions({ barSpacing: Math.max(1, Math.min(60, ts.options().barSpacing * f)) });
-  };
-  $('#zoom-in').addEventListener('click', () => zoom(1.25));
-  $('#zoom-out').addEventListener('click', () => zoom(0.8));
+  $('#zoom-in').addEventListener('click', () => active.zoom(1.25));
+  $('#zoom-out').addEventListener('click', () => active.zoom(0.8));
   $('#toggle-history').addEventListener('click', (e) => {
-    overlay.showHistory = !overlay.showHistory;
-    (e.currentTarget as HTMLElement).setAttribute('aria-pressed', String(overlay.showHistory));
+    const on = !panes[0].overlay.showHistory;
+    for (const p of panes) p.overlay.showHistory = on;
+    (e.currentTarget as HTMLElement).setAttribute('aria-pressed', String(on));
     renderQuotes();
   });
+  $<HTMLSelectElement>('#layout').addEventListener('change', (e) => setLayout((e.target as HTMLSelectElement).value as Layout));
 
   const zoneEl = $<HTMLSelectElement>('#zone');
   zoneEl.addEventListener('change', () => {
     state.zone = zoneEl.value as DisplayZone;
     dataChanged();
     renderChart(true, false);
-    chart.timeScale().scrollToRealTime();
+    scrollToNow();
     refresh();
   });
 
@@ -1299,8 +1367,8 @@ function setupControls() {
   $('#indicators-btn').addEventListener('click', () => openIndicatorDialog());
   $('#ind-reset').addEventListener('click', () => openIndicatorDialog(structuredClone(DEFAULT_INDICATORS)));
   $('#ind-apply').addEventListener('click', () => {
-    state.indicators = readIndicatorDialog();
-    indicators.setConfig(state.indicators);
+    paneState(active).indicators = readIndicatorDialog();
+    active.indicators.setConfig(paneState(active).indicators);
     $<HTMLDialogElement>('#ind-dialog').close();
     save();
   });
@@ -1346,6 +1414,8 @@ function setupControls() {
 
   document.addEventListener('keydown', onKey);
   window.addEventListener('beforeunload', () => save(true));
+  // 別のアプリに切り替えたときもすぐ書く（閉じる直前の分がファイルに届かないことがあるため）
+  document.addEventListener('visibilitychange', () => document.hidden && save(true));
 }
 
 function showMenu(x: number, y: number, items: [string, () => void][]) {
@@ -1371,7 +1441,7 @@ async function jump() {
   // その日時までのデータを読み込む（途中の約定も計算するため、間の月もすべて）
   await ensureLoaded(t, t);
   goTo(md.indexAtOrBefore(t), false);
-  chart.timeScale().scrollToRealTime();
+  scrollToNow();
 }
 
 function onKey(e: KeyboardEvent) {
@@ -1394,10 +1464,10 @@ function onKey(e: KeyboardEvent) {
       break;
     case 'Delete':
     case 'Backspace':
-      if (!drawings.deleteSelected()) return;
+      if (!panes.some((p) => p.drawings.deleteSelected())) return;
       break;
     case 'Escape':
-      drawings.setTool(null);
+      for (const p of panes) p.drawings.setTool(null);
       ctxMenu.hidden = true;
       return;
     default:
@@ -1408,7 +1478,10 @@ function onKey(e: KeyboardEvent) {
 
 // ---------------- 起動 ----------------
 async function start() {
+  const store = await initStore();
   state = { ...defaultState(), ...loadState() };
+  migratePanes();
+  createPanes();
   manifest = await loadManifest();
   const symbols = manifest ? Object.keys(manifest.symbols).filter((s) => manifest!.symbols[s].months.length) : [];
   if (!manifest || symbols.length === 0) {
@@ -1436,13 +1509,12 @@ async function start() {
   setupControls();
   setupProjects();
   setupEasyOrder();
-  indicators.setConfig(state.indicators ?? DEFAULT_INDICATORS);
   $<HTMLSelectElement>('#zone').value = state.zone;
   speedEl.value = String(state.speed);
   $('#speed-label').textContent = speedLabel(SPEEDS[state.speed]);
   $<HTMLInputElement>('#pause-on-fill').checked = state.pauseOnFill;
   lotsEl.value = String(state.lots);
-  document.querySelectorAll<HTMLButtonElement>('[data-tf]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tf === state.tf)));
+  setLayoutQuiet(state.layout ?? '1');
 
   if (!state.test || md.indexAtOrBefore(state.cursor) < 0) {
     // 初めて開いたとき: データの最後から 5 日前を開始時刻にする
@@ -1457,6 +1529,8 @@ async function start() {
   $<HTMLInputElement>('#jump').value = toLocalInput(md.bid[cursor].t, state.zone, rule);
 
   updateStatus(Math.round(performance.now()));
+  if (store.lockedBy) toast(`このプロジェクトは別の Mac（${store.lockedBy}）でも開いているようです。同時に使うと Dropbox で競合コピーができます`);
+  else if (!store.remote) toast('保存先のフォルダに届かないため、ブラウザの中だけに保存しています');
 }
 
 let firstPaintMs = 0;
@@ -1465,6 +1539,7 @@ function updateStatus(ms = firstPaintMs) {
   const months = md.loadedMonths;
   const range = months.length ? `${months[0]}〜${months[months.length - 1]}` : '';
   statusEl.textContent = `${manifest ? md.symbol.toUpperCase() : '仮データ'} ${range} / 表示まで ${ms} ms`;
+  statusEl.title = storeInfo().remote ? `プロジェクトの保存先: ${storeInfo().dir}` : 'プロジェクトはブラウザの中だけに保存しています';
   if (!manifest) statusEl.textContent += '（npm run import-data で実データを入れてください）';
 }
 
