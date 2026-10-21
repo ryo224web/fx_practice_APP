@@ -74,12 +74,14 @@ interface LineInfo {
   price: number;
 }
 
-type WantedLine = LineInfo & { color: string; title: string; style: LineStyle; width?: 1 | 2; fixed?: boolean };
+type WantedLine = LineInfo & { color: string; title: string; style: LineStyle; width?: 1 | 2; fixed?: boolean; noAxisLabel?: boolean };
 
 export class TradeOverlay implements ISeriesPrimitive<Time> {
   onEdit: (edit: LineEdit) => void = () => {};
   onPreviewEdit: (field: PreviewField, price: number) => void = () => {};
   showHistory = true;
+  /** 口座履歴で選んだ取引。エントリーに縦線を引いて分かりやすくする */
+  highlight: { openTime: number; closeTime: number } | null = null;
 
   private chart: IChartApi | null = null;
   private series: ISeriesApi<SeriesType> | null = null;
@@ -113,6 +115,11 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
 
   paneViews(): readonly IPrimitivePaneView[] {
     return [{ renderer: () => this.renderer() }];
+  }
+
+  setHighlight(h: { openTime: number; closeTime: number } | null) {
+    this.highlight = h;
+    this.requestUpdate();
   }
 
   update(view: TradeView) {
@@ -151,8 +158,8 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
       else if (isEntry) want.push({ ...d.info, key, price: d.price, color: PREVIEW, title: '', style: LineStyle.Dashed });
     }
     if (view.ask !== null) {
-      // 「Ask」の札は出さず、線と目盛りの価格だけにする（推定のときは黄色の破線）
-      want.push({ key: 'ask', ticket: 0, role: 'entry', price: view.ask, color: view.askEstimated ? '#d29922' : SELL, title: '', style: view.askEstimated ? LineStyle.Dashed : LineStyle.Solid });
+      // Ask は線だけ（目盛りには今の価格 = Bid だけを出す）。推定のときは黄色の破線
+      want.push({ key: 'ask', ticket: 0, role: 'entry', price: view.ask, color: view.askEstimated ? '#d29922' : SELL, title: '', style: view.askEstimated ? LineStyle.Dashed : LineStyle.Solid, noAxisLabel: true });
     }
 
     const keep = new Set(want.map((w) => w.key));
@@ -163,7 +170,7 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
       }
     }
     for (const w of want) {
-      const opts = { price: w.price, color: w.color, title: w.title, lineStyle: w.style, lineWidth: w.width ?? 1, axisLabelVisible: true };
+      const opts = { price: w.price, color: w.color, title: w.title, lineStyle: w.style, lineWidth: w.width ?? 1, axisLabelVisible: !w.noAxisLabel };
       const l = this.lines.get(w.key);
       if (l) l.applyOptions(opts);
       else this.lines.set(w.key, this.series.createPriceLine(opts));
@@ -247,7 +254,30 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
           const y = this.series!.priceToCoordinate(p);
           return x === null || y === null ? null : { x, y };
         };
-        target.useMediaCoordinateSpace(({ context: ctx }) => {
+        target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
+          if (this.highlight) {
+            const x = this.mapper.toX(ts, this.highlight.openTime);
+            const x2 = this.mapper.toX(ts, this.highlight.closeTime);
+            ctx.save();
+            ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--fg').trim() || '#fff';
+            ctx.lineWidth = 1;
+            if (x !== null) {
+              ctx.beginPath();
+              ctx.moveTo(x, 0);
+              ctx.lineTo(x, mediaSize.height);
+              ctx.stroke();
+            }
+            // 決済は点線
+            if (x2 !== null) {
+              ctx.globalAlpha = 0.5;
+              ctx.setLineDash([3, 4]);
+              ctx.beginPath();
+              ctx.moveTo(x2, 0);
+              ctx.lineTo(x2, mediaSize.height);
+              ctx.stroke();
+            }
+            ctx.restore();
+          }
           const arrow = (x: number, y: number, up: boolean, color: string) => {
             ctx.fillStyle = color;
             ctx.beginPath();
@@ -264,7 +294,8 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
             const b = pt(h.closeTime, h.closePrice);
             const color = h.side === 'buy' ? BUY : SELL;
             if (a && b) {
-              ctx.strokeStyle = color;
+              // 建値と決済を結ぶ点線は、勝ちなら緑・負けなら赤
+              ctx.strokeStyle = h.profit > 0 ? TP : SL;
               ctx.setLineDash([3, 3]);
               ctx.beginPath();
               ctx.moveTo(a.x, a.y);

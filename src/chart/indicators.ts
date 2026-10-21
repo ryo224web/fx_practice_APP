@@ -41,6 +41,9 @@ export const DEFAULT_INDICATORS: IndicatorConfig = {
   },
 };
 
+/** RCI の目安の線 */
+const RCI_LEVELS = [95, 80, 0, -80, -95];
+
 /** 一度に計算する RCI の本数（表示を左へ動かすとさらに計算する） */
 const WINDOW = 2000;
 
@@ -101,11 +104,19 @@ export class IndicatorLayer {
         1,
       );
       if (n === 0) {
-        for (const p of [80, 0, -80]) series.createPriceLine({ price: p, color: '#8d96a0', lineStyle: LineStyle.Dotted, lineWidth: 1, axisLabelVisible: false, title: '' });
+        // MT4 と同じく、目安の線はすべて点線
+        for (const p of RCI_LEVELS) series.createPriceLine({ price: p, color: '#8d96a0', lineStyle: LineStyle.Dotted, lineWidth: 1, axisLabelVisible: false, title: '' });
+        // 目盛りは -100〜100。100 と -100 の数字が切れない程度の、ごくわずかな余白だけ付ける
+        series.priceScale().applyOptions({ scaleMargins: { top: 0.04, bottom: 0.04 } });
       }
       this.lines.push({ series, values: (inp, j) => this.rciValue(inp, j, l.period) });
     });
-    if (rci.length) this.chart.panes()[1]?.setHeight(130);
+    // 高さは比率で決める（隠れているチャートは大きさが 0 なので、ピクセルでは決められない）。
+    // 境目の線をドラッグすれば変えられる
+    if (rci.length) {
+      this.chart.panes()[0]?.setStretchFactor(3);
+      this.chart.panes()[1]?.setStretchFactor(1);
+    }
     this.shown.key = '';
     if (this.last) this.render(this.last);
   }

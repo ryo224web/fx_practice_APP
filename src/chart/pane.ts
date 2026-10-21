@@ -33,6 +33,10 @@ export interface PaneHost {
   nearLeftEdge(): void;
   /** 右の余白（足の本数）を三角のつまみで変えた */
   setRightOffset(bars: number): void;
+  /** 表示の範囲が変わった（スクロール・拡大縮小）。ほかのチャートを合わせるのに使う */
+  rangeChanged(pane: ChartPane): void;
+  /** マウスがこのチャートに入った（このチャートの動きにほかを合わせる） */
+  lead(pane: ChartPane): void;
 }
 
 const css = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -102,9 +106,11 @@ export class ChartPane {
     this.indicators.setConfig(indicators);
 
     el.addEventListener('mousedown', () => host.activate(this), true);
+    el.addEventListener('mouseenter', () => host.lead(this));
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
       if (r && r.from < 30) host.nearLeftEdge();
       this.placeShiftHandle();
+      host.rangeChanged(this);
     });
     this.shiftHandle.addEventListener('mousedown', (e) => {
       e.preventDefault();
@@ -169,6 +175,26 @@ export class ChartPane {
     }
     const f = (p: number) => p.toFixed(this.host.digits());
     this.legend.innerHTML = `<b>${this.host.symbol().toUpperCase()},${this.tf}</b>　${f(b.open)} ${f(b.high)} ${f(b.low)} <b>${f(b.close)}</b>`;
+  }
+
+  /**
+   * 連動の目印の時刻: 右の余白を除いた右端（最新の足を表示しているなら、その足の時刻）。
+   * 時間足が違っても、この時刻をそろえれば同じ場面を見られる
+   */
+  anchorTime(): number | null {
+    const ts = this.chart.timeScale();
+    const r = ts.getVisibleLogicalRange();
+    return r ? this.mapper.toTime(r.to - ts.options().rightOffset) : null;
+  }
+
+  /** 目印の時刻が同じ位置に来るように動かす（表示する本数＝拡大率はそのまま） */
+  alignTo(time: number) {
+    const ts = this.chart.timeScale();
+    const r = ts.getVisibleLogicalRange();
+    if (!r) return;
+    const to = this.mapper.toLogical(time) + ts.options().rightOffset;
+    if (Math.abs(to - r.to) < 0.01) return;
+    ts.setVisibleLogicalRange({ from: to - (r.to - r.from), to });
   }
 
   /** from〜to（UTC）が真ん中あたりに収まるように表示を動かす */

@@ -1,6 +1,7 @@
-// チャートに描く図形（水平線・垂直線・トレンドライン・チャネル・長方形・フィボナッチ）。
+// チャートに描く図形（水平線・垂直線・トレンドライン・ポリライン・チャネル・長方形・フィボナッチ）。
 // 位置は時刻（UTC）と価格で持つので、時間足を切り替えても同じ場所に残る。
 // 操作は MT4 と同じ: ツールを選んでチャートをドラッグ（またはクリック 2 回）で描く。
+// ポリラインはクリックで点を足していき、ダブルクリック・Enter・Esc で終わる。
 // 描いた後はクリックで選択、ドラッグで移動、端の四角で形を変える、Delete キーか右クリックで消す。
 
 import type {
@@ -16,12 +17,12 @@ import type {
 } from 'lightweight-charts';
 import type { TimeMapper } from './mapper';
 
-export type DrawingKind = 'hline' | 'vline' | 'trend' | 'channel' | 'rect' | 'fibo';
+export type DrawingKind = 'hline' | 'vline' | 'trend' | 'poly' | 'channel' | 'rect' | 'fibo';
 
 export interface Drawing {
   id: string;
   kind: DrawingKind;
-  /** 時刻（UTC ミリ秒）と価格。水平線・垂直線は 1 点、チャネルは 3 点（3 点目は平行線の位置）、ほかは 2 点 */
+  /** 時刻（UTC ミリ秒）と価格。水平線・垂直線は 1 点、チャネルは 3 点（3 点目は平行線の位置）、ポリラインは 2 点以上、ほかは 2 点 */
   points: { t: number; p: number }[];
   /** 描いた時間足以外のとき（以前の保存）の色 */
   color: string;
@@ -46,6 +47,7 @@ export const DRAWING_LABELS: Record<DrawingKind, string> = {
   hline: '水平線',
   vline: '垂直線',
   trend: 'トレンドライン',
+  poly: 'ポリライン',
   channel: 'チャネル',
   rect: '長方形',
   fibo: 'フィボナッチ',
@@ -55,6 +57,7 @@ const COLORS: Record<DrawingKind, string> = {
   hline: '#e5a50a',
   vline: '#9a9a9a',
   trend: '#4493f8',
+  poly: '#4493f8',
   channel: '#3fb950',
   rect: '#a371f7',
   fibo: '#e5a50a',
@@ -122,6 +125,8 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   } | null = null;
   /** クリック 2 回で描く途中（1 点目を置いた後） */
   private placing: string | null = null;
+  /** 描いている途中のポリライン（最後の点はマウスに付いてくる仮の点） */
+  private polyId: string | null = null;
 
   constructor(
     private readonly el: HTMLElement,
@@ -131,6 +136,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     window.addEventListener('mousemove', (e) => this.onMove(e));
     window.addEventListener('mouseup', (e) => this.onUp(e));
     el.addEventListener('contextmenu', (e) => this.onContext(e), true);
+    el.addEventListener('dblclick', () => this.polyId && this.finishPoly(), true);
   }
 
   // ---- ISeriesPrimitive ----
@@ -178,10 +184,39 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   }
 
   setTool(tool: DrawingKind | null) {
+    if (this.polyId) this.endPoly();
     this.tool = tool;
     this.placing = null;
     this.el.style.cursor = tool ? 'crosshair' : '';
     this.onToolChange(tool);
+  }
+
+  /** 描いている途中のポリラインを終える（Enter キー用）。途中でなければ false */
+  finishPoly(): boolean {
+    if (!this.polyId) return false;
+    this.endPoly();
+    this.setTool(null);
+    return true;
+  }
+
+  /** 仮の点と、ダブルクリックで重なった点を取り除いて確定する。2 点に満たなければ消す */
+  private endPoly() {
+    const d = this.drawings.find((x) => x.id === this.polyId);
+    this.polyId = null;
+    if (!d) return;
+    d.points.pop();
+    const pts: Drawing['points'] = [];
+    for (const pt of d.points) {
+      const last = pts[pts.length - 1];
+      const a = last && this.toPx(last);
+      const b = this.toPx(pt);
+      if (a && b && Math.hypot(a.x - b.x, a.y - b.y) < 3) continue;
+      pts.push(pt);
+    }
+    d.points = pts;
+    if (pts.length < 2) this.drawings = this.drawings.filter((x) => x !== d);
+    this.onChange();
+    this.refresh();
   }
 
   deleteSelected(): boolean {
@@ -247,6 +282,9 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         case 'trend':
           hit = distToSegment(px, a, b) <= HIT;
           break;
+        case 'poly':
+          for (let q = 1; q < pts.length; q++) if (distToSegment(px, pts[q - 1]!, pts[q]!) <= HIT) hit = true;
+          break;
         case 'channel': {
           const c = pts[2]!;
           const dy = channelOffset(a, b, c);
@@ -287,6 +325,25 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       this.placing = null;
       this.finishCreate();
       e.stopPropagation();
+      return;
+    }
+
+    if (this.tool === 'poly') {
+      const pt = { t: this.mapper.toTime(m.l), p: m.p };
+      const d = this.drawings.find((x) => x.id === this.polyId);
+      if (d) {
+        // 仮の点をここに固定して、次の仮の点を足す
+        d.points[d.points.length - 1] = pt;
+        d.points.push({ ...pt });
+      } else {
+        const nd: Drawing = { id: crypto.randomUUID(), kind: 'poly', points: [pt, { ...pt }], color: COLORS.poly, tf: this.tf };
+        this.drawings.push(nd);
+        this.selectedId = nd.id;
+        this.polyId = nd.id;
+      }
+      e.stopPropagation();
+      e.preventDefault();
+      this.refresh();
       return;
     }
 
@@ -331,12 +388,17 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   }
 
   private onMove(e: MouseEvent) {
-    const id = this.drag?.id ?? this.placing;
+    const id = this.drag?.id ?? this.placing ?? this.polyId;
     if (!id) return;
     const m = this.mouse(e);
     if (!m) return;
     const d = this.drawings.find((x) => x.id === id);
     if (!d) return;
+    if (!this.drag && this.polyId) {
+      d.points[d.points.length - 1] = { t: this.mapper.toTime(m.l), p: m.p };
+      this.refresh();
+      return;
+    }
     if (this.placing) {
       d.points[1] = { t: this.mapper.toTime(m.l), p: m.p };
       this.refresh();
@@ -434,6 +496,12 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         break;
       case 'trend':
         line(a.x, a.y, b.x, b.y);
+        break;
+      case 'poly':
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        for (const p of pts.slice(1)) ctx.lineTo(p.x, p.y);
+        ctx.stroke();
         break;
       case 'channel': {
         const c = pts[2];

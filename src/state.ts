@@ -74,6 +74,8 @@ export interface AppState {
   layout?: Layout;
   /** 時間足ごとの図形の色（決めていない時間足は初期値） */
   tfColors?: Record<string, string>;
+  /** チャートを動かしたとき、ほかのチャートも同じ時刻に合わせる（初期値は合わせる） */
+  syncCharts?: boolean;
   /** チャートの右側の余白（足の本数）。全部のチャートで共通 */
   rightOffset?: number;
   /** 4 枚分（表示していないチャートの設定も残す） */

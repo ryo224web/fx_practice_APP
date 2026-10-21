@@ -57,6 +57,8 @@ const ctxMenu = $('#ctx-menu');
 const chartsEl = $('#charts');
 let panes: ChartPane[] = [];
 let active: ChartPane;
+/** マウスが乗っているチャート（連動のときは、このチャートの動きにほかを合わせる） */
+let leader: ChartPane | null = null;
 
 /** 表示しているチャート */
 function visiblePanes(): ChartPane[] {
@@ -837,6 +839,7 @@ async function loadMt4File(file: File) {
 function showHistoryTrade(ticket: number, closeTime: number) {
   const h = account.history.find((x) => x.kind === 'trade' && x.ticket === ticket && x.closeTime === closeTime);
   if (!h || h.kind !== 'trade') return;
+  for (const p of panes) p.overlay.setHighlight({ openTime: h.openTime, closeTime: h.closeTime });
   for (const p of visiblePanes()) p.showTimeRange(h.openTime, h.closeTime);
   if (!panes[0].overlay.showHistory) $('#toggle-history').click();
 }
@@ -1261,6 +1264,14 @@ function createPanes() {
     digits: () => md.digits,
     activate: setActivePane,
     nearLeftEdge: loadEarlier,
+    lead: (p) => (leader = p),
+    rangeChanged: (p) => {
+      // マウスで動かしているチャートにだけ、ほかを合わせる（合わせた側の動きでは何もしない）
+      if (p !== leader || state.syncCharts === false || p.el.hidden) return;
+      const t = p.anchorTime();
+      if (t === null) return;
+      for (const x of visiblePanes()) if (x !== p) x.alignTo(t);
+    },
     setRightOffset: (bars) => {
       state.rightOffset = bars;
       for (const p of panes) p.setRightOffset(bars);
@@ -1331,6 +1342,16 @@ function setupControls() {
     renderQuotes();
   });
   $<HTMLSelectElement>('#layout').addEventListener('change', (e) => setLayout((e.target as HTMLSelectElement).value as Layout));
+  const syncBtn = $('#sync-charts');
+  syncBtn.setAttribute('aria-pressed', String(state.syncCharts !== false));
+  syncBtn.addEventListener('click', () => {
+    state.syncCharts = state.syncCharts === false;
+    syncBtn.setAttribute('aria-pressed', String(state.syncCharts));
+    // 入れたときは、操作の対象のチャートに合わせる
+    const t = state.syncCharts ? active.anchorTime() : null;
+    if (t !== null) for (const x of visiblePanes()) if (x !== active) x.alignTo(t);
+    save();
+  });
 
   const zoneEl = $<HTMLSelectElement>('#zone');
   zoneEl.addEventListener('change', () => {
@@ -1516,8 +1537,13 @@ function onKey(e: KeyboardEvent) {
     case 'Backspace':
       if (!panes.some((p) => p.drawings.deleteSelected())) return;
       break;
+    case 'Enter':
+      // 描いている途中のポリラインを終える
+      if (!panes.some((p) => p.drawings.finishPoly())) return;
+      break;
     case 'Escape':
       for (const p of panes) p.drawings.setTool(null);
+      for (const p of panes) p.overlay.setHighlight(null);
       ctxMenu.hidden = true;
       return;
     default:
