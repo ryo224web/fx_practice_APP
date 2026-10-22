@@ -1907,6 +1907,8 @@ function setupControls() {
     save();
   });
   $<HTMLSelectElement>('#layout').addEventListener('change', (e) => setLayout((e.target as HTMLSelectElement).value as Layout));
+  // 最新の足（今の時刻）が右端に来るように全部のチャートを動かす。拡大率はそのまま（MT4 の End キーと同じ）
+  $('#to-now').addEventListener('click', () => scrollToNow());
   $('#zoom-reset').addEventListener('click', () => {
     for (const p of visiblePanes()) p.resetZoom();
   });
@@ -2170,6 +2172,8 @@ function runCommand(id: string) {
     case 'zoomReset':
       for (const p of visiblePanes()) p.resetZoom();
       return;
+    case 'toNow':
+      return scrollToNow();
     case 'crosshair':
       return setCrosshair(!crosshairOn);
     case 'newOrder':

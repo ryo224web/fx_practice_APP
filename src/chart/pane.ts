@@ -277,8 +277,10 @@ export class ChartPane {
     ts.setVisibleLogicalRange({ from: mid - width / 2, to: mid + width / 2 });
   }
 
+  /** 最新の足が右端（右の余白の手前）に来るようにする。動かす途中で止まらないよう、動きは付けない */
   scrollToNow() {
-    this.chart.timeScale().scrollToRealTime();
+    const ts = this.chart.timeScale();
+    ts.scrollToPosition(ts.options().rightOffset, false);
   }
 
   /** 最新の足（今の時刻）が右端に見えているか（右の余白の分は除く） */
@@ -339,7 +341,7 @@ export class ChartPane {
   /** 右の余白（足の本数）。最新の足が見えている位置に戻す */
   setRightOffset(bars: number) {
     this.chart.timeScale().applyOptions({ rightOffset: bars });
-    this.chart.timeScale().scrollToRealTime();
+    this.scrollToNow();
     this.placeShiftHandle();
   }
 
