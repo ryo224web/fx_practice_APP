@@ -1,7 +1,8 @@
-// チャートに描く図形（水平線・垂直線・トレンドライン・ポリライン・チャネル・長方形・フィボナッチ）。
+// チャートに描く図形（水平線・垂直線・トレンドライン・ポリライン・チャネル・長方形・フィボナッチ・フィボナッチ・エクスパンション）。
 // 位置は時刻（UTC）と価格で持つので、時間足を切り替えても同じ場所に残る。
 // 操作は MT4 と同じ: ツールを選んでチャートをドラッグ（またはクリック 2 回）で描く。
 // ポリラインはクリックで点を足していき、ダブルクリック・Enter・Esc で終わる。
+// エクスパンションは A→B をドラッグ（クリック 2 回）した後、もう 1 回クリックして C を置く。
 // 描いた後はクリックで選択、ドラッグで移動、端の四角で形を変える、Delete キーか右クリックで消す。
 
 import type {
@@ -17,12 +18,12 @@ import type {
 } from 'lightweight-charts';
 import type { TimeMapper } from './mapper';
 
-export type DrawingKind = 'hline' | 'vline' | 'trend' | 'poly' | 'channel' | 'rect' | 'fibo';
+export type DrawingKind = 'hline' | 'vline' | 'trend' | 'poly' | 'channel' | 'rect' | 'fibo' | 'fiboexp';
 
 export interface Drawing {
   id: string;
   kind: DrawingKind;
-  /** 時刻（UTC ミリ秒）と価格。水平線・垂直線は 1 点、チャネルは 3 点（3 点目は平行線の位置）、ポリラインは 2 点以上、ほかは 2 点 */
+  /** 時刻（UTC ミリ秒）と価格。水平線・垂直線は 1 点、チャネルは 3 点（3 点目は平行線の位置）、エクスパンションは 3 点（A・B・C）、ポリラインは 2 点以上、ほかは 2 点 */
   points: { t: number; p: number }[];
   /** 描いた時間足以外のとき（以前の保存）の色 */
   color: string;
@@ -51,6 +52,7 @@ export const DRAWING_LABELS: Record<DrawingKind, string> = {
   channel: 'チャネル',
   rect: '長方形',
   fibo: 'フィボナッチ',
+  fiboexp: 'フィボナッチ・エクスパンション',
 };
 
 const COLORS: Record<DrawingKind, string> = {
@@ -61,10 +63,28 @@ const COLORS: Record<DrawingKind, string> = {
   channel: '#3fb950',
   rect: '#a371f7',
   fibo: '#e5a50a',
+  fiboexp: '#e5a50a',
 };
 
-/** MT4 の既定と同じ。0 が 2 点目、100 が 1 点目 */
+/** MT4 の既定と同じ。0 が 2 点目、100 が 1 点目（「水準」で変えられる。これは初期値） */
 export const FIBO_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 1, 1.618];
+
+/** エクスパンションの水準の初期値（MT4 の既定と同じ）。C から A→B の値幅 × 水準だけ B の向きに進んだ価格 */
+export const FIBO_EXP_LEVELS = [0.618, 1, 1.618];
+
+/**
+ * 画面で入れた水準（% の値。61.8 など）を、図形に使う割合（0.618）にする。
+ * 数でないもの・重なるものは除き、小さい順に並べる
+ */
+export function levelsFromPercents(values: readonly number[]): number[] {
+  const out = values.filter((v) => Number.isFinite(v)).map((v) => Math.round(v * 1e4) / 1e6);
+  return [...new Set(out)].sort((x, y) => x - y);
+}
+
+/** エクスパンションの水準の価格 */
+export function fiboExpPrice(a: number, b: number, c: number, level: number): number {
+  return c + (b - a) * level;
+}
 
 const HIT = 6;
 const HANDLE = 4;
@@ -109,6 +129,10 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   tf = 'M15';
   /** 図形の色（時間足ごとの色を main.ts で決める） */
   colorOf: (d: Drawing) => string = (d) => (d.tf ? (DEFAULT_TF_COLORS[d.tf] ?? d.color) : d.color);
+  /** フィボナッチ・エクスパンションの水準（main.ts で「水準」の設定を渡す） */
+  levelsOf: (kind: 'fibo' | 'fiboexp') => readonly number[] = (k) => (k === 'fibo' ? FIBO_LEVELS : FIBO_EXP_LEVELS);
+  /** フィボナッチの図形をダブルクリックしたとき（水準の設定を開く） */
+  onEditLevels: (kind: 'fibo' | 'fiboexp') => void = () => {};
   onChange: () => void = () => {};
   onToolChange: (tool: DrawingKind | null) => void = () => {};
 
@@ -136,7 +160,21 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     window.addEventListener('mousemove', (e) => this.onMove(e));
     window.addEventListener('mouseup', (e) => this.onUp(e));
     el.addEventListener('contextmenu', (e) => this.onContext(e), true);
-    el.addEventListener('dblclick', () => this.polyId && this.finishPoly(), true);
+    el.addEventListener('dblclick', (e) => this.onDouble(e), true);
+  }
+
+  private onDouble(e: MouseEvent) {
+    if (this.polyId) {
+      this.finishPoly();
+      return;
+    }
+    const m = this.tool ? null : this.mouse(e);
+    const hit = m && this.hitDrawing(m.px);
+    const d = hit && this.drawings.find((x) => x.id === hit.id);
+    if (d && (d.kind === 'fibo' || d.kind === 'fiboexp')) {
+      e.stopPropagation();
+      this.onEditLevels(d.kind);
+    }
   }
 
   // ---- ISeriesPrimitive ----
@@ -302,9 +340,19 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         }
         case 'fibo': {
           hit = distToSegment(px, a, b) <= HIT;
-          for (const lv of FIBO_LEVELS) {
+          for (const lv of this.levelsOf('fibo')) {
             const y = b.y + (a.y - b.y) * lv;
             if (Math.abs(px.y - y) <= HIT && px.x >= Math.min(a.x, b.x) - HIT && px.x <= w) hit = true;
+          }
+          break;
+        }
+        case 'fiboexp': {
+          // 描いている途中（C を置く前に Esc など）は C = B とみなす
+          const c = pts[2] ?? b;
+          hit = distToSegment(px, a, b) <= HIT || distToSegment(px, b, c) <= HIT;
+          for (const lv of this.levelsOf('fiboexp')) {
+            const y = c.y + (b.y - a.y) * lv;
+            if (Math.abs(px.y - y) <= HIT && px.x >= c.x - HIT && px.x <= w) hit = true;
           }
           break;
         }
@@ -400,7 +448,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       return;
     }
     if (this.placing) {
-      d.points[1] = { t: this.mapper.toTime(m.l), p: m.p };
+      d.points[d.points.length - 1] = { t: this.mapper.toTime(m.l), p: m.p };
       this.refresh();
       return;
     }
@@ -440,6 +488,13 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       const y = this.series.priceToCoordinate(d.points[0].p);
       const p = y === null ? null : this.series.coordinateToPrice(y + 40);
       d.points.push({ t: d.points[0].t, p: p ?? d.points[0].p });
+    }
+    if (d?.kind === 'fiboexp' && d.points.length === 2) {
+      // A・B を置いたら、C はマウスに付いてきて、次のクリックで決まる
+      d.points.push({ ...d.points[1] });
+      this.placing = d.id;
+      this.refresh();
+      return;
     }
     this.setTool(null);
     this.onChange();
@@ -532,11 +587,26 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         line(a.x, a.y, b.x, b.y);
         ctx.setLineDash([]);
         const x0 = Math.min(a.x, b.x);
-        for (const lv of FIBO_LEVELS) {
+        for (const lv of this.levelsOf('fibo')) {
           const y = b.y + (a.y - b.y) * lv;
           const price = d.points[1].p + (d.points[0].p - d.points[1].p) * lv;
           line(x0, y, w, y);
           ctx.fillText(`${(lv * 100).toFixed(1)}  ${price.toFixed(this.digits)}`, x0 + 4, y - 3);
+        }
+        break;
+      }
+      case 'fiboexp': {
+        const c = pts[2] ?? b;
+        const [pa, pb] = [d.points[0].p, d.points[1].p];
+        const pc = d.points[2]?.p ?? pb;
+        ctx.setLineDash([4, 3]);
+        line(a.x, a.y, b.x, b.y);
+        line(b.x, b.y, c.x, c.y);
+        ctx.setLineDash([]);
+        for (const lv of this.levelsOf('fiboexp')) {
+          const y = c.y + (b.y - a.y) * lv;
+          line(c.x, y, w, y);
+          ctx.fillText(`FE ${(lv * 100).toFixed(1)}  ${fiboExpPrice(pa, pb, pc, lv).toFixed(this.digits)}`, c.x + 4, y - 3);
         }
         break;
       }

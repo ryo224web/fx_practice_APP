@@ -1,5 +1,5 @@
 import { type CandlestickData, type Time, type UTCTimestamp } from 'lightweight-charts';
-import { DEFAULT_TF_COLORS, type DrawingKind } from './chart/drawings';
+import { DEFAULT_TF_COLORS, FIBO_EXP_LEVELS, FIBO_LEVELS, levelsFromPercents, type DrawingKind } from './chart/drawings';
 import { DEFAULT_INDICATORS, normalizeIndicators, type IndicatorConfig } from './chart/indicators';
 import { ChartPane, type PaneHost } from './chart/pane';
 import { type LineEdit, type OrderPreview } from './chart/trades';
@@ -1431,6 +1431,40 @@ function openColorDialog(colors: Record<string, string>) {
   if (!dlg.open) dlg.showModal();
 }
 
+// ---------------- フィボナッチの水準 ----------------
+type FiboKind = 'fibo' | 'fiboexp';
+const DEFAULT_LEVELS: Record<FiboKind, readonly number[]> = { fibo: FIBO_LEVELS, fiboexp: FIBO_EXP_LEVELS };
+const levelsOf = (k: FiboKind) => state.fiboLevels?.[k] ?? DEFAULT_LEVELS[k];
+
+function levelRow(v: number | '') {
+  return `<tr><td><input type="number" step="any" value="${v}" /></td><td><button type="button" title="この水準を消す">✕</button></td></tr>`;
+}
+
+function openLevelsDialog(levels: (k: FiboKind) => readonly number[] = levelsOf) {
+  for (const k of ['fibo', 'fiboexp'] as const) {
+    // 割合 → %（0.618 → 61.8。小数の誤差を出さない）
+    $(`#levels-${k}`).innerHTML = levels(k).map((lv) => levelRow(Math.round(lv * 1e6) / 1e4)).join('');
+  }
+  $('#levels-error').textContent = '';
+  const dlg = $<HTMLDialogElement>('#levels-dialog');
+  if (!dlg.open) dlg.showModal();
+}
+
+function applyLevelsDialog() {
+  const read = (k: FiboKind) =>
+    levelsFromPercents([...document.querySelectorAll<HTMLInputElement>(`#levels-${k} input`)].filter((el) => el.value.trim() !== '').map((el) => Number(el.value)));
+  const fibo = read('fibo');
+  const fiboexp = read('fiboexp');
+  if (!fibo.length || !fiboexp.length) {
+    $('#levels-error').textContent = 'それぞれ 1 つ以上の水準を入れてください';
+    return;
+  }
+  state.fiboLevels = { fibo, fiboexp };
+  for (const p of panes) p.drawings.refresh();
+  $<HTMLDialogElement>('#levels-dialog').close();
+  save();
+}
+
 // ---------------- プロジェクト ----------------
 // 検証（口座・時刻）・図形・インジケーター・MT4 履歴をまとめて保存する。切り替えるとページを読み直す。
 
@@ -1476,6 +1510,7 @@ function setupProjects() {
             panes: structuredClone(state.panes),
             indicatorSets: structuredClone(state.indicatorSets),
             tfColors: structuredClone(state.tfColors),
+            fiboLevels: structuredClone(state.fiboLevels),
             rightOffset: state.rightOffset,
           };
           reloadInto(() => createProject(name, fresh));
@@ -1630,6 +1665,8 @@ function createPanes() {
     const p = new ChartPane(i, el, host, ps.tf, indicatorsFor(ps.tf));
     p.overlay.onEdit = onLineEdit;
     p.drawings.colorOf = (d) => (d.tf ? (state.tfColors?.[d.tf] ?? DEFAULT_TF_COLORS[d.tf] ?? d.color) : d.color);
+    p.drawings.levelsOf = levelsOf;
+    p.drawings.onEditLevels = () => openLevelsDialog();
     p.setRightOffset(state.rightOffset ?? 12);
     return p;
   });
@@ -1781,6 +1818,24 @@ function setupControls() {
     $<HTMLDialogElement>('#color-dialog').close();
     save();
   });
+  $('#fibo-levels-btn').addEventListener('click', () => openLevelsDialog());
+  $('#levels-reset').addEventListener('click', () => openLevelsDialog((k) => DEFAULT_LEVELS[k]));
+  $('#levels-apply').addEventListener('click', applyLevelsDialog);
+  // 入力中の Enter は「適用」（何もしないとキャンセルで閉じてしまう）
+  $('#levels-dialog').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || (e.target as HTMLElement).tagName !== 'INPUT') return;
+    e.preventDefault();
+    applyLevelsDialog();
+  });
+  $('#levels-dialog').addEventListener('click', (e) => {
+    const b = (e.target as HTMLElement).closest('button');
+    if (!b) return;
+    if (b.classList.contains('levels-add')) {
+      const table = $(`#levels-${b.dataset.kind}`);
+      table.insertAdjacentHTML('beforeend', levelRow(''));
+      [...table.querySelectorAll<HTMLInputElement>('input')].pop()?.focus();
+    } else if (b.closest('td')) b.closest('tr')?.remove();
+  });
   $('#ind-reset').addEventListener('click', () => openIndicatorDialog(structuredClone(DEFAULT_INDICATORS)));
   $('#ind-apply').addEventListener('click', () => {
     applyIndicators([active.tf], readIndicatorDialog());
@@ -1866,6 +1921,7 @@ const LETTER_KEYS: Record<string, () => void> = {
   KeyZ: () => stepBar(-1),
   KeyT: () => toggleTool('trend'),
   KeyF: () => toggleTool('fibo'),
+  KeyE: () => toggleTool('fiboexp'),
   KeyH: () => toggleTool('hline'),
   KeyW: () => toggleTool('poly'),
 };

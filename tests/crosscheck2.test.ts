@@ -174,3 +174,16 @@ describe('金額の表示', () => {
     expect(formatMoney(-1234.6)).toBe('-1,235');
   });
 });
+
+describe('フィボナッチの水準（画面の % → 割合）', () => {
+  it('% を割合にし、数でないもの・重なりを除いて小さい順に並べる', async () => {
+    const { levelsFromPercents, fiboExpPrice } = await import('../src/chart/drawings');
+    expect(levelsFromPercents([161.8, 61.8, NaN, 100, 61.8, 0, -23.6, 261.8])).toEqual([-0.236, 0, 0.618, 1, 1.618, 2.618]);
+    // 61.8% は 0.618 ちょうど（小数の誤差なし）
+    expect(levelsFromPercents([61.8])[0]).toBe(0.618);
+    expect(levelsFromPercents([23.6])[0]).toBe(0.236);
+    // エクスパンション: A 100 → B 110、C 105 から 61.8% = 105 + 10 × 0.618
+    expect(fiboExpPrice(100, 110, 105, 0.618)).toBeCloseTo(111.18, 10);
+    expect(fiboExpPrice(110, 100, 105, 1)).toBe(95);
+  });
+});

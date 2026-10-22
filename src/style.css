@@ -664,3 +664,17 @@ dialog .error {
 [hidden] {
   display: none !important;
 }
+
+.levels-cols {
+  display: flex;
+  gap: 24px;
+}
+.levels-cols h3 {
+  margin: 8px 0 4px;
+}
+.levels-cols input[type='number'] {
+  width: 80px;
+}
+.levels-cols td button {
+  padding: 0 6px;
+}
