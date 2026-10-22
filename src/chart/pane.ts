@@ -271,6 +271,28 @@ export class ChartPane {
     this.chart.timeScale().scrollToRealTime();
   }
 
+  /** 最新の足（今の時刻）が右端に見えているか（右の余白の分は除く） */
+  isAtNow(): boolean {
+    const ts = this.chart.timeScale();
+    return ts.scrollPosition() >= ts.options().rightOffset - 1;
+  }
+
+  /**
+   * time（UTC。anchorTime と同じ、右の余白を除いた右端の時刻）が右端に来るように全部描き直す。
+   * 時間足を変えたときに使う。遠い過去を見ていたら、そこまでの足をチャートに渡す
+   */
+  renderAt(time: number) {
+    this.render(true);
+    const { agg } = this.host.agg(this.tf);
+    const k = lastLE(agg.starts, this.host.cursor());
+    const need = k - lastLE(agg.starts, time) + 500 - CHART_MAX_BARS;
+    if (need > 0) {
+      this.extraBars = need;
+      this.render(true);
+    }
+    this.alignTo(time);
+  }
+
   /** 右の余白（足の本数）。最新の足が見えている位置に戻す */
   setRightOffset(bars: number) {
     this.chart.timeScale().applyOptions({ rightOffset: bars });

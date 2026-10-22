@@ -110,7 +110,8 @@ async function main() {
       await writeFile(path.join(outDir, `${key}.bin`), encodeMonth(b, a, digits));
       if (!entry.months.includes(key)) entry.months.push(key);
       entry.months.sort();
-      const note = missing ? `（うち Ask が無い足 ${missing.toLocaleString()} 本。後日ダウンロードし直すと埋まることがある）` : '';
+      // Ask は固定スプレッドの検証では使わないので、Ask の CSV を置いていなければ何も言わない
+      const note = missing && ask.size ? `（うち Ask が無い足 ${missing.toLocaleString()} 本。後日ダウンロードし直すと埋まることがある）` : '';
       console.log(`${sym} ${key}: ${b.length.toLocaleString()} 本を保存${note}`);
     }
   }

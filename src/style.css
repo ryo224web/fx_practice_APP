@@ -226,6 +226,10 @@ td.sell {
   padding: 4px;
 }
 
+#oneclick[hidden] {
+  display: none;
+}
+
 #oneclick button {
   display: flex;
   flex-direction: column;

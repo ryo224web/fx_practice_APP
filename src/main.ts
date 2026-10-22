@@ -1568,6 +1568,7 @@ function setupProjects() {
             fiboLevels: structuredClone(state.fiboLevels),
             keymap: structuredClone(state.keymap),
             hiddenTfs: structuredClone(state.hiddenTfs),
+            hideOneClick: state.hideOneClick,
             rightOffset: state.rightOffset,
           };
           reloadInto(() => createProject(name, fresh));
@@ -1661,13 +1662,17 @@ function syncTfButtons() {
 }
 
 function setTf(tf: Timeframe) {
+  // 見ていた場所（右端の時刻）を保つ。最新の足を見ていたら、新しい時間足でも最新へ
+  const anchor = active.isAtNow() ? null : active.anchorTime();
   active.tf = tf;
   paneState(active).tf = tf;
   // インジケーターは時間足ごと。その時間足の設定に切り替える
   active.indicators.setConfig(indicatorsFor(tf));
   syncTfButtons();
-  active.render(true);
-  active.scrollToNow();
+  if (anchor === null) {
+    active.render(true);
+    active.scrollToNow();
+  } else active.renderAt(anchor);
   renderQuotes();
   save();
   void ensureIndicatorHistory();
@@ -1812,6 +1817,17 @@ function setupControls() {
     for (const p of panes) p.overlay.showHistory = on;
     (e.currentTarget as HTMLElement).setAttribute('aria-pressed', String(on));
     renderQuotes();
+  });
+  // ワンクリック注文（SELL・BUY とロット）を出す・隠す。隠してもロットの値は新規注文などで使う
+  const showOneClick = () => {
+    $('#oneclick').hidden = !!state.hideOneClick;
+    $('#toggle-oneclick').setAttribute('aria-pressed', String(!state.hideOneClick));
+  };
+  showOneClick();
+  $('#toggle-oneclick').addEventListener('click', () => {
+    state.hideOneClick = !state.hideOneClick;
+    showOneClick();
+    save();
   });
   $<HTMLSelectElement>('#layout').addEventListener('change', (e) => setLayout((e.target as HTMLSelectElement).value as Layout));
   $('#zoom-reset').addEventListener('click', () => {

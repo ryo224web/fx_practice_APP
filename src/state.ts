@@ -91,6 +91,8 @@ export interface AppState {
   fiboLevels?: { fibo?: number[]; fiboexp?: number[] };
   /** ツールバーに出さない時間足（ツールバーの時間足を右クリックして選ぶ） */
   hiddenTfs?: string[];
+  /** 左上のワンクリック注文を隠す */
+  hideOneClick?: boolean;
   /** キーボードのショートカット（働き → キー。無ければ初期値。src/ui/keys.ts） */
   keymap?: Record<string, string[]>;
   /** チャートの右側の余白（足の本数）。全部のチャートで共通 */
