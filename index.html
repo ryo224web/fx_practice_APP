@@ -228,6 +228,13 @@
       <form method="dialog">
         <h2>新しい検証</h2>
         <p class="hint">今の検証（ポジション・口座履歴）は消えます。図形は残ります。</p>
+        <label>口座
+          <select id="nt-source">
+            <option value="virtual">仮想の取引（自分で注文して練習）</option>
+            <option value="mt4">MT4 の取引（読み込んだ MT4 履歴を振り返る）</option>
+          </select>
+        </label>
+        <p class="hint" id="nt-source-hint"></p>
         <label>銘柄 <select id="nt-symbol"></select></label>
         <label>開始日時 <input id="nt-start" type="datetime-local" /></label>
         <label>初期資金（円） <input id="nt-balance" type="number" step="10000" min="10000" /></label>

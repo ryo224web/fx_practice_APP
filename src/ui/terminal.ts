@@ -11,6 +11,8 @@ interface Ctx {
   index: number;
   digits: number;
   time: (t: number) => string;
+  /** 決済・削除の ✕ を出さない（MT4 の取引の口座） */
+  readOnly?: boolean;
 }
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
@@ -43,7 +45,7 @@ export function renderTrade(c: Ctx): string {
         <td>${esc(p.symbol.toLowerCase())}</td><td class="num">${price(p.openPrice, c.digits)}</td>
         <td class="num">${price(p.sl, c.digits)}</td><td class="num">${price(p.tp, c.digits)}</td>
         <td class="num">${price(now, c.digits)}</td><td class="num">0</td><td class="num">0</td>${money(a.floatingOf(c.feed, c.index, p))}
-        <td>${esc(p.comment)}</td><td class="x"><button type="button" class="close-x" data-action="close" data-ticket="${p.ticket}" title="決済">✕</button></td></tr>`;
+        <td>${esc(p.comment)}</td><td class="x">${c.readOnly ? '' : `<button type="button" class="close-x" data-action="close" data-ticket="${p.ticket}" title="決済">✕</button>`}</td></tr>`;
     });
   const level = Number.isFinite(s.level) ? `${s.level.toFixed(2)}%` : '';
   const summary = `<tr class="summary"><td colspan="14">残高: <b>${formatMoney(s.balance)}</b> JPY　有効証拠金: <b>${formatMoney(s.equity)}</b>　証拠金: <b>${formatMoney(s.margin)}</b>　余剰証拠金: <b>${formatMoney(s.free)}</b>　${level ? `証拠金維持率: <b>${level}</b>` : ''}<span class="floating ${s.floating < 0 ? 'neg' : ''}">${formatMoney(s.floating)}</span></td></tr>`;

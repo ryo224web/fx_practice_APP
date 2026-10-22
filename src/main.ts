@@ -10,6 +10,7 @@ import { sampleM1 } from './core/sample';
 import { DEFAULT_SPREAD_PIPS, symbolSpec, type SymbolSpec } from './core/symbols';
 import { DEFAULT_SERVER_RULE, serverToUtc, toDisplay, type DisplayZone } from './core/time';
 import { loadManifest, loadMonths, type Manifest } from './data/store';
+import { buildMt4Account } from './mt4/account';
 import { detectOffsetHours, matchTrade, parseHistoryFile, type Mt4Trade, type PriceLookup } from './mt4/history';
 import { MarketData } from './replay/market';
 import {
@@ -423,6 +424,10 @@ function record(action: Action) {
 }
 
 function act(a: NewAction): boolean {
+  if (mt4Mode()) {
+    toast('この検証の口座は MT4 の取引です（自分では注文できません。練習するときは別のプロジェクトで「新しい検証」を始めてください）');
+    return false;
+  }
   const action = { ...a, t: md.bid[cursor].t } as Action;
   const err = account.apply(feed, cursor, action);
   if (err) {
@@ -594,12 +599,47 @@ function renderQuotes() {
   eoRender();
 }
 
+// ---------------- MT4 の取引を口座にする（「新しい検証」で選ぶ） ----------------
+// 読み込んだ MT4 履歴の取引を、リプレイの時刻に合わせて口座に入れる。記録の時刻に建ち、記録の時刻・価格・損益で決済する
+// （計算し直さない。R2）。保有中の含み損益だけはチャートの価格で計算する。
+
+/** この検証の口座が MT4 の取引か（MT4 履歴はあとから読み込んでもよい。読み込むまでは入金だけの口座） */
+function mt4Mode(): boolean {
+  return state.test?.source === 'mt4';
+}
+
+let mt4AccountCache: { key: string; account: Account } | null = null;
+
+/** 今の時刻（cursor の足の終わり）までの MT4 の取引でできた口座 */
+function mt4Account(): Account {
+  const t = test();
+  const now = md.bid[cursor].t + 60_000;
+  const key = `${now}:${state.mt4?.fileName}:${state.mt4?.trades.length}:${mt4Offset().hours}:${md.symbol}:${t.startTime}:${t.initialBalance}`;
+  if (mt4AccountCache?.key === key) return mt4AccountCache.account;
+  const a = buildMt4Account(spec, account.settings, state.mt4?.trades ?? [], {
+    start: t.startTime,
+    balance: t.initialBalance,
+    now,
+    symbol: md.symbol,
+    toUtc: mt4ToUtc,
+    pipOf,
+  });
+  a.time = md.bid[cursor].t;
+  mt4AccountCache = { key, account: a };
+  return a;
+}
+
+/** ターミナル・成績に出す口座（MT4 の取引の検証なら、その口座） */
+function shownAccount(): Account {
+  return mt4Mode() ? mt4Account() : account;
+}
+
 function renderTerminal(force = false) {
   const now = performance.now();
   if (!force && playing && now - lastTerminalRender < 200) return;
   lastTerminalRender = now;
   const scroll = termBody.scrollTop;
-  const ctx = { account, feed, index: cursor, digits: md.digits, time: (t: number) => formatTime(t, state.zone, rule) };
+  const ctx = { account: shownAccount(), readOnly: mt4Mode(), feed, index: cursor, digits: md.digits, time: (t: number) => formatTime(t, state.zone, rule) };
   const tab = state.terminalTab as TerminalTab;
   termBody.innerHTML =
     tab === 'history'
@@ -657,7 +697,7 @@ function statsRecords(source: 'virtual' | 'mt4'): TradeRecord[] {
         } satisfies TradeRecord;
       });
   }
-  return account.history.flatMap((h) => {
+  return shownAccount().history.flatMap((h) => {
     if (h.kind !== 'trade') return [];
     const dir = h.side === 'buy' ? 1 : -1;
     return [
@@ -688,7 +728,7 @@ let statsCache: { key: string; a: Analysis } | null = null;
 function currentAnalysis(): { a: Analysis; source: 'virtual' | 'mt4'; initial: number } {
   const source = state.statsSource === 'mt4' && state.mt4 ? 'mt4' : 'virtual';
   const initial = source === 'virtual' ? test().initialBalance : 0;
-  const key = `${source}:${account.history.length}:${state.mt4?.fileName}:${state.mt4?.trades.length}:${mt4Offset().hours}:${state.zone}:${dataVersion}:${md.symbol}`;
+  const key = `${source}:${mt4Mode()}:${shownAccount().history.length}:${state.mt4?.fileName}:${state.mt4?.trades.length}:${mt4Offset().hours}:${state.zone}:${dataVersion}:${md.symbol}`;
   if (statsCache?.key !== key) {
     statsCache = { key, a: analyze(statsRecords(source), initial, spec.pip, (t) => toDisplay(t, state.zone, rule)) };
   }
@@ -697,7 +737,7 @@ function currentAnalysis(): { a: Analysis; source: 'virtual' | 'mt4'; initial: n
 
 function statsInfo(source: 'virtual' | 'mt4') {
   return {
-    sourceLabel: source === 'mt4' ? `MT4 の履歴（${state.mt4?.fileName ?? ''}）` : '仮想の取引',
+    sourceLabel: source === 'mt4' ? `MT4 の履歴（${state.mt4?.fileName ?? ''}）` : mt4Mode() ? `MT4 の取引（この検証の口座。${state.mt4?.fileName ?? ''}）` : '仮想の取引',
     symbolLabel: md.symbol.toUpperCase(),
     hasBalance: source === 'virtual',
   };
@@ -707,7 +747,7 @@ function renderStatsTab(): string {
   const { a, source, initial } = currentAnalysis();
   const btn = (src: string, label: string, disabled = false) =>
     `<button type="button" data-action="stats-src" data-src="${src}" aria-pressed="${source === src}" ${disabled ? 'disabled title="MT4 履歴タブで読み込むと選べます"' : ''}>${label}</button>`;
-  const bar = `<div class="mt4-bar">${btn('virtual', '仮想の取引')}${btn('mt4', 'MT4 の履歴', !state.mt4)}
+  const bar = `<div class="mt4-bar">${btn('virtual', mt4Mode() ? 'この検証の口座（MT4）' : '仮想の取引')}${btn('mt4', 'MT4 の履歴', !state.mt4)}
     <span class="sep"></span>
     <button type="button" data-action="export-csv" title="取引の一覧を CSV で保存（Excel で開ける）">CSV で書き出す</button>
     <button type="button" data-action="export-html" title="グラフ付きのレポートを 1 つの HTML ファイルで保存">レポートを書き出す</button>
@@ -894,11 +934,28 @@ function openNewTestDialog() {
   $<HTMLInputElement>('#nt-start').value = toLocalInput(md.bid[cursor].t, state.zone, rule);
   $<HTMLInputElement>('#nt-balance').value = String(state.test?.initialBalance ?? DEFAULT_BALANCE);
   $<HTMLInputElement>('#nt-leverage').value = String(state.test?.leverage ?? DEFAULT_LEVERAGE);
+  const src = $<HTMLSelectElement>('#nt-source');
+  src.value = state.test?.source === 'mt4' ? 'mt4' : 'virtual';
+  const hint = () =>
+    ($('#nt-source-hint').textContent =
+      src.value !== 'mt4'
+        ? ''
+        : '記録の時刻にポジションが建ち、記録の価格・損益で決済されます。残高・口座履歴・成績は MT4 の取引だけになります。自分では注文できません' +
+          (state.mt4 ? '' : '。MT4 履歴は、始めたあとに「MT4 履歴」タブで読み込んでも大丈夫です（開始日時より後に決済した取引が入ります）'));
+  src.onchange = () => {
+    hint();
+    // MT4 の取引にしたら、開始日時をその銘柄の最初の取引の 1 日前にする
+    if (src.value !== 'mt4') return;
+    const sym = $<HTMLSelectElement>('#nt-symbol').value || md.symbol;
+    const opens = (state.mt4?.trades ?? []).filter((x) => x.symbol.toLowerCase() === sym).map((x) => mt4ToUtc(x.openServer));
+    if (opens.length) $<HTMLInputElement>('#nt-start').value = toLocalInput(Math.min(...opens) - 86_400_000, state.zone, rule);
+  };
+  hint();
   $('#nt-error').textContent = '';
   $<HTMLDialogElement>('#newtest-dialog').showModal();
 }
 
-async function startTest(symbol: string, start: number, balance: number, leverage: number, spread: number): Promise<string | null> {
+async function startTest(symbol: string, start: number, balance: number, leverage: number, spread: number, source: 'virtual' | 'mt4' = 'virtual'): Promise<string | null> {
   setPlaying(false);
   if (symbol !== md?.symbol || md.indexAtOrBefore(start) < 0 || start > md.bid[md.bid.length - 1].t || start < md.bid[0].t) {
     await openSymbol(symbol, start);
@@ -918,7 +975,9 @@ async function startTest(symbol: string, start: number, balance: number, leverag
     actions: [],
     // ほかの銘柄は今の検証の値（無ければ初期値）を引き継ぎ、選んだ銘柄だけ入力した値にする
     spreadPips: { ...DEFAULT_SPREAD_PIPS, ...state.test?.spreadPips, [md.symbol]: spread },
+    ...(source === 'mt4' ? { source } : {}),
   };
+  mt4AccountCache = null;
   applySpread();
   runner = null;
   freshRunner();
@@ -938,7 +997,8 @@ $('#nt-start-btn').addEventListener('click', async () => {
   if (!Number.isFinite(start)) return void ($('#nt-error').textContent = '開始日時を入力してください');
   if (!(balance > 0) || !(leverage >= 1)) return void ($('#nt-error').textContent = '初期資金とレバレッジを確認してください');
   if (!(spread >= 0)) return void ($('#nt-error').textContent = 'スプレッドを確認してください（0 以上）');
-  const err = await startTest($<HTMLSelectElement>('#nt-symbol').value || md.symbol, start, balance, leverage, spread);
+  const source = $<HTMLSelectElement>('#nt-source').value === 'mt4' ? 'mt4' : 'virtual';
+  const err = await startTest($<HTMLSelectElement>('#nt-symbol').value || md.symbol, start, balance, leverage, spread, source);
   if (err) $('#nt-error').textContent = err;
   else $<HTMLDialogElement>('#newtest-dialog').close();
 });
@@ -1216,6 +1276,15 @@ async function loadMt4File(file: File) {
   const det = await detectMt4ForSymbol();
   state.terminalTab = 'mt4';
   const symbols = [...new Set(trades.map((t) => t.symbol))].join(', ');
+  // MT4 の取引の口座なら、検証を始める前に決済した取引は入らないことを知らせる
+  const before = mt4Mode() ? trades.filter((t) => t.closeServer !== null && mt4ToUtc(t.closeServer) < test().startTime).length : 0;
+  if (before) {
+    toast(`${trades.length} 件を読み込みました。うち ${before} 件は検証の開始日時より前に決済した取引なので、口座には入りません（入れるには「新しい検証」で開始日時を前にしてください）`);
+    refresh();
+    renderTerminal(true);
+    save(true);
+    return;
+  }
   toast(
     !mine.length
       ? `${trades.length} 件を読み込みましたが、${md.symbol.toUpperCase()} の取引はありません（含まれる銘柄: ${symbols}）。その銘柄を開くと表示し、時刻のずれもそのとき判定します`
@@ -1233,7 +1302,7 @@ async function loadMt4File(file: File) {
  * 戻すと後の取引が取り消されてしまうため）
  */
 function showHistoryTrade(ticket: number, closeTime: number) {
-  const h = account.history.find((x) => x.kind === 'trade' && x.ticket === ticket && x.closeTime === closeTime);
+  const h = shownAccount().history.find((x) => x.kind === 'trade' && x.ticket === ticket && x.closeTime === closeTime);
   if (!h || h.kind !== 'trade') return;
   for (const p of panes) p.overlay.setHighlight({ openTime: h.openTime, closeTime: h.closeTime });
   for (const p of visiblePanes()) p.showTimeRange(h.openTime, h.closeTime);
