@@ -34,7 +34,7 @@ describe('MT4 の取引履歴', () => {
     expect(t[1]).toMatchObject({ ticket: 12345690, side: 'sell', closeServer: null, closePrice: null, tp: null });
   });
 
-  it('ExportHistory.mq4 の CSV を読む', () => {
+  it('R_ExportHistory.mq4 の CSV を読む', () => {
     const csv = [
       'ticket,open_time,type,lots,symbol,open_price,sl,tp,close_time,close_price,commission,swap,profit,comment',
       '1,2026.10.20 15:30:12,buy,0.50,USDJPY,158.224,157.982,158.476,2026.10.20 18:00:05,158.476,0,-120,12600,test',

@@ -1139,7 +1139,7 @@ async function readText(file: File): Promise<string> {
 
 async function loadMt4File(file: File) {
   const trades = parseHistoryFile(file.name, await readText(file));
-  if (!trades.length) return toast('取引が見つかりませんでした（詳細レポートの .htm か、ExportHistory.mq4 の .csv を選んでください）');
+  if (!trades.length) return toast('取引が見つかりませんでした（詳細レポートの .htm か、R_ExportHistory.mq4 の .csv を選んでください）');
   state.mt4 = { fileName: file.name, trades, offsetHours: 0, matched: 0, checked: 0, bySymbol: {} };
   mt4EventCache = null;
   const mine = mt4Trades();

@@ -1,6 +1,6 @@
 // MT4 の取引履歴の読み込み。次の 2 つの形式に対応する。
 // - MT4 の「口座履歴」→ 右クリック →「詳細レポートの保存」で作る .htm
-// - scripts/mt4/ExportHistory.mq4 で書き出す .csv（こちらの方が確実）
+// - scripts/mt4/R_ExportHistory.mq4 で書き出す .csv（こちらの方が確実）
 // 時刻は MT4 のサーバー時刻のまま読み、UTC への変換は呼び出し側で行う。
 // 約定の価格・時刻は記録のまま使い、計算し直さない（R2）。
 
@@ -106,7 +106,7 @@ export function parseStatementHtml(html: string): Mt4Trade[] {
 }
 
 /**
- * ExportHistory.mq4 の CSV を読む。1 行目は見出し。
+ * R_ExportHistory.mq4 の CSV を読む。1 行目は見出し。
  * ticket,open_time,type,lots,symbol,open_price,sl,tp,close_time,close_price,commission,swap,profit,comment
  */
 export function parseHistoryCsv(text: string): Mt4Trade[] {

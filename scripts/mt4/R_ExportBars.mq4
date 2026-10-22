@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| ExportBars.mq4  (Expert Advisor)                                  |
+//| R_ExportBars.mq4  (Expert Advisor)                                |
 //| Once a day, writes M1 bars of several symbols (up to the end of  |
 //| the previous server day) to monthly CSV files for FX Practice.   |
 //| FX Practice (on the Mac) watches the folder and imports them.    |
@@ -90,7 +90,7 @@ bool WriteRange(string sym, datetime from, datetime to, string file)
    if(n <= 0)
    {
       // 4066 = history is being downloaded; the next check will try again
-      Print("ExportBars: no M1 data for ", sym, " ", TimeToString(from, TIME_DATE), " (error ", GetLastError(), ")");
+      Print("R_ExportBars: no M1 data for ", sym, " ", TimeToString(from, TIME_DATE), " (error ", GetLastError(), ")");
       return false;
    }
    int digits = (int)MarketInfo(sym, MODE_DIGITS);
@@ -102,7 +102,7 @@ bool WriteRange(string sym, datetime from, datetime to, string file)
    int f = FileOpen(tmp, FILE_WRITE | FILE_TXT | FILE_ANSI);
    if(f == INVALID_HANDLE)
    {
-      Print("ExportBars: cannot write ", tmp, " error ", GetLastError());
+      Print("R_ExportBars: cannot write ", tmp, " error ", GetLastError());
       return false;
    }
    FileWriteString(f, "time,open,high,low,close,volume\r\n");
@@ -119,7 +119,7 @@ bool WriteRange(string sym, datetime from, datetime to, string file)
    FileClose(f);
    if(!FileMove(tmp, 0, dst, FILE_REWRITE))
    {
-      Print("ExportBars: cannot rename ", tmp, " error ", GetLastError());
+      Print("R_ExportBars: cannot rename ", tmp, " error ", GetLastError());
       return false;
    }
    return true;

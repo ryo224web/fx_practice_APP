@@ -127,7 +127,7 @@ const STATUS_LABEL = { wait: '未エントリー', open: '保有中', closed: '�
 export function renderMt4(rows: Mt4Row[], info: Mt4Info | null, digits: number, time: (t: number) => string): string {
   const bar = `<div class="mt4-bar"><button type="button" data-action="mt4-load">MT4 履歴を読み込む…</button>${info ? '<button type="button" data-action="mt4-clear">消す</button>' : ''}`;
   if (!info) {
-    return `${bar}<span class="hint">MT4 の「口座履歴」の詳細レポート（.htm）か、ExportHistory.mq4 で書き出した .csv を読み込みます。読み込んだら、ローソク足を進めると記録どおりにエントリー・決済が表示されます。</span></div>`;
+    return `${bar}<span class="hint">MT4 の「口座履歴」の詳細レポート（.htm）か、R_ExportHistory.mq4 で書き出した .csv を読み込みます。読み込んだら、ローソク足を進めると記録どおりにエントリー・決済が表示されます。</span></div>`;
   }
   const mark = (v: boolean | null) => (v === null ? '' : v ? '✓' : '<b class="neg" title="記録の価格が、その時刻の足の値幅に入っていません">✗</b>');
   const off = `${info.offsetHours >= 0 ? '+' : ''}${info.offsetHours}`;

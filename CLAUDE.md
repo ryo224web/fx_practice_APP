@@ -61,7 +61,7 @@
 
 ## MT4 履歴の読み込み（ステップ 6 の前半）
 
-- 「MT4 履歴」タブで、詳細レポート（.htm）か `scripts/mt4/ExportHistory.mq4` の .csv を読む（`src/mt4/history.ts`）。CSV の方が確実
+- 「MT4 履歴」タブで、詳細レポート（.htm）か `scripts/mt4/R_ExportHistory.mq4` の .csv を読む（`src/mt4/history.ts`）。CSV の方が確実
 - 記録の時刻（サーバー時刻）と価格のまま表示し、計算し直さない（R2）。損益の合計は 損益 + スワップ + 手数料 + 税金。ローソク足を進めると記録どおりにエントリー・決済が現れ、「約定したら一時停止」で止まる。行のダブルクリックでその取引の直前へ移動
 - 時刻のずれは銘柄ごとに自動判定（-12〜+12 時間を試し、記録の価格がその時刻の 1 分足に収まる件数が最多のもの）。その銘柄を開いたときに判定し、価格データが無ければほかの銘柄で判定した値を使う。収まらない価格には ✗ を付ける
 - 履歴にほかの銘柄が混ざっていても、表示するのは今の銘柄の取引だけ。仮想の口座（残高・成績）には MT4 の取引は一切入らない
@@ -73,7 +73,7 @@
 過去は Dukascopy、直近は TitanFX の MT4 から自動で取り込み、チャートはいつも前日まで出る。
 
 ```
-T580 の MT4（EA: scripts/mt4/ExportBars.mq4）→ 1 日 1 回（サーバー時刻の日が変わったら）、前日までの 1 分足を書き出す
+T580 の MT4（EA: scripts/mt4/R_ExportBars.mq4）→ 1 日 1 回（サーバー時刻の日が変わったら）、前日までの 1 分足を書き出す
   → Dropbox の Claude/fx_practice/mt4_bars/（銘柄ごとのフォルダに、USDJPY/USDJPY_2026.10.csv のようにサーバー時刻の月ごと）
      書き直すのは今月と先月だけ。それより前の月のファイルは触らないので、MT4 から消えた古い足もファイルに残る
   → Mac mini の開発サーバー（server/mt4Bars.ts）が 15 秒ごとに見て、変わったファイルを public/data/<銘柄>/titan/<YYYY-MM>.bin に取り込む
@@ -90,18 +90,18 @@ T580 の MT4（EA: scripts/mt4/ExportBars.mq4）→ 1 日 1 回（サーバー�
 
 設定のしかた（**T580**。最初に 1 回だけ）:
 1. MT4 の「ツール」→「オプション」→「チャート」で、「ヒストリー内の最大バー数」と「チャートの最大バー数」を大きく（9999999）する
-2. MT4 の「ファイル」→「データフォルダを開く」で開いたフォルダの中の `MQL4\Experts` に `ExportBars.mq4` を置き、MetaEditor で開いてコンパイル
+2. MT4 の「ファイル」→「データフォルダを開く」で開いたフォルダの中の `MQL4\Experts` に `R_ExportBars.mq4` を置き、MetaEditor で開いてコンパイル（T580 には git が要らないよう、Dropbox の `Claude\fx_practice\mt4\` にも置いてある。`scripts/mt4/` の .mq4 を変えたら、そこにもコピーする）
 3. コマンドプロンプトで、`MQL4\Files\fxp_bars` を Dropbox のフォルダにつなぐ（ジャンクション。`fxp_bars` がまだ無い状態で）:
    `mklink /J "<データフォルダ>\MQL4\Files\fxp_bars" "C:\Users\<ユーザー名>\Dropbox\Claude\fx_practice\mt4_bars"`
-4. ナビゲーターの「エキスパートアドバイザ」から ExportBars をどれか 1 つのチャートにドラッグ（自動売買のボタンは要らない。注文は出さない）
+4. ナビゲーターの「エキスパートアドバイザ」から R_ExportBars をどれか 1 つのチャートにドラッグ（自動売買のボタンは要らない。注文は出さない）
 5. MT4 が動いてログインしていれば、日が変わってから 30 分以内に書き出す（`CheckEveryMin`）。T580 を止めていた日は、次に MT4 を起動したときに今月・先月の分をまとめて書くので、毎日動かしておかなくてもよい（2 か月以上止めると、その間は MT4 に残っている分だけになる）
 
 確かめ方（**Mac mini**）: Dropbox の `Claude/fx_practice/mt4_bars` に `USDJPY/USDJPY_2026.10.csv` などができて毎日更新され、アプリ右上に「TitanFX 〜（最新の時刻）」が出れば動いている。開発サーバーを動かしたままなら、FX Practice を開き直すだけでよい（サーバーを今回の変更より前から動かしているなら「FX Practice を終了」してから開く）
 
-ExportHistory.mq4 の使い方（**Windows 機（MSI か T580）の MT4**）:
-1. MT4 の「ファイル」→「データフォルダを開く」→ `MQL4\Scripts` に `ExportHistory.mq4` を置き、MetaEditor で開いてコンパイル
+R_ExportHistory.mq4 の使い方（**Windows 機（MSI か T580）の MT4**）:
+1. MT4 の「ファイル」→「データフォルダを開く」→ `MQL4\Scripts` に `R_ExportHistory.mq4` を置き、MetaEditor で開いてコンパイル
 2. ターミナルの「口座履歴」タブで右クリック →「全履歴」（表示している期間の分しか書き出せないため）
-3. ナビゲーターの「スクリプト」から ExportHistory をチャートにドラッグ
+3. ナビゲーターの「スクリプト」から R_ExportHistory をチャートにドラッグ
 4. `MQL4\Files\fx_practice_history.csv` ができる。これを Mac mini に移して、アプリの「MT4 履歴」タブで読み込む
 （.mq4 の中身は英語だけにしてある。MetaEditor が UTF-8 の日本語を読み違えることがあるため）
 

@@ -1,5 +1,5 @@
 // MT4（TitanFX）の 1 分足を、共有フォルダ（Dropbox）から自動で取り込む（開発サーバーに組み込む）。
-// Windows 機の MT4 で scripts/mt4/ExportBars.mq4（EA）を動かすと、1 日 1 回（前日までの分）
+// Windows 機の MT4 で scripts/mt4/R_ExportBars.mq4（EA）を動かすと、1 日 1 回（前日までの分）
 //   <dir>/USDJPY/USDJPY_2026.10.csv 銘柄のフォルダに、サーバー時刻の月ごと（time,open,high,low,close,volume。時刻はサーバー時刻）
 //   <dir>/_status.csv               MT4 のサーバー時刻と GMT の差など
 // が書き換わる（今月と先月だけ。それより前の月のファイルはそのまま残る）。

@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| ExportHistory.mq4                                                 |
+//| R_ExportHistory.mq4                                               |
 //| Writes account history (closed trades) and open positions to CSV |
 //| for FX Practice ("MT4 history" import).                          |
 //|                                                                    |
