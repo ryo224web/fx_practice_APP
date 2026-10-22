@@ -138,6 +138,36 @@ export class MarketData {
     return lo;
   }
 
+  /**
+   * 新しく届いた足を後ろに足す（MT4 から書き出した直近の足）。今の範囲が最後の月まで読み込んでいるときだけ。
+   * すでに持っている足は変えない（添字が変わると、リプレイの位置や口座の計算がずれるため。直した足は次に開いたときに入る）。
+   * 足した本数を返す
+   */
+  async appendLatest(months: readonly string[]): Promise<number> {
+    while (this.loading) await this.loading;
+    const atEnd = this.hi >= 0 && this.hi === this.months.length - 1;
+    const last = this.months[this.months.length - 1];
+    for (const m of months) if (!last || m > last) (this.months as string[]).push(m);
+    if (!atEnd || !this.bid.length) return 0;
+    let added = 0;
+    this.loading = (async () => {
+      const to = this.months.length - 1;
+      const { bid, ask } = await loadMonths(this.symbol, this.months.slice(this.hi, to + 1), this.digits);
+      const end = this.bid[this.bid.length - 1].t;
+      const k = bid.findIndex((b) => b.t > end);
+      this.hi = to;
+      if (k < 0) return;
+      this.setData([...this.bid, ...bid.slice(k)], [...this.rawAsk, ...ask.slice(k)]);
+      added = bid.length - k;
+    })();
+    try {
+      await this.loading;
+    } finally {
+      this.loading = null;
+    }
+    return added;
+  }
+
   /** 前の months 個の月を足す */
   async loadEarlier(count: number): Promise<boolean> {
     if (!this.hasEarlier) return false;

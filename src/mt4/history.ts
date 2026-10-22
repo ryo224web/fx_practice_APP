@@ -4,7 +4,7 @@
 // 時刻は MT4 のサーバー時刻のまま読み、UTC への変換は呼び出し側で行う。
 // 約定の価格・時刻は記録のまま使い、計算し直さない（R2）。
 
-import type { Bar } from '../core/candles';
+import type { Bar } from '../core/candles.ts';
 
 export interface Mt4Trade {
   ticket: number;

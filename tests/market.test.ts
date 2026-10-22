@@ -49,7 +49,7 @@ describe('読み込む月の範囲（ウィンドウ）', () => {
       const key = /\/(\d{4}-\d{2})\.bin$/.exec(url)![1];
       fetched.push(key);
       const bytes: Uint8Array = file(key);
-      return { ok: true, arrayBuffer: async () => bytes.slice().buffer } as Response;
+      return { ok: true, headers: new Headers({ 'content-type': 'application/octet-stream' }), arrayBuffer: async () => bytes.slice().buffer } as Response;
     }) as typeof fetch;
     try {
       const md = new MarketData('usdjpy', 3, months);

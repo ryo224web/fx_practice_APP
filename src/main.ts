@@ -2179,11 +2179,70 @@ function updateStatus(ms = firstPaintMs) {
   const months = md.loadedMonths;
   const range = months.length ? `${months[0]}〜${months[months.length - 1]}` : '';
   statusEl.textContent = `${manifest ? md.symbol.toUpperCase() : '仮データ'} ${range} / 表示まで ${ms} ms`;
-  statusEl.title = storeInfo().remote ? `プロジェクトの保存先: ${storeInfo().dir}` : 'プロジェクトはブラウザの中だけに保存しています';
+  const tips = [storeInfo().remote ? `プロジェクトの保存先: ${storeInfo().dir}` : 'プロジェクトはブラウザの中だけに保存しています'];
   if (!manifest) statusEl.textContent += '（npm run import-data で実データを入れてください）';
+  // MT4 から書き出した直近の足（server/mt4Bars.ts）
+  const titan = manifest?.symbols[md.symbol]?.titan;
+  if (titan) {
+    statusEl.textContent += ` / TitanFX 〜${formatTime(titan.to, state.zone, rule).slice(5)}`;
+    tips.push(`${formatTime(titan.from, state.zone, rule)} からは MT4（TitanFX）の 1 分足、それより前は Dukascopy`);
+  }
+  if (barsStatus) {
+    tips.push(`MT4 の足の共有フォルダ: ${barsStatus.dir}${barsStatus.found ? '' : '（見つかりません）'}`);
+    if (barsStatus.error) tips.push(`取り込みのエラー: ${barsStatus.error}`);
+    const off = barsStatus.offset;
+    if (off && off.mt4 !== off.app) {
+      statusEl.textContent += ' ⚠ サーバー時刻';
+      tips.push(`MT4 のサーバー時刻は GMT${off.mt4 >= 0 ? '+' : ''}${off.mt4 / 60} 時間、アプリの設定（NY+7）では GMT+${off.app / 60} 時間で合っていません。夏時間の決まりを見直してください（CLAUDE.md）`);
+    }
+  }
+  statusEl.title = tips.join('\n');
 }
 
-start().catch((e) => {
-  console.error(e);
-  statusEl.textContent = `エラー: ${e instanceof Error ? e.message : e}`;
-});
+// ---------------- MT4 の 1 分足（自動取り込み） ----------------
+// 開発サーバーが共有フォルダから取り込んだ新しい足を、1 分ごとに見に行って後ろに足す。
+
+interface BarsStatus {
+  dir: string;
+  found: boolean;
+  error: string | null;
+  latest: Record<string, number>;
+  offset: { mt4: number; app: number; at: number } | null;
+}
+let barsStatus: BarsStatus | null = null;
+
+async function pollBars() {
+  try {
+    const res = await fetch('/api/bars/status', { cache: 'no-store' });
+    if (!res.ok || !res.headers.get('content-type')?.includes('json')) return;
+    barsStatus = (await res.json()) as BarsStatus;
+  } catch {
+    return;
+  }
+  const mdNow = md;
+  const latest = barsStatus.latest[md.symbol];
+  const known = manifest?.symbols[md.symbol]?.titan?.to ?? -Infinity;
+  if (manifest && latest && latest > known) {
+    const m = await loadManifest();
+    if (!m || md !== mdNow) return;
+    manifest = m;
+    const added = await md.appendLatest(m.symbols[md.symbol]?.months ?? []);
+    if (usd && m.symbols.usdjpy) await usd.appendLatest(m.symbols.usdjpy.months);
+    if (added > 0 && md === mdNow) {
+      dataChanged();
+      renderChart(false, true);
+      refresh();
+    }
+  }
+  updateStatus();
+}
+
+start()
+  .then(() => {
+    void pollBars();
+    setInterval(() => void pollBars(), 60_000);
+  })
+  .catch((e) => {
+    console.error(e);
+    statusEl.textContent = `エラー: ${e instanceof Error ? e.message : e}`;
+  });
