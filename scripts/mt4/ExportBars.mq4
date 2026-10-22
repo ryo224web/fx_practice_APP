@@ -13,8 +13,8 @@
 //| 3. Attach the EA to any one chart. AutoTrading is NOT needed      |
 //|    (this EA never trades).                                         |
 //|                                                                    |
-//| Output (one file per symbol and server month, server time):       |
-//|   fxp_bars\USDJPY_2026.10.csv                                      |
+//| Output (a folder per symbol, a file per server month, server time):|
+//|   fxp_bars\USDJPY\USDJPY_2026.10.csv                               |
 //|     time,open,high,low,close,volume                               |
 //|     2026.10.01 00:00,151.234,151.240,151.230,151.236,15           |
 //|   fxp_bars\_status.csv   server time, GMT, offset, last bar ...   |
@@ -95,8 +95,10 @@ bool WriteRange(string sym, datetime from, datetime to, string file)
    }
    int digits = (int)MarketInfo(sym, MODE_DIGITS);
    if(digits <= 0) digits = 5;
-   string tmp = Folder + "\\" + file + ".tmp";
-   string dst = Folder + "\\" + file;
+   string dir = Folder + "\\" + sym;
+   FolderCreate(dir);
+   string tmp = dir + "\\" + file + ".tmp";
+   string dst = dir + "\\" + file;
    int f = FileOpen(tmp, FILE_WRITE | FILE_TXT | FILE_ANSI);
    if(f == INVALID_HANDLE)
    {
@@ -141,7 +143,7 @@ bool ExportSymbol(string sym, datetime today)
       datetime to = (datetime)MathMin(MonthStart(ny, nm), today); // finished days only
       if(to <= from) continue;                           // the 1st of the month: nothing finished yet
       string file = sym + "_" + IntegerToString(yy) + "." + Two(mm) + ".csv";
-      if(k >= 2 && FileIsExist(Folder + "\\" + file)) continue;
+      if(k >= 2 && FileIsExist(Folder + "\\" + sym + "\\" + file)) continue;
       if(!WriteRange(sym, from, to, file) && k <= 1) ok = false;
    }
    return ok;

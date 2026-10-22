@@ -1,6 +1,6 @@
 // MT4 から書き出した 1 分足の取り込み（server/mt4Bars.ts）と、Dukascopy との合わせ方（src/data/store.ts）
 
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -98,8 +98,10 @@ describe('共有フォルダからの取り込み（BarsSync）', () => {
     await writeFile(path.join(data, 'manifest.json'), JSON.stringify({ symbols: { usdjpy: { digits: 3, months: ['2026-10'] } } }));
     // 10 月のファイル: サーバー 10/30（金）0:00〜 60 本（UTC 10/29 21:00〜。夏時間）
     // 11 月のファイル: サーバー 11/2（月）0:00〜 180 本（UTC 11/1 22:00〜。冬時間）
-    await writeFile(path.join(shared, 'USDJPY_2026.10.csv'), dayCsv(Date.UTC(2026, 9, 30), 60, 152));
-    await writeFile(path.join(shared, 'USDJPY_2026.11.csv'), dayCsv(Date.UTC(2026, 10, 2), 180, 153));
+    // 銘柄ごとのフォルダに置く（EA の書き方）
+    await mkdir(path.join(shared, 'USDJPY'));
+    await writeFile(path.join(shared, 'USDJPY', 'USDJPY_2026.10.csv'), dayCsv(Date.UTC(2026, 9, 30), 60, 152));
+    await writeFile(path.join(shared, 'USDJPY', 'USDJPY_2026.11.csv'), dayCsv(Date.UTC(2026, 10, 2), 180, 153));
     await writeFile(path.join(shared, '_status.csv'), 'server,gmt,offset_sec,company,server_name,exported_until\r\n2026.11.03 00:10:00,2026.11.02 22:10:00,7200,Titan FX,TitanFX-02,2026.11.03\r\n');
 
     const sync = new BarsSync(shared, data);
@@ -121,9 +123,9 @@ describe('共有フォルダからの取り込み（BarsSync）', () => {
     expect(sync.status.latest.usdjpy).toBe(e.titan.to);
 
     // 次の日: 11 月のファイルが書き直された（足が増え、最初の足も直された）。10 月のファイルは消えた（取り込んだ分は残る）
-    await rm(path.join(shared, 'USDJPY_2026.10.csv'));
+    await rm(path.join(shared, 'USDJPY', 'USDJPY_2026.10.csv'));
     await new Promise((r) => setTimeout(r, 20));
-    await writeFile(path.join(shared, 'USDJPY_2026.11.csv'), dayCsv(Date.UTC(2026, 10, 2), 1440 + 200, 154));
+    await writeFile(path.join(shared, 'USDJPY', 'USDJPY_2026.11.csv'), dayCsv(Date.UTC(2026, 10, 2), 1440 + 200, 154));
     await sync.sync();
     const nov2 = decodeBars(await readFile(path.join(data, 'usdjpy/titan/2026-11.bin')), 3);
     expect(nov2.length).toBe(1640);

@@ -1,6 +1,6 @@
 // MT4（TitanFX）の 1 分足を、共有フォルダ（Dropbox）から自動で取り込む（開発サーバーに組み込む）。
 // Windows 機の MT4 で scripts/mt4/ExportBars.mq4（EA）を動かすと、1 日 1 回（前日までの分）
-//   <dir>/USDJPY_2026.10.csv        銘柄とサーバー時刻の月ごと（time,open,high,low,close,volume。時刻はサーバー時刻）
+//   <dir>/USDJPY/USDJPY_2026.10.csv 銘柄のフォルダに、サーバー時刻の月ごと（time,open,high,low,close,volume。時刻はサーバー時刻）
 //   <dir>/_status.csv               MT4 のサーバー時刻と GMT の差など
 // が書き換わる（今月と先月だけ。それより前の月のファイルはそのまま残る）。
 // ここではフォルダを 15 秒ごとに見て、変わったファイルを
@@ -188,10 +188,17 @@ export class BarsSync {
     if (!this.status.found) return;
     const names = await readdir(this.dir);
     await this.readStatus(names);
+    // 銘柄ごとのフォルダ（USDJPY/USDJPY_2026.10.csv）の中も見る。じかに置いたファイルも読む
+    const files: string[] = [];
+    for (const name of names) {
+      const st = await stat(path.join(this.dir, name)).catch(() => null);
+      if (st?.isDirectory()) for (const sub of await readdir(path.join(this.dir, name)).catch(() => [])) files.push(path.join(name, sub));
+      else files.push(name);
+    }
     /** 銘柄 → 変わったファイル */
     const changed = new Map<string, { name: string; start: number; end: number; sig: string }[]>();
-    for (const name of names) {
-      const p = parseBarFileName(name);
+    for (const name of files) {
+      const p = parseBarFileName(path.basename(name));
       if (!p) continue;
       const st = await stat(path.join(this.dir, name)).catch(() => null);
       if (!st) continue;

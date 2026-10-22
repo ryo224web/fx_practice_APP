@@ -74,7 +74,7 @@
 
 ```
 T580 の MT4（EA: scripts/mt4/ExportBars.mq4）→ 1 日 1 回（サーバー時刻の日が変わったら）、前日までの 1 分足を書き出す
-  → Dropbox の Claude/fx_practice/mt4_bars/（USDJPY_2026.10.csv のようにサーバー時刻の月ごと）
+  → Dropbox の Claude/fx_practice/mt4_bars/（銘柄ごとのフォルダに、USDJPY/USDJPY_2026.10.csv のようにサーバー時刻の月ごと）
      書き直すのは今月と先月だけ。それより前の月のファイルは触らないので、MT4 から消えた古い足もファイルに残る
   → Mac mini の開発サーバー（server/mt4Bars.ts）が 15 秒ごとに見て、変わったファイルを public/data/<銘柄>/titan/<YYYY-MM>.bin に取り込む
   → アプリは 1 分ごとに確かめて、新しい足をチャートの右に足す（開いたまま日が変わっても足される）
@@ -96,7 +96,7 @@ T580 の MT4（EA: scripts/mt4/ExportBars.mq4）→ 1 日 1 回（サーバー�
 4. ナビゲーターの「エキスパートアドバイザ」から ExportBars をどれか 1 つのチャートにドラッグ（自動売買のボタンは要らない。注文は出さない）
 5. MT4 が動いてログインしていれば、日が変わってから 30 分以内に書き出す（`CheckEveryMin`）。T580 を止めていた日は、次に MT4 を起動したときに今月・先月の分をまとめて書くので、毎日動かしておかなくてもよい（2 か月以上止めると、その間は MT4 に残っている分だけになる）
 
-確かめ方（**Mac mini**）: Dropbox の `Claude/fx_practice/mt4_bars` に `USDJPY_2026.10.csv` などができて毎日更新され、アプリ右上に「TitanFX 〜（最新の時刻）」が出れば動いている。開発サーバーを動かしたままなら、FX Practice を開き直すだけでよい（サーバーを今回の変更より前から動かしているなら「FX Practice を終了」してから開く）
+確かめ方（**Mac mini**）: Dropbox の `Claude/fx_practice/mt4_bars` に `USDJPY/USDJPY_2026.10.csv` などができて毎日更新され、アプリ右上に「TitanFX 〜（最新の時刻）」が出れば動いている。開発サーバーを動かしたままなら、FX Practice を開き直すだけでよい（サーバーを今回の変更より前から動かしているなら「FX Practice を終了」してから開く）
 
 ExportHistory.mq4 の使い方（**Windows 機（MSI か T580）の MT4**）:
 1. MT4 の「ファイル」→「データフォルダを開く」→ `MQL4\Scripts` に `ExportHistory.mq4` を置き、MetaEditor で開いてコンパイル
