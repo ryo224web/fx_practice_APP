@@ -14,9 +14,9 @@ import path from 'node:path';
 import type { Plugin } from 'vite';
 import { DEFAULT_SERVER_RULE, serverOffsetMinutes, serverToUtc } from '../src/core/time.ts';
 import { normalizeSymbol } from '../src/mt4/history.ts';
-import { DEFAULT_PROJECT_DIR } from './projectStore.ts';
 
-export const DEFAULT_BARS_DIR = path.join(DEFAULT_PROJECT_DIR, 'mt4_bars');
+/** MT4 のデータフォルダは Dropbox の MT4 にある（MSI・T580 で共有）。EA はその MQL4\\Files\\fxp_bars に書く */
+export const DEFAULT_BARS_DIR = '/Users/ryo/Library/CloudStorage/Dropbox/MT4/MQL4/Files/fxp_bars';
 
 /** 銘柄と価格の小数桁数（scripts/import-csv.mjs と同じ） */
 export const SYMBOL_DIGITS: Record<string, number> = {

@@ -67,6 +67,30 @@ describe('MT4 の 1 分足のファイル', () => {
 });
 
 describe('TitanFX と Dukascopy の合わせ方', () => {
+  it('MT4 に足が無かった期間（3 日より長い空き）は Dukascopy で埋める', () => {
+    const D = 86_400_000;
+    const days = [0, 1, 2, 10, 11, 12, 20]; // 3〜9 日目は MT4 に足が無かった
+    const duka = { bid: Array.from({ length: 21 }, (_, d) => bar(d * D + 1000, 1)), ask: Array.from({ length: 21 }, () => null) };
+    const titan = { bid: days.map((d) => bar(d * D, 2)), ask: days.map(() => null) };
+    const m = mergeSources(duka, titan, { from: 0, to: 20 * D });
+    const src = (d: number) => m.bid.filter((b) => Math.floor(b.t / D) === d).map((b) => b.c);
+    // TitanFX の足の間（1 日空き）は TitanFX だけ
+    expect(src(1)).toEqual([2]);
+    // 2 日目と 10 日目の間は 8 日空いているので Dukascopy で埋める
+    for (const d of [3, 5, 9]) expect(src(d)).toEqual([1]);
+    // 12 日目と 20 日目の間も同じ
+    expect(src(15)).toEqual([1]);
+    expect(m.bid.map((b) => b.t)).toEqual([...m.bid.map((b) => b.t)].sort((a, b) => a - b));
+  });
+
+  it('月の初めの数時間だけ TitanFX があるとき（MT4 にその月が無い）、その月は Dukascopy', () => {
+    const D = 86_400_000;
+    const duka = { bid: Array.from({ length: 30 }, (_, d) => bar(d * D, 1)), ask: Array.from({ length: 30 }, () => null) };
+    const titan = { bid: [bar(29 * D + 3_600_000, 2)], ask: [null] };
+    const m = mergeSources(duka, titan, { from: 0, to: 40 * D });
+    expect(m.bid.filter((b) => b.c === 1).length).toBe(27); // 27〜29 日目の頭（TitanFX の足の 3 日前以内）だけ TitanFX 側
+  });
+
   const bar = (t: number, p: number) => ({ t, o: p, h: p, l: p, c: p });
   it('TitanFX の範囲は TitanFX だけ、その外は Dukascopy', () => {
     const duka = { bid: [0, 1, 2, 3, 4, 5].map((i) => bar(i * M, 1)), ask: [0, 1, 2, 3, 4, 5].map((i) => bar(i * M, 1.1)) };

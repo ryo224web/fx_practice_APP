@@ -3,7 +3,8 @@
 //| Writes account history (closed trades) and open positions to CSV |
 //| for FX Practice ("MT4 history" import).                          |
 //|                                                                    |
-//| This file is ASCII only on purpose: MetaEditor may misread UTF-8. |
+//| Kept as UTF-8 in git; npm run deploy-mt4 copies it to the MT4     |
+//| data folder as UTF-16 (MetaEditor reads Japanese correctly then). |
 //| Japanese instructions: see CLAUDE.md ("MT4 history").             |
 //|                                                                    |
 //| 1. Put this file in <data folder>\MQL4\Scripts and compile it.   |
@@ -15,8 +16,14 @@
 //+------------------------------------------------------------------+
 #property strict
 #property script_show_inputs
+#property version     "1.01"
+#property copyright   "R（FX Practice 用の自作ツール）"
+#property description "FX Practice の「MT4 履歴」タブ用に、取引履歴を書き出すスクリプトです。注文は出しません。"
+#property description "決済した取引と保有中のポジションを MQL4\\Files\\fx_practice_history.csv に書きます（時刻はサーバー時刻）。"
+#property description "先に「口座履歴」タブで右クリック →「全履歴」を選んでください（表示中の期間だけが書き出されるため）。"
+#property description "チャートにドラッグするたびに 1 回だけ書き出します。"
 
-input string FileName = "fx_practice_history.csv";
+input string FileName = "fx_practice_history.csv"; // Output file (in MQL4\Files)
 
 string Price(string symbol, double p)
 {

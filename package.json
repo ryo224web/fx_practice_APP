@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "fetch-data": "node scripts/fetch-data.mjs",
     "import-data": "node scripts/import-csv.mjs",
-    "make-app": "zsh scripts/mac/make-app.sh"
+    "make-app": "zsh scripts/mac/make-app.sh",
+    "deploy-mt4": "node scripts/mt4/deploy.mjs"
   },
   "dependencies": {
     "lightweight-charts": "5.2.1"

@@ -36,29 +36,47 @@ async function fetchMonth(url: string, digits: number, required: boolean): Promi
   return { bid: [], ask: [] };
 }
 
+/** TitanFX の足がこれより長く空いていたら、そこは MT4 に足が無かった（週末・年末年始の休みより長い） */
+export const TITAN_GAP = 72 * 3_600_000;
+
 /**
- * 1 か月分。TitanFX の足がある期間（from〜to）は TitanFX だけを使い、その外は Dukascopy を使う
- * （R2: MT4 の取引はブローカー自身の足で再現する）
+ * 1 か月分。TitanFX の足がある所は TitanFX だけを使い、無い所は Dukascopy を使う
+ * （R2: MT4 の取引はブローカー自身の足で再現する）。
+ * Dukascopy の足を捨てるのは、TitanFX の範囲（from〜to）の中で、前後の TitanFX の足との間が TITAN_GAP 以内のときだけ
+ * （MT4 が途中の月の足を持っていなかったときに、チャートが抜けないように）
  */
 export function mergeSources(duka: PriceBars, titan: PriceBars, info: Pick<TitanInfo, 'from' | 'to'>): PriceBars {
   const bid: PriceBars['bid'] = [];
   const ask: PriceBars['ask'] = [];
+  const tb = titan.bid;
+  let i = 0;
   let j = 0;
-  const pushDuka = (until: number) => {
-    for (; j < duka.bid.length && duka.bid[j].t < until; j++) {
-      const t = duka.bid[j].t;
-      if (t >= info.from && t <= info.to) continue;
-      bid.push(duka.bid[j]);
-      ask.push(duka.ask[j]);
-    }
+  /** t の前後の TitanFX の足（i は t 以上で最初の足） */
+  const covered = (t: number) => {
+    if (t < info.from || t > info.to) return false;
+    const prev = i > 0 ? tb[i - 1].t : null;
+    const next = i < tb.length ? tb[i].t : null;
+    if (prev !== null && next !== null) return next - prev <= TITAN_GAP;
+    if (next !== null) return next - t <= TITAN_GAP;
+    if (prev !== null) return t - prev <= TITAN_GAP;
+    return false;
   };
-  for (let i = 0; i < titan.bid.length; i++) {
-    pushDuka(titan.bid[i].t);
-    if (j < duka.bid.length && duka.bid[j].t === titan.bid[i].t) j++;
-    bid.push(titan.bid[i]);
-    ask.push(titan.ask[i]);
+  while (i < tb.length || j < duka.bid.length) {
+    const td = j < duka.bid.length ? duka.bid[j].t : Infinity;
+    const tt = i < tb.length ? tb[i].t : Infinity;
+    if (tt <= td) {
+      if (td === tt) j++; // 同じ時刻は TitanFX
+      bid.push(tb[i]);
+      ask.push(titan.ask[i]);
+      i++;
+    } else {
+      if (!covered(td)) {
+        bid.push(duka.bid[j]);
+        ask.push(duka.ask[j]);
+      }
+      j++;
+    }
   }
-  pushDuka(Infinity);
   return { bid, ask };
 }
 

@@ -74,36 +74,38 @@
 
 ```
 T580 の MT4（EA: scripts/mt4/R_ExportBars.mq4）→ 1 日 1 回（サーバー時刻の日が変わったら）、前日までの 1 分足を書き出す
-  → Dropbox の Claude/fx_practice/mt4_bars/（銘柄ごとのフォルダに、USDJPY/USDJPY_2026.10.csv のようにサーバー時刻の月ごと）
+  → MT4 のデータフォルダ（Dropbox の MT4。Windows では C:\Users\rende\Dropbox\MT4）の MQL4\Files\fxp_bars\
+     （銘柄ごとのフォルダに、USDJPY\USDJPY_2026.10.csv のようにサーバー時刻の月ごと）
      書き直すのは今月と先月だけ。それより前の月のファイルは触らないので、MT4 から消えた古い足もファイルに残る
   → Mac mini の開発サーバー（server/mt4Bars.ts）が 15 秒ごとに見て、変わったファイルを public/data/<銘柄>/titan/<YYYY-MM>.bin に取り込む
   → アプリは 1 分ごとに確かめて、新しい足をチャートの右に足す（開いたまま日が変わっても足される）
 ```
 
-- 銘柄は 10 個（USDJPY・EURUSD・GBPUSD・AUDUSD・USDCHF・USDCAD・NZDUSD・EURJPY・GBPJPY・XAUUSD）。EA の設定 `Symbols` で減らせる。初めて動かしたときは、先月より前も `InitialMonths`（3 か月）分、ファイルが無ければ書く
+- MT4 のデータフォルダそのものが Dropbox の `MT4` にある（MSI・T580 で共有し、`start_mt4_*.bat` が二重起動を防ぐ）。なので EA の書き出しは何もしなくても Mac に届く（ジャンクションは要らない）
+- 銘柄は 10 個（USDJPY・EURUSD・GBPUSD・AUDUSD・USDCHF・USDCAD・NZDUSD・EURJPY・GBPJPY・XAUUSD）。EA の設定 `Symbols` で減らせる。先月より前も `InitialMonths`（T580 では 12 にした）か月分、ファイルが無ければ書く（毎回確かめる）
+- 2026-10-22 に初めて動かした結果: MT4 が持っていた 1 分足は銘柄によって 2〜9 か月分で、途中の月が抜けている銘柄もある（GBPJPY の 6・9 月など）。NZDUSD は 1 日分、GBPJPY は 10 月の 3 日分しか無かった（MT4 でその銘柄の M1 チャートを開き、Home キーで過去へ戻すとサーバーから取ってくる）。USDJPY の 10 月を Dukascopy と比べると、時刻のずれは無く、終値の差は中央値 0.1 pips。サーバー時刻は GMT+3 でアプリの決まりと一致
 - 取り込んだ足は `public/data` に残り続ける（共有フォルダのファイルを消しても消えない）。同じ月のファイルが書き直されたら、その月の足はファイルどおりに置き換える
-- チャートは、TitanFX の足がある期間（最初〜最後の足）は TitanFX だけ、その外は Dukascopy（`src/data/store.ts` の `mergeSources`）。MT4 を長く止めていて MT4 にも残っていない期間は、足が抜ける
+- チャートは、TitanFX の足がある所は TitanFX だけ、無い所は Dukascopy（`src/data/store.ts` の `mergeSources`）。TitanFX の足が 3 日より長く空いている所（MT4 がその月の足を持っていなかった所）も Dukascopy で埋める
+- EA は書いた月をエキスパートタブに出す（`USDJPY wrote 2026.06 2026.07 …`）。MT4 に無い古い月はエラー 4073 になり、何も書かない（それでよい）
 - 開いたまま届いた足は後ろに足すだけ（持っている足は変えない。リプレイの位置や口座の計算がずれるため）。MT4 が直した足は次に開いたときに入る
 - MT4 の足に Ask は無い（固定スプレッドで Ask = Bid + スプレッド）
 - 右上の表示に「TitanFX 〜10.22 13:59」（最後の足）。EA が書く `_status.csv` の「サーバー時刻 − GMT」がアプリの決まり（NY+7）と違えば「⚠ サーバー時刻」と出す（マウスを乗せると詳しく出る）。夏時間の決まり（`eu-dst` に切り替えるか）はこれで分かる
 - 共有フォルダは環境変数 `FXP_BARS_DIR` で変えられる
 
-設定のしかた（**T580**。最初に 1 回だけ）:
+設定のしかた（**T580**。最初に 1 回だけ。2026-10-22 に済み）:
 1. MT4 の「ツール」→「オプション」→「チャート」で、「ヒストリー内の最大バー数」と「チャートの最大バー数」を大きく（9999999）する
-2. MT4 の「ファイル」→「データフォルダを開く」で開いたフォルダの中の `MQL4\Experts` に `R_ExportBars.mq4` を置き、MetaEditor で開いてコンパイル（T580 には git が要らないよう、Dropbox の `Claude\fx_practice\mt4\` にも置いてある。`scripts/mt4/` の .mq4 を変えたら、そこにもコピーする）
-3. コマンドプロンプトで、`MQL4\Files\fxp_bars` を Dropbox のフォルダにつなぐ（ジャンクション。`fxp_bars` がまだ無い状態で）:
-   `mklink /J "<データフォルダ>\MQL4\Files\fxp_bars" "C:\Users\<ユーザー名>\Dropbox\Claude\fx_practice\mt4_bars"`
-4. ナビゲーターの「エキスパートアドバイザ」から R_ExportBars をどれか 1 つのチャートにドラッグ（自動売買のボタンは要らない。注文は出さない）
-5. MT4 が動いてログインしていれば、日が変わってから 30 分以内に書き出す（`CheckEveryMin`）。T580 を止めていた日は、次に MT4 を起動したときに今月・先月の分をまとめて書くので、毎日動かしておかなくてもよい（2 か月以上止めると、その間は MT4 に残っている分だけになる）
+2. Mac で `npm run deploy-mt4` を実行すると、`R_ExportBars.mq4` が Dropbox の `MT4/MQL4/Experts/`、`R_ExportHistory.mq4` が `MT4/MQL4/Scripts/` に入る（`scripts/mt4/` の .mq4 を変えたら毎回実行する）。MT4 のナビゲーターで「更新」し、MetaEditor でコンパイル
+3. ナビゲーターの「エキスパートアドバイザ」から R_ExportBars をどれか 1 つのチャートにドラッグ（自動売買のボタンは要らない。注文は出さない）
+4. MT4 が動いてログインしていれば、日が変わってから 30 分以内に書き出す（`CheckEveryMin`）。T580 を止めていた日は、次に MT4 を起動したときに今月・先月の分をまとめて書くので、毎日動かしておかなくてもよい（2 か月以上止めると、その間は MT4 に残っている分だけになる）
 
-確かめ方（**Mac mini**）: Dropbox の `Claude/fx_practice/mt4_bars` に `USDJPY/USDJPY_2026.10.csv` などができて毎日更新され、アプリ右上に「TitanFX 〜（最新の時刻）」が出れば動いている。開発サーバーを動かしたままなら、FX Practice を開き直すだけでよい（サーバーを今回の変更より前から動かしているなら「FX Practice を終了」してから開く）
+確かめ方（**Mac mini**）: Dropbox の `MT4/MQL4/Files/fxp_bars` に `USDJPY/USDJPY_2026.10.csv` などができて毎日更新され、アプリ右上に「TitanFX 〜（最新の時刻）」が出れば動いている。開発サーバーを動かしたままなら、FX Practice を開き直すだけでよい（サーバーを今回の変更より前から動かしているなら「FX Practice を終了」してから開く）
 
 R_ExportHistory.mq4 の使い方（**Windows 機（MSI か T580）の MT4**）:
-1. MT4 の「ファイル」→「データフォルダを開く」→ `MQL4\Scripts` に `R_ExportHistory.mq4` を置き、MetaEditor で開いてコンパイル
+1. `R_ExportHistory.mq4` は Dropbox の `MT4/MQL4/Scripts/` に置いてある。MetaEditor で開いてコンパイル
 2. ターミナルの「口座履歴」タブで右クリック →「全履歴」（表示している期間の分しか書き出せないため）
 3. ナビゲーターの「スクリプト」から R_ExportHistory をチャートにドラッグ
-4. `MQL4\Files\fx_practice_history.csv` ができる。これを Mac mini に移して、アプリの「MT4 履歴」タブで読み込む
-（.mq4 の中身は英語だけにしてある。MetaEditor が UTF-8 の日本語を読み違えることがあるため）
+4. `MQL4\Files\fx_practice_history.csv` ができる（データフォルダが Dropbox にあるので、Mac では `Dropbox/MT4/MQL4/Files/` にそのまま届く）。アプリの「MT4 履歴」タブで読み込む
+（.mq4 は git では UTF-8 で持ち、`npm run deploy-mt4` で Dropbox の MT4 のデータフォルダへ UTF-16 にしてコピーする。MetaEditor は BOM の無い UTF-8 の日本語を読み違えるが、UTF-16 なら正しく読む。バージョン情報の説明は日本語）
 
 ## 計算の確かめ方
 
