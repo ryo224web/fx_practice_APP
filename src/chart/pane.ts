@@ -145,13 +145,21 @@ export class ChartPane {
       true,
     );
     el.addEventListener('auxclick', (e) => e.button === 1 && e.preventDefault());
+    let edgeCheck = 0;
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
-      if (r && r.from < 30) {
-        // 省いていた古い足があれば足す。無ければ前の月を読み込む
-        if (this.shown.start > 0) {
-          this.extraBars += CHART_MAX_BARS;
-          setTimeout(() => this.render(true, true));
-        } else host.nearLeftEdge();
+      // 左端に来たかは次のフレームで、その時の範囲で見る（描き直した直後は、古い時間足の位置のまま一瞬だけ
+      // 遠い過去を指すことがあり、それに反応すると要らない足やデータを読み込んで重くなる）
+      if (r && r.from < 30 && !edgeCheck) {
+        edgeCheck = requestAnimationFrame(() => {
+          edgeCheck = 0;
+          const now = this.chart.timeScale().getVisibleLogicalRange();
+          if (!now || now.from >= 30) return;
+          // 省いていた古い足があれば足す。無ければ前の月を読み込む
+          if (this.shown.start > 0) {
+            this.extraBars += CHART_MAX_BARS;
+            this.render(true, true);
+          } else host.nearLeftEdge();
+        });
       }
       this.placeShiftHandle();
       const w = this.chart.timeScale().width();
@@ -187,6 +195,8 @@ export class ChartPane {
   /** 今の時刻までの足を表示する。reset なら全部描き直す（keepView なら見えている範囲を保つ） */
   render(reset = false, keepView = false) {
     if (this.el.hidden) return;
+    // 描き直す前の見え方（右端の時刻と足の幅）。足を渡し直したあと、これに戻す
+    const before = this.shown.k >= 0 ? this.viewState() : null;
     const { agg, times, closes, chartTimes } = this.host.agg(this.tf);
     const bar = (j: number) => this.host.toChart(agg.bars[j]);
     const cursor = this.host.cursor();
@@ -203,12 +213,12 @@ export class ChartPane {
     if (same && this.shown.start >= 0 && start > this.shown.start) start = this.shown.start;
     this.mapper.offset = start;
     if (!same || start !== this.shown.start) {
-      const view = keepView || (same && start !== this.shown.start) ? this.chart.timeScale().getVisibleRange() : null;
+      const keep = before && (keepView || (same && start !== this.shown.start));
       const list: CandlestickData[] = [];
       for (let j = start; j < k; j++) list.push(bar(j));
       list.push(partial);
       this.series.setData(list);
-      if (view) this.chart.timeScale().setVisibleRange(view);
+      if (keep) this.restoreView(before, k - start);
     } else {
       for (let j = this.shown.k; j < k; j++) this.series.update(bar(j));
       this.series.update(partial);
@@ -278,19 +288,52 @@ export class ChartPane {
   }
 
   /**
-   * time（UTC。anchorTime と同じ、右の余白を除いた右端の時刻）が右端に来るように全部描き直す。
-   * 時間足を変えたときに使う。遠い過去を見ていたら、そこまでの足をチャートに渡す
+   * time（UTC。anchorTime と同じ、右の余白を除いた右端の時刻）が右端に来るように全部描き直す（null なら最新の足）。
+   * 時間足を変えたときに使う。遠い過去を見ていたら、そこまでの足をチャートに渡す。
+   * 足の幅（拡大率）は変えない（描き直した直後は前の時間足の位置のままなので、新しい時間足の足の数を超えていると
+   * チャートが範囲を縮めてしまう。その幅を使うと勝手に拡大される）
    */
-  renderAt(time: number) {
+  renderAt(time: number | null) {
+    const spacing = this.chart.timeScale().options().barSpacing;
     this.render(true);
-    const { agg } = this.host.agg(this.tf);
+    const { agg, times } = this.host.agg(this.tf);
     const k = lastLE(agg.starts, this.host.cursor());
-    const need = k - lastLE(agg.starts, time) + 500 - CHART_MAX_BARS;
-    if (need > 0) {
-      this.extraBars = need;
-      this.render(true);
+    if (time !== null) {
+      const need = k - lastLE(times, time) + 500 - CHART_MAX_BARS;
+      if (need > 0) {
+        this.extraBars = need;
+        this.render(true);
+      }
     }
-    this.alignTo(time);
+    this.restoreView({ anchor: time, spacing }, k - this.mapper.offset);
+  }
+
+  /** restoreView で決めて、チャートにまだ反映されていない見え方（チャートは位置の変更を次のフレームで反映する） */
+  private pendingView: { anchor: number | null; spacing: number } | null = null;
+
+  /** 右端の時刻（最新の足を見ていれば null）。描き直した直後でも、決めた位置を返す */
+  currentAnchor(): number | null {
+    return this.viewState().anchor;
+  }
+
+  /** 今の見え方: 右端の時刻（最新の足を見ていれば null）と足の幅 */
+  private viewState(): { anchor: number | null; spacing: number } {
+    if (this.pendingView) return this.pendingView;
+    return { anchor: this.isAtNow() ? null : this.anchorTime(), spacing: this.chart.timeScale().options().barSpacing };
+  }
+
+  /**
+   * 足の幅を戻し、右端の位置は「最新の足（last 番目）から何本分か」で決める
+   * （見えている時刻の範囲や本数で戻すと、描き直した直後の一瞬の範囲に引きずられて勝手に拡大されたり、1 本分ずつずれたりする）
+   */
+  private restoreView(v: { anchor: number | null; spacing: number }, last: number) {
+    const ts = this.chart.timeScale();
+    ts.applyOptions({ barSpacing: v.spacing });
+    const at = v.anchor === null ? last : Math.min(last, this.mapper.toLogical(v.anchor));
+    ts.scrollToPosition(at - last + ts.options().rightOffset, false);
+    this.spacing = v.spacing;
+    this.pendingView = v;
+    requestAnimationFrame(() => requestAnimationFrame(() => (this.pendingView = null)));
   }
 
   /** 右の余白（足の本数）。最新の足が見えている位置に戻す */

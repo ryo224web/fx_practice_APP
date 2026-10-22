@@ -9,7 +9,7 @@ import { formatMoney, formatPrice, formatTime, fromLocalInput, toLocalInput } fr
 import { sampleM1 } from './core/sample';
 import { DEFAULT_SPREAD_PIPS, symbolSpec, type SymbolSpec } from './core/symbols';
 import { DEFAULT_SERVER_RULE, serverToUtc, toDisplay, type DisplayZone } from './core/time';
-import { loadManifest, type Manifest } from './data/store';
+import { loadManifest, loadMonths, type Manifest } from './data/store';
 import { detectOffsetHours, matchTrade, parseHistoryFile, type Mt4Trade, type PriceLookup } from './mt4/history';
 import { MarketData } from './replay/market';
 import {
@@ -258,7 +258,7 @@ function dataChanged() {
 function getAgg(tf: Timeframe) {
   let c = aggCache.get(tf);
   if (!c || c.version !== dataVersion) {
-    const agg = aggregateWithIndex(md.bid, tf, rule);
+    const agg = withHistory(aggregateWithIndex(md.bid, tf, rule), tf);
     // チャート用の形（CandlestickData）は描く分だけその都度作る（全部の足の分を持つとメモリを食うため）
     c = {
       agg,
@@ -1093,19 +1093,83 @@ async function ensureLoaded(from: number, to: number) {
   updateStatus();
 }
 
-/** 自動で読み込むインジケーター用の過去データの上限（読み込める月数の上限から、今の月と次の月の分を除く） */
+/** 1 分足で読み込むインジケーター用の過去データの上限（H1 より短い時間足。読み込める月数の上限から、今の月と次の月の分を除く） */
 const HISTORY_LIMIT = (MAX_MONTHS - 2) * 30 * 86_400_000;
+/** H1 以上の時間足のインジケーター用の過去データの上限（1 時間足で持つので軽い） */
+const HOURLY_LIMIT = 5 * 365 * 86_400_000;
 let loadingHistory = false;
+
+// ---- H1 以上の時間足の過去（読み込んでいる 1 分足より前） ----
+// 日足・週足の SMA(200) などには何年分もの足が要る。1 分足で持つとメモリを食い、時間足を変えるたびに
+// まとめ直すのも重いので、月ごとに 1 時間足にまとめて持つ（1 分足は捨てる）。
+// H4・D1・W1・MN の区切り（サーバー時刻の正時）は 1 時間足の区切りと重なるので、1 時間足からまとめても同じ足になる。
+
+/** `${銘柄}:${月}` → その月の 1 時間足（Bid） */
+const hourlyCache = new Map<string, Bar[]>();
+
+/** 読み込んでいる 1 分足の範囲の前に続く 1 時間足（月がつながっている分だけ） */
+function hourlyBefore(): Bar[] {
+  const [lo] = md.windowRange;
+  const parts: Bar[][] = [];
+  for (let i = lo - 1; i >= 0; i--) {
+    const h = hourlyCache.get(`${md.symbol}:${md.months[i]}`);
+    if (!h) break;
+    parts.unshift(h);
+  }
+  const start = md.bid.length ? md.bid[0].t : Infinity;
+  return parts.flat().filter((b) => b.t < start);
+}
+
+/**
+ * 1 分足からまとめた足の前に、1 時間足の過去をまとめた足を付ける（H1 以上の時間足だけ）。
+ * 過去の足の starts（1 分足の位置）は負の数にする（1 分足の範囲の外。lastLE で今の足を探すのには使わない）
+ */
+function withHistory(agg: Aggregated, tf: Timeframe): Aggregated {
+  if (TIMEFRAMES[tf] < 60) return agg;
+  const hourly = hourlyBefore();
+  if (!hourly.length) return agg;
+  const past = aggregateWithIndex(hourly, tf, rule).bars;
+  // 1 分足の範囲の始まりをまたぐ足（日足・月足など）は 1 本にまとめる
+  if (past.length && agg.bars.length && past[past.length - 1].t === agg.bars[0].t) {
+    const a = past.pop()!;
+    const b = agg.bars[0];
+    agg.bars[0] = { t: b.t, o: a.o, h: Math.max(a.h, b.h), l: Math.min(a.l, b.l), c: b.c };
+  }
+  return { bars: [...past, ...agg.bars], starts: [...past.map((_, i) => i - past.length), ...agg.starts] };
+}
+
+/** from（UTC）から 1 分足の範囲の前までの月を、1 時間足にして持つ。足したら true */
+async function loadHourly(from: number): Promise<boolean> {
+  const [lo] = md.windowRange;
+  const symbol = md.symbol;
+  const want: string[] = [];
+  for (let i = Math.max(0, md.monthIndexOf(from)); i < lo; i++) if (!hourlyCache.has(`${symbol}:${md.months[i]}`)) want.push(md.months[i]);
+  if (!want.length) return false;
+  // 一度に読むのは数か月ずつ（1 分足を長く持たないように）。新しい月から
+  for (let end = want.length; end > 0; end -= 6) {
+    const chunk = want.slice(Math.max(0, end - 6), end);
+    const { bid } = await loadMonths(symbol, chunk, md.digits);
+    for (const m of chunk) {
+      const lo = Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1, 1);
+      const hi = Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 1);
+      hourlyCache.set(`${symbol}:${m}`, aggregateWithIndex(bid.filter((b) => b.t >= lo && b.t < hi), 'H1', rule).bars);
+    }
+    if (md.symbol !== symbol) return false;
+  }
+  return true;
+}
 
 /**
  * 表示しているチャートのインジケーターに必要な分だけ、前のデータを読み込む。
- * 例: 日足の SMA(200) には 200 日分の 1 分足が要る。足りないと線が途中から始まったり、
+ * 例: 日足の SMA(200) には 200 日分の足が要る。足りないと線が途中から始まったり、
  * EMA が MT4 と違う値になったりする（EMA は初めの値の影響が残るので、期間の 3 倍を見る）。
- * 週末など足の無い時間があるので 1.5 倍の期間を見る。最大 5 年分。
+ * 週末など足の無い時間があるので 1.5 倍の期間を見る。
+ * H1 より短い時間足は 1 分足で（最大 28 か月）、H1 以上は 1 時間足で（最大 5 年）持つ。
  */
 async function ensureIndicatorHistory() {
   if (!manifest || loadingHistory || !md.hasEarlier) return;
-  let need = 0;
+  let needMinute = 0;
+  let needHourly = 0;
   for (const p of visiblePanes()) {
     const cfg = indicatorsFor(p.tf);
     const bars = Math.max(
@@ -1113,14 +1177,20 @@ async function ensureIndicatorHistory() {
       ...cfg.ma.filter((m) => m.enabled).map((m) => (m.type === 'ema' ? m.period * 3 : m.period)),
       ...cfg.rci.flatMap((r) => (r.enabled ? r.lines.filter((l) => l.enabled).map((l) => l.period) : [])),
     );
-    need = Math.max(need, (bars + 20) * TIMEFRAMES[p.tf] * 60_000 * 1.5);
+    const span = (bars + 20) * TIMEFRAMES[p.tf] * 60_000 * 1.5;
+    if (TIMEFRAMES[p.tf] < 60) needMinute = Math.max(needMinute, span);
+    else needHourly = Math.max(needHourly, span);
   }
   const now = md.bid[cursor].t;
-  const from = now - Math.min(need, HISTORY_LIMIT);
-  if (md.bid[0].t <= from || traveling) return;
+  if (traveling) return;
   loadingHistory = true;
   try {
-    await ensureLoaded(from, now);
+    const from = now - Math.min(needMinute, HISTORY_LIMIT);
+    if (needMinute && md.bid[0].t > from) await ensureLoaded(from, now);
+    if (needHourly && (await loadHourly(now - Math.min(needHourly, HOURLY_LIMIT)))) {
+      dataChanged();
+      renderChart(true, true);
+    }
   } finally {
     loadingHistory = false;
   }
@@ -1661,18 +1731,25 @@ function syncTfButtons() {
   document.querySelectorAll<HTMLButtonElement>('[data-tf]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tf === active.tf)));
 }
 
+/** 時間足を変えたときに保った右端の時刻（長い時間足を通っても、元の細かい時刻に戻れるように） */
+const tfAnchor = new WeakMap<ChartPane, number>();
+
 function setTf(tf: Timeframe) {
-  // 見ていた場所（右端の時刻）を保つ。最新の足を見ていたら、新しい時間足でも最新へ
-  const anchor = active.isAtNow() ? null : active.anchorTime();
+  // 見ていた場所（右端の時刻）を保つ。最新の足を見ていたら、新しい時間足でも最新へ。
+  // 週足・月足の右端は足の始まりの時刻しか分からないので、前に保った時刻がその足の中なら、そちらを使う
+  // （月足で今月を見ていても「最新」ではなく、その中の前に保った時刻に戻る）
+  let anchor = active.currentAnchor();
+  const hint = tfAnchor.get(active);
+  const base = active.anchorTime();
+  if (hint !== undefined && base !== null && hint >= base && hint < base + (active.tf === 'MN' ? 31 * 1440 : TIMEFRAMES[active.tf]) * 60_000) anchor = hint;
+  if (anchor === null) tfAnchor.delete(active);
+  else tfAnchor.set(active, anchor);
   active.tf = tf;
   paneState(active).tf = tf;
   // インジケーターは時間足ごと。その時間足の設定に切り替える
   active.indicators.setConfig(indicatorsFor(tf));
   syncTfButtons();
-  if (anchor === null) {
-    active.render(true);
-    active.scrollToNow();
-  } else active.renderAt(anchor);
+  active.renderAt(anchor);
   renderQuotes();
   save();
   void ensureIndicatorHistory();

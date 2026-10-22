@@ -86,18 +86,28 @@ export class IndicatorLayer {
   private cacheKey = '';
   private maCache = new Map<string, Float64Array>();
   private rciCache = new Map<number, Float64Array>();
+  /** 時間足ごとの計算済みの値（時間足を行き来しても計算し直さない。データが変わると key が変わる） */
+  private saved = new Map<string, { ma: Map<string, Float64Array>; rci: Map<number, Float64Array> }>();
   private shown = { key: '', k: -1, from: -1 };
   private from = 0;
   private last: IndicatorInput | null = null;
 
   constructor(private readonly chart: IChartApi) {
-    chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
-      // 左へ動かして計算済みの範囲を出たら、さらに前まで計算する（r はチャートの位置なので、渡した最初の足の分を足す）
-      const last = this.last;
-      if (r && last && r.from + last.offset < this.from + 50 && this.from > last.offset) {
-        this.from = Math.max(last.offset, Math.floor(r.from + last.offset) - WINDOW);
-        this.render(last);
-      }
+    let pending = 0;
+    chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+      // 左へ動かして計算済みの範囲を出たら、さらに前まで計算する（r はチャートの位置なので、渡した最初の足の分を足す）。
+      // 見るのは次のフレームの範囲（時間足を変えた直後は、一瞬だけ前の時間足の位置＝遠い過去を指すことがあり、
+      // それに合わせると何万本も計算して重くなる）
+      if (pending) return;
+      pending = requestAnimationFrame(() => {
+        pending = 0;
+        const r = chart.timeScale().getVisibleLogicalRange();
+        const last = this.last;
+        if (r && last && r.from + last.offset < this.from + 50 && this.from > last.offset) {
+          this.from = Math.max(last.offset, Math.floor(r.from + last.offset) - WINDOW);
+          this.render(last);
+        }
+      });
     });
   }
 
@@ -147,8 +157,15 @@ export class IndicatorLayer {
     this.last = input;
     if (input.key !== this.cacheKey) {
       this.cacheKey = input.key;
-      this.maCache.clear();
-      this.rciCache.clear();
+      let c = this.saved.get(input.key);
+      if (!c) {
+        c = { ma: new Map(), rci: new Map() };
+        this.saved.set(input.key, c);
+        // 持っておくのは最近の数個だけ
+        while (this.saved.size > 6) this.saved.delete(this.saved.keys().next().value!);
+      }
+      this.maCache = c.ma;
+      this.rciCache = c.rci;
       this.from = Math.max(0, input.k - WINDOW);
     }
     this.from = Math.max(input.offset, Math.min(this.from, Math.max(0, input.k - WINDOW)));
