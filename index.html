@@ -40,6 +40,7 @@
         <button id="toggle-history" title="決済した取引を矢印で表示" aria-pressed="true">履歴矢印</button>
       </div>
       <button id="indicators-btn" title="移動平均・RCI の設定">インジケーター</button>
+      <button id="keys-btn" title="キーボードのショートカットを変える">キー</button>
       <button id="easyorder-btn" title="損切り幅と許容する損失からロットを計算して注文" aria-pressed="false">EasyOrder</button>
       <button id="new-order" title="新規注文（F9）">新規注文</button>
       <label class="zone">
@@ -116,6 +117,20 @@
           <button type="button" id="color-reset">初期設定に戻す</button>
           <button value="cancel" formnovalidate>キャンセル</button>
           <button type="button" id="color-apply" class="primary">適用</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="keys-dialog">
+      <form method="dialog">
+        <h2>キーボードのショートカット</h2>
+        <p class="hint">枠をクリックしてからキーを押します（Shift・Ctrl・Alt と組み合わせられます）。Delete で空にする、Esc でやめる。1 つの働きに 2 つまで。Esc・Enter・Delete と ⌘ の付いたキーは使えません。</p>
+        <div class="keys-scroll"><table class="ind-table" id="keys-table"></table></div>
+        <p class="hint" id="keys-note"></p>
+        <div class="buttons">
+          <button type="button" id="keys-reset">初期設定に戻す</button>
+          <button value="cancel" formnovalidate>キャンセル</button>
+          <button type="button" id="keys-apply" class="primary">適用</button>
         </div>
       </form>
     </dialog>

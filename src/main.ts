@@ -1,4 +1,5 @@
 import { type CandlestickData, type Time, type UTCTimestamp } from 'lightweight-charts';
+import { commandIndex, KEY_COMMANDS, keyLabel, keyOf, resolveKeymap } from './ui/keys';
 import { DEFAULT_TF_COLORS, FIBO_EXP_LEVELS, FIBO_LEVELS, levelsFromPercents, type DrawingKind } from './chart/drawings';
 import { DEFAULT_INDICATORS, normalizeIndicators, type IndicatorConfig } from './chart/indicators';
 import { ChartPane, type PaneHost } from './chart/pane';
@@ -1465,6 +1466,60 @@ function applyLevelsDialog() {
   save();
 }
 
+// ---------------- キーボードのショートカット ----------------
+/** 画面で編集中の割り当て */
+let keyDraft: Record<string, string[]> = {};
+/** キーを待っている枠（働きと何番目か） */
+let keyWaiting: { id: string; slot: number } | null = null;
+
+function openKeysDialog(map: Record<string, string[]> = resolveKeymap(state.keymap)) {
+  keyDraft = structuredClone(map);
+  keyWaiting = null;
+  renderKeysDialog();
+  const dlg = $<HTMLDialogElement>('#keys-dialog');
+  if (!dlg.open) dlg.showModal();
+}
+
+function renderKeysDialog(note = '') {
+  let group = '';
+  const rows: string[] = [];
+  for (const c of KEY_COMMANDS) {
+    if (c.group !== group) {
+      group = c.group;
+      rows.push(`<tr><th colspan="3">${group}</th></tr>`);
+    }
+    const slot = (n: number) => {
+      const k = keyDraft[c.id]?.[n];
+      const waiting = keyWaiting?.id === c.id && keyWaiting.slot === n;
+      return `<td><button type="button" class="key-slot${waiting ? ' waiting' : ''}" data-id="${c.id}" data-slot="${n}">${waiting ? 'キーを押す…' : k ? keyLabel(k) : '—'}</button></td>`;
+    };
+    rows.push(`<tr><td>${c.label}</td>${slot(0)}${slot(1)}</tr>`);
+  }
+  $('#keys-table').innerHTML = rows.join('');
+  $('#keys-note').textContent = note;
+}
+
+/** キーを待っている枠に k を入れる（null は空にする）。ほかの働きに付いていたら外す */
+function assignKey(k: string | null) {
+  if (!keyWaiting) return;
+  const { id, slot } = keyWaiting;
+  keyWaiting = null;
+  let note = '';
+  const list = [...(keyDraft[id] ?? [])];
+  if (k) {
+    for (const c of KEY_COMMANDS) {
+      if (c.id === id || !keyDraft[c.id]?.includes(k)) continue;
+      keyDraft[c.id] = keyDraft[c.id].filter((x) => x !== k);
+      note = `${keyLabel(k)} は「${c.label}」から外しました`;
+    }
+    const other = list.indexOf(k);
+    if (other >= 0) list.splice(other, 1);
+    list.splice(Math.min(slot, list.length), slot < list.length ? 1 : 0, k);
+  } else if (slot < list.length) list.splice(slot, 1);
+  keyDraft[id] = list.slice(0, 2);
+  renderKeysDialog(note);
+}
+
 // ---------------- プロジェクト ----------------
 // 検証（口座・時刻）・図形・インジケーター・MT4 履歴をまとめて保存する。切り替えるとページを読み直す。
 
@@ -1511,6 +1566,7 @@ function setupProjects() {
             indicatorSets: structuredClone(state.indicatorSets),
             tfColors: structuredClone(state.tfColors),
             fiboLevels: structuredClone(state.fiboLevels),
+            keymap: structuredClone(state.keymap),
             rightOffset: state.rightOffset,
           };
           reloadInto(() => createProject(name, fresh));
@@ -1818,6 +1874,45 @@ function setupControls() {
     $<HTMLDialogElement>('#color-dialog').close();
     save();
   });
+  $('#keys-btn').addEventListener('click', () => openKeysDialog());
+  $('#keys-reset').addEventListener('click', () => openKeysDialog(resolveKeymap(undefined)));
+  $('#keys-apply').addEventListener('click', () => {
+    state.keymap = keyDraft;
+    keyIndex = commandIndex(resolveKeymap(keyDraft));
+    $<HTMLDialogElement>('#keys-dialog').close();
+    save();
+  });
+  $('#keys-table').addEventListener('click', (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLButtonElement>('.key-slot');
+    if (!b) return;
+    keyWaiting = { id: b.dataset.id!, slot: Number(b.dataset.slot) };
+    renderKeysDialog();
+  });
+  const keysDlg = $<HTMLDialogElement>('#keys-dialog');
+  // 枠を作り直すとフォーカスが外れるので、ページ全体で先に受け取る
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      if (!keysDlg.open || !keyWaiting) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // Esc はやめる、Delete・Backspace は空にする
+      if (e.key === 'Escape') {
+        keyWaiting = null;
+        renderKeysDialog();
+      } else if (e.key === 'Delete' || e.key === 'Backspace') assignKey(null);
+      else {
+        const k = keyOf(e);
+        if (k) assignKey(k);
+        else if (!['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) renderKeysDialog(`${e.metaKey ? '⌘ の付いたキー' : e.key} は使えません`);
+      }
+    },
+    true,
+  );
+  // キーを待っている間の Esc でダイアログを閉じない
+  keysDlg.addEventListener('cancel', (e) => {
+    if (keyWaiting) e.preventDefault();
+  });
   $('#fibo-levels-btn').addEventListener('click', () => openLevelsDialog());
   $('#levels-reset').addEventListener('click', () => openLevelsDialog((k) => DEFAULT_LEVELS[k]));
   $('#levels-apply').addEventListener('click', applyLevelsDialog);
@@ -1915,16 +2010,41 @@ async function jump() {
   await travel(t);
 }
 
-/** 文字キーのショートカット（日本語入力中でも効くように、文字ではなくキーの位置で見る） */
-const LETTER_KEYS: Record<string, () => void> = {
-  KeyC: () => stepBar(1),
-  KeyZ: () => stepBar(-1),
-  KeyT: () => toggleTool('trend'),
-  KeyF: () => toggleTool('fibo'),
-  KeyE: () => toggleTool('fiboexp'),
-  KeyH: () => toggleTool('hline'),
-  KeyW: () => toggleTool('poly'),
-};
+/** キーボードのショートカット（「ショートカット」の画面で変えられる。src/ui/keys.ts） */
+let keyIndex = commandIndex(resolveKeymap(undefined));
+
+function runCommand(id: string) {
+  if (id.startsWith('tf:')) return setTf(id.slice(3) as Timeframe);
+  if (id.startsWith('tool:')) return toggleTool(id.slice(5) as DrawingKind);
+  const tfs = Object.keys(TIMEFRAMES) as Timeframe[];
+  switch (id) {
+    case 'play':
+      return setPlaying(!playing);
+    case 'fwd':
+      return stepBar(1);
+    case 'back':
+      return stepBar(-1);
+    case 'fwdMin':
+      return goTo(cursor + 1);
+    case 'backMin':
+      return goTo(cursor - 1);
+    case 'tfUp':
+      return setTf(tfs[Math.min(tfs.length - 1, tfs.indexOf(active.tf) + 1)]);
+    case 'tfDown':
+      return setTf(tfs[Math.max(0, tfs.indexOf(active.tf) - 1)]);
+    case 'zoomIn':
+      return active.zoom(1.25);
+    case 'zoomOut':
+      return active.zoom(0.8);
+    case 'zoomReset':
+      for (const p of visiblePanes()) p.resetZoom();
+      return;
+    case 'crosshair':
+      return setCrosshair(!crosshairOn);
+    case 'newOrder':
+      return openOrderDialog();
+  }
+}
 
 /** 描画ツールを選ぶ。もう一度押すとやめる */
 function toggleTool(tool: DrawingKind) {
@@ -1935,28 +2055,15 @@ function toggleTool(tool: DrawingKind) {
 function onKey(e: KeyboardEvent) {
   const tag = (e.target as HTMLElement).tagName;
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || document.querySelector('dialog[open]')) return;
-  // ⌘C（コピー）などは邪魔しない
-  const letter = !e.metaKey && !e.ctrlKey && !e.altKey ? LETTER_KEYS[e.code] : undefined;
-  if (letter) {
-    letter();
+  // ⌘C（コピー）などは keyOf が null を返すので邪魔しない
+  const k = keyOf(e);
+  const cmd = k && keyIndex.get(k);
+  if (cmd) {
+    runCommand(cmd);
     e.preventDefault();
     return;
   }
   switch (e.key) {
-    case ' ':
-      setPlaying(!playing);
-      break;
-    case 'ArrowRight':
-      if (e.shiftKey) goTo(cursor + 1);
-      else stepBar(1);
-      break;
-    case 'ArrowLeft':
-      if (e.shiftKey) goTo(cursor - 1);
-      else stepBar(-1);
-      break;
-    case 'F9':
-      openOrderDialog();
-      break;
     case 'Delete':
     case 'Backspace':
       if (!panes.some((p) => p.drawings.deleteSelected())) return;
@@ -1981,6 +2088,7 @@ function onKey(e: KeyboardEvent) {
 async function start() {
   const store = await initStore();
   state = { ...defaultState(), ...loadState() };
+  keyIndex = commandIndex(resolveKeymap(state.keymap));
   migratePanes();
   createPanes();
   manifest = await loadManifest();

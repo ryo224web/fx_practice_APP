@@ -678,3 +678,20 @@ dialog .error {
 .levels-cols td button {
   padding: 0 6px;
 }
+
+.keys-scroll {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+#keys-table th {
+  text-align: left;
+  padding-top: 10px;
+  color: var(--muted, #8b949e);
+  font-weight: normal;
+}
+.key-slot {
+  min-width: 110px;
+}
+.key-slot.waiting {
+  outline: 2px solid #4493f8;
+}
