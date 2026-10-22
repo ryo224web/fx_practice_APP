@@ -113,17 +113,26 @@ export interface ProjectMeta {
   id: string;
   name: string;
   updated: number;
+  /** 入れるフォルダ（左上の一覧でまとめて表示する。"実トレード/2026" のように / で区切ると 2 段に見える）。無ければフォルダの外 */
+  folder?: string;
 }
 
 interface ProjectIndex {
   current: string;
   list: ProjectMeta[];
+  /** 空のものも含めたフォルダ（"MT4"・"MT4/GOLD" …）。保存先のフォルダがあれば、その中のフォルダ */
+  folders?: string[];
 }
 
 /** localStorage の控え（updated で新しい方を判断する） */
 interface LocalCopy {
   updated: number;
   state: AppState | null;
+  /**
+   * この控えの元になったファイルの updated（最後にファイルへ届いた版）。開いたときにファイルの updated がこれと違えば、
+   * ファイルはアプリの外（Dropbox のバージョン履歴で戻した、など）で変わったので、控えではなくファイルを使う
+   */
+  base?: number;
 }
 
 const OLD_KEY = 'fx-practice-state-v1';
@@ -152,6 +161,19 @@ function write(key: string, value: unknown): boolean {
     // 容量超過など。ファイルの方には保存される
     return false;
   }
+}
+
+/** 前の版の控え（base が無い）で、ファイルより新しくても控えを使うのはこの差まで（閉じる直前の数秒〜数分の分） */
+const LEGACY_LOCAL_WINDOW = 5 * 60_000;
+
+/**
+ * 開いたとき、ファイルではなくブラウザの控えを使うか。控えが新しく、かつファイルが控えの元の版のまま（アプリの外で変わっていない）とき。
+ * Dropbox で古い版に戻したファイルは updated も古いので、時刻だけ比べると控えが勝ってしまう（2026-10-22 に戻した版が上書きされた）
+ */
+export function localIsNewer(copy: LocalCopy | null, fileUpdated: number): boolean {
+  if (!copy || !(copy.updated > fileUpdated)) return false;
+  if (copy.base !== undefined) return copy.base === fileUpdated;
+  return copy.updated - fileUpdated <= LEGACY_LOCAL_WINDOW;
 }
 
 function readLocal(id: string): LocalCopy | null {
@@ -193,7 +215,8 @@ function localIndex(): ProjectIndex {
 
 function putIndex() {
   write(INDEX_KEY, index);
-  if (remote) return api('/index', 'PUT', { current: index.current, order: index.list.map((p) => p.id) }).then(() => {});
+  const folders = Object.fromEntries(index.list.filter((p) => p.folder).map((p) => [p.id, p.folder]));
+  if (remote) return api('/index', 'PUT', { current: index.current, order: index.list.map((p) => p.id), folders }).then(() => {});
   return Promise.resolve();
 }
 
@@ -207,8 +230,9 @@ export async function initStore(): Promise<{ remote: boolean; dir: string; locke
     const data = (await (await api('')).json()) as {
       dir: string;
       host: string;
-      index: { current: string; order: string[] } | null;
+      index: { current: string; order: string[]; folders?: Record<string, string> } | null;
       projects: ProjectMeta[];
+      folders?: string[];
     };
     remote = true;
     storeDir = data.dir;
@@ -227,16 +251,27 @@ export async function initStore(): Promise<{ remote: boolean; dir: string; locke
         return (ia < 0 ? 1e9 : ia) - (ib < 0 ? 1e9 : ib) || a.name.localeCompare(b.name);
       });
       const current = list.some((p) => p.id === data.index?.current) ? data.index!.current : list[0].id;
-      index = { current, list };
+      // フォルダはファイルの置き場所（サーバーが一覧に入れる）。以前 index.json にだけ持っていたフォルダは、ファイルをそこへ移す
+      const folders = data.index?.folders ?? {};
+      for (const p of list) {
+        if (!p.folder) delete p.folder;
+        if (!p.folder && folders[p.id]) {
+          const moved = (await (await api(`/${p.id}/folder`, 'PUT', { folder: folders[p.id] })).json()) as { folder: string };
+          if (moved.folder) p.folder = moved.folder;
+        }
+      }
+      index = { current, list, folders: data.folders ?? [] };
     }
     const file = (await (await api(`/${index.current}`)).json()) as { name: string; updated: number; state: AppState | null; lock: { host: string; time: number } | null };
     const copy = readLocal(index.current);
-    if (copy && copy.updated > (file.updated ?? 0)) {
+    if (localIsNewer(copy, file.updated ?? 0)) {
       // 閉じる直前の分がファイルに届いていなかった → 控えの方が新しい
-      currentState = copy.state;
-      await api(`/${index.current}`, 'PUT', { name: file.name, state: copy.state, updated: copy.updated });
+      currentState = copy!.state;
+      await api(`/${index.current}`, 'PUT', { name: file.name, state: copy!.state, updated: copy!.updated });
+      remoteBase = copy!.updated;
     } else {
       currentState = file.state;
+      remoteBase = file.updated ?? 0;
     }
     lockedBy = file.lock && file.lock.host !== data.host && Date.now() - file.lock.time < LOCK_FRESH ? file.lock.host : null;
   } catch {
@@ -266,6 +301,8 @@ export function listProjects(): ProjectMeta[] {
 }
 
 // ---- 保存 ----
+/** 今のプロジェクトのファイルに最後に届いた版の updated（控えの base に入れる） */
+let remoteBase = 0;
 let pending: AppState | null = null;
 let localTimer: ReturnType<typeof setTimeout> | undefined;
 let remoteTimer: ReturnType<typeof setTimeout> | undefined;
@@ -277,7 +314,7 @@ function writeLocalNow() {
   if (!pending) return;
   const meta = currentMeta();
   meta.updated = Date.now();
-  write(projectKey(meta.id), { updated: meta.updated, state: pending } satisfies LocalCopy);
+  write(projectKey(meta.id), { updated: meta.updated, state: pending, base: remoteBase } satisfies LocalCopy);
   write(INDEX_KEY, index);
 }
 
@@ -287,7 +324,14 @@ function writeRemoteNow(): Promise<void> {
   if (!remote || !pending) return remoteSaving;
   const meta = currentMeta();
   const value = { name: meta.name, state: pending, updated: meta.updated };
-  remoteSaving = remoteSaving.then(() => api(`/${meta.id}`, 'PUT', value).then(() => {}, () => {}));
+  remoteSaving = remoteSaving.then(() =>
+    api(`/${meta.id}`, 'PUT', value).then(
+      () => {
+        if (meta.id === index.current) remoteBase = value.updated;
+      },
+      () => {},
+    ),
+  );
   return remoteSaving;
 }
 
@@ -315,12 +359,12 @@ export async function flushSave(): Promise<void> {
 // ---- プロジェクトの操作（どれも終わったらページを読み直す前提） ----
 
 /** 新しいプロジェクトを作って切り替える。state を渡すとその内容で始める */
-export async function createProject(name: string, state: AppState | null = null): Promise<string> {
+export async function createProject(name: string, state: AppState | null = null, folder?: string): Promise<string> {
   const id = crypto.randomUUID();
   const updated = Date.now();
   write(projectKey(id), { updated, state } satisfies LocalCopy);
-  if (remote) await api(`/${id}`, 'PUT', { name, state, updated });
-  index.list.push({ id, name, updated });
+  if (remote) await api(`/${id}`, 'PUT', { name, state, updated, folder });
+  index.list.push({ id, name, updated, ...(folder ? { folder } : {}) });
   index.current = id;
   await putIndex();
   return id;
@@ -337,6 +381,79 @@ export async function renameProject(id: string, name: string) {
   if (p) p.name = name;
   write(INDEX_KEY, index);
   if (remote) await api(`/${id}/rename`, 'PUT', { name });
+}
+
+/** プロジェクトを入れるフォルダを決める（空なら、フォルダから出す）。保存先のフォルダでも、ファイルをそのフォルダへ移す */
+export async function setProjectFolder(id: string, folder: string) {
+  const p = index.list.find((x) => x.id === id);
+  if (!p) return;
+  let f = folder
+    .split('/')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join('/');
+  // サーバーはファイル名に使えない文字を直すので、その結果に合わせる
+  if (remote) f = ((await (await api(`/${id}/folder`, 'PUT', { folder: f })).json()) as { folder: string }).folder;
+  if (f) {
+    p.folder = f;
+    index.folders = [...new Set([...(index.folders ?? []), f])];
+  } else delete p.folder;
+  await putIndex();
+}
+
+const cleanFolder = (folder: string) =>
+  folder
+    .split('/')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join('/');
+
+/** 空のものも含めたフォルダの一覧（プロジェクトの入っているフォルダと、その親も入れる） */
+export function listFolders(): string[] {
+  const set = new Set(index.folders ?? []);
+  for (const p of index.list) {
+    const parts = (p.folder ?? '').split('/').filter(Boolean);
+    parts.forEach((_, i) => set.add(parts.slice(0, i + 1).join('/')));
+  }
+  return [...set];
+}
+
+/** フォルダを作る（空のまま置いておける） */
+export async function createFolder(folder: string): Promise<string> {
+  let f = cleanFolder(folder);
+  if (!f) throw new Error('フォルダの名前を入れてください');
+  if (remote) f = ((await (await api('/folders', 'POST', { path: f })).json()) as { path: string }).path;
+  index.folders = [...new Set([...(index.folders ?? []), f])];
+  write(INDEX_KEY, index);
+  return f;
+}
+
+/** フォルダの名前を変える・動かす（中のフォルダ・プロジェクトごと） */
+export async function renameFolder(from: string, to: string): Promise<string> {
+  let b = cleanFolder(to);
+  if (!b) throw new Error('フォルダの名前を入れてください');
+  if (remote) {
+    const res = await fetch('/api/projects/folders', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ from, to: b }) });
+    const data = (await res.json()) as { path?: string; error?: string };
+    if (!res.ok) throw new Error(data.error ?? `フォルダの名前を変えられませんでした（${res.status}）`);
+    b = data.path!;
+  }
+  const move = (f: string) => (f === from ? b : f.startsWith(`${from}/`) ? b + f.slice(from.length) : f);
+  index.folders = (index.folders ?? []).map(move);
+  for (const p of index.list) if (p.folder) p.folder = move(p.folder);
+  await putIndex();
+  return b;
+}
+
+/** 空のフォルダを消す */
+export async function deleteFolder(folder: string) {
+  if (index.list.some((p) => p.folder === folder || p.folder?.startsWith(`${folder}/`))) throw new Error('プロジェクトが入っているフォルダは消せません');
+  if (remote) {
+    const res = await fetch(`/api/projects/folders?path=${encodeURIComponent(folder)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(((await res.json()) as { error?: string }).error ?? 'フォルダを消せませんでした');
+  }
+  index.folders = (index.folders ?? []).filter((f) => f !== folder && !f.startsWith(`${folder}/`));
+  write(INDEX_KEY, index);
 }
 
 /** 消して、残りの最初のプロジェクトに切り替える。最後の 1 つは消せない */

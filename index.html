@@ -8,7 +8,8 @@
   <body>
     <header class="toolbar">
       <div class="group project">
-        <select id="project" aria-label="プロジェクト" title="プロジェクト（検証・図形・設定をまとめて保存）"></select>
+        <button id="project" aria-haspopup="true" aria-expanded="false" title="プロジェクト（検証・図形・設定をまとめて保存）。クリックで一覧"></button>
+        <div id="project-panel" hidden></div>
         <button id="project-menu" title="プロジェクトの作成・名前の変更・書き出しなど">…</button>
       </div>
       <select id="symbol" aria-label="銘柄"></select>
@@ -42,6 +43,7 @@
         <button id="toggle-oneclick" title="左上のワンクリック注文（SELL・BUY とロット）を出す・隠す" aria-pressed="true">ワンクリック</button>
       </div>
       <button id="indicators-btn" title="移動平均・RCI の設定">インジケーター</button>
+      <button id="templates-btn" title="定型（並べ方・時間足・インジケーター・色などに名前を付けて保存し、どのプロジェクトにも当てられる。MT4 の定型チャートと同じ）">定型</button>
       <button id="keys-btn" title="キーボードのショートカットを変える">キー</button>
       <button id="easyorder-btn" title="損切り幅と許容する損失からロットを計算して注文" aria-pressed="false">EasyOrder</button>
       <button id="new-order" title="新規注文（F9）">新規注文</button>
@@ -119,6 +121,22 @@
           <button type="button" id="color-reset">初期設定に戻す</button>
           <button value="cancel" formnovalidate>キャンセル</button>
           <button type="button" id="color-apply" class="primary">適用</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="tpl-dialog">
+      <form method="dialog">
+        <h2>定型</h2>
+        <p class="hint">チャートの並べ方・時間足・インジケーター・図形の色・フィボの水準・表示する時間足・右の余白・表示時刻をまとめて保存します（検証・図形・MT4 履歴は入りません）。「★」の定型は、新しいプロジェクトを作るときに使います。</p>
+        <table class="ind-table" id="tpl-table"></table>
+        <div class="tpl-save">
+          <input id="tpl-name" type="text" placeholder="定型の名前（例: RCI 4 本・4 画面）" />
+          <button type="button" id="tpl-save" class="primary">今のチャートを保存</button>
+        </div>
+        <p class="error" id="tpl-error"></p>
+        <div class="buttons">
+          <button value="cancel" formnovalidate>閉じる</button>
         </div>
       </form>
     </dialog>

@@ -11,6 +11,7 @@ import { DEFAULT_SPREAD_PIPS, symbolSpec, type SymbolSpec } from './core/symbols
 import { DEFAULT_SERVER_RULE, serverToUtc, toDisplay, type DisplayZone } from './core/time';
 import { loadManifest, loadMonths, type Manifest } from './data/store';
 import { buildMt4Account } from './mt4/account';
+import { applyTemplate, deleteTemplate, loadTemplates, pickTemplate, saveTemplate, setDefaultTemplate, type ChartTemplate } from './templates';
 import { detectOffsetHours, matchTrade, parseHistoryFile, type Mt4Trade, type PriceLookup } from './mt4/history';
 import { MarketData } from './replay/market';
 import {
@@ -24,10 +25,16 @@ import {
   listProjects,
   loadState,
   renameProject,
+  setProjectFolder,
+  createFolder,
+  renameFolder,
+  deleteFolder,
+  listFolders,
   saveState,
   storeInfo,
   switchProject,
   type AppState,
+  type ProjectMeta,
   type EasyOrderState,
   type Layout,
   type PaneState,
@@ -543,11 +550,25 @@ function maybeLoadLater() {
 }
 
 let warnedWindow = false;
-function loadEarlier() {
+function loadEarlier(pane?: ChartPane) {
   if (loadingEarlier || !md.hasEarlier) return;
+  // H1 以上のチャートは、1 時間足でさらに前を足す（1 分足の 30 か月の上限は関係ない）
+  if (pane && TIMEFRAMES[pane.tf] >= 60) {
+    loadingEarlier = true;
+    const mdNow = md;
+    const oldest = hourlyBefore()[0]?.t ?? md.bid[0].t;
+    loadHourly(oldest - 365 * 86_400_000)
+      .then((added) => {
+        if (!added || md !== mdNow) return;
+        dataChanged();
+        renderChart(true, true);
+      })
+      .finally(() => (loadingEarlier = false));
+    return;
+  }
   const room = MAX_MONTHS - md.windowMonths;
   if (room <= 0) {
-    if (!warnedWindow) toast(`チャートを読み込めるのは ${MAX_MONTHS} か月分までです。もっと前を見るときは「移動」で日時を選んでください`);
+    if (!warnedWindow) toast(`H1 より短い時間足で読み込めるのは ${MAX_MONTHS} か月分までです。もっと前は H1 以上の時間足で見るか、「移動」で日時を選んでください`);
     warnedWindow = true;
     return;
   }
@@ -1681,48 +1702,365 @@ async function reloadInto(fn: () => Promise<unknown>) {
   location.reload();
 }
 
-function setupProjects() {
-  const sel = $<HTMLSelectElement>('#project');
+// ---- 左上のプロジェクトの一覧（フォルダの木） ----
+// ボタンに今のプロジェクトの名前を出し、押すとフォルダの木を開く。フォルダは開く・閉じるができ、開いた状態はこの Mac に覚える。
+// 一番上の「＋ 新規」「📁＋」と、フォルダの行にマウスを乗せると出るボタン（＋ 中に新規 / 📁＋ 中にフォルダ / ✎ 名前 / 🗑 空なら消す）で作る。
+// プロジェクトはドラッグしてフォルダに落とすと移る（一番上の行に落とすとフォルダの外へ）。
+
+const OPEN_FOLDERS_KEY = 'fx-practice-open-folders';
+
+interface FolderNode {
+  name: string;
+  path: string;
+  folders: Map<string, FolderNode>;
+  projects: ProjectMeta[];
+}
+
+function projectTree(): FolderNode {
+  const root: FolderNode = { name: '', path: '', folders: new Map(), projects: [] };
+  const nodeAt = (folder: string) => {
+    let node = root;
+    for (const part of folder.split('/').filter(Boolean)) {
+      const path = node.path ? `${node.path}/${part}` : part;
+      if (!node.folders.has(part)) node.folders.set(part, { name: part, path, folders: new Map(), projects: [] });
+      node = node.folders.get(part)!;
+    }
+    return node;
+  };
+  // 空のフォルダも出す
+  for (const f of listFolders()) nodeAt(f);
+  for (const p of listProjects()) nodeAt(p.folder ?? '').projects.push(p);
+  return root;
+}
+
+function openFolders(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(OPEN_FOLDERS_KEY) ?? '[]') as string[]);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveOpenFolders(open: Set<string>) {
+  try {
+    localStorage.setItem(OPEN_FOLDERS_KEY, JSON.stringify([...open]));
+  } catch {
+    // 覚えられなくても開閉はできる
+  }
+}
+
+/** folder とその親を開いた状態にする */
+function openFolder(folder: string) {
+  const open = openFolders();
+  const parts = folder.split('/').filter(Boolean);
+  parts.forEach((_, i) => open.add(parts.slice(0, i + 1).join('/')));
+  saveOpenFolders(open);
+}
+
+function renderProjectPanel() {
+  const open = openFolders();
   const cur = currentMeta();
-  for (const p of listProjects()) sel.add(new Option(p.name, p.id));
-  sel.value = cur.id;
-  sel.addEventListener('change', () => reloadInto(() => switchProject(sel.value)));
+  // 今のプロジェクトが入っているフォルダはいつも開いておく
+  const parts = (cur.folder ?? '').split('/').filter(Boolean);
+  parts.forEach((_, i) => open.add(parts.slice(0, i + 1).join('/')));
+  const count = (n: FolderNode): number => n.projects.length + [...n.folders.values()].reduce((s, f) => s + count(f), 0);
+  const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+  const html = (n: FolderNode): string => {
+    const folders = [...n.folders.values()].sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+    return `<ul>${folders
+      .map((f) => {
+        const isOpen = open.has(f.path);
+        const c = count(f);
+        const p = esc(f.path);
+        return `<li class="pj-folder"><div class="pj-row pj-drop" data-folder="${p}" draggable="false">
+          <span class="pj-name">${isOpen ? '▾' : '▸'} 📁 ${esc(f.name)}</span><span class="pj-count">${c}</span>
+          <span class="pj-acts"><button type="button" data-act="new" data-folder="${p}" title="この中に新しいプロジェクト">＋</button><button type="button" data-act="mkdir" data-folder="${p}" title="この中にフォルダを作る">📁＋</button><button type="button" data-act="rename" data-folder="${p}" title="フォルダの名前を変える">✎</button>${c ? '' : `<button type="button" data-act="rmdir" data-folder="${p}" title="この空のフォルダを消す">🗑</button>`}</span>
+        </div>${isOpen ? html(f) : ''}</li>`;
+      })
+      .join('')}${n.projects
+      .map((p) => `<li><div class="pj-row${p.id === cur.id ? ' pj-current' : ''}" data-project="${p.id}" draggable="true" title="クリックで開く。ドラッグしてフォルダに落とすと移る">${p.id === cur.id ? '✓ ' : '　'}${esc(p.name)}</div></li>`)
+      .join('')}</ul>`;
+  };
+  $('#project-panel').innerHTML = `<div class="pj-head pj-drop" data-folder="" title="ここにプロジェクトを落とすと、フォルダの外に出す">
+      <span>プロジェクト</span>
+      <span class="pj-head-acts"><button type="button" data-act="new" data-folder="" title="新しいプロジェクト（フォルダの外）">＋ 新規</button><button type="button" data-act="mkdir" data-folder="" title="フォルダを作る">📁＋</button></span>
+    </div>${html(projectTree())}`;
+}
+
+function renderProjectButton() {
+  const cur = currentMeta();
+  const btn = $('#project');
+  btn.textContent = cur.name;
+  btn.title = `${cur.folder ? `${cur.folder.split('/').join(' ／ ')} ／ ` : ''}${cur.name}（クリックでプロジェクトの一覧）`;
+}
+
+function setProjectPanel(show: boolean) {
+  const panel = $('#project-panel');
+  if (show) renderProjectPanel();
+  panel.hidden = !show;
+  $('#project').setAttribute('aria-expanded', String(show));
+}
+
+/** 定型の一覧（起動したときと、定型の画面を開いたときに読む） */
+let templatesCache: { templates: ChartTemplate[]; default: string | null } = { templates: [], default: null };
+const defaultTemplate = () => templatesCache.templates.find((t) => t.name === templatesCache.default) ?? null;
+
+/**
+ * 新しいプロジェクトの中身。「★」の定型があればそれを使い、無ければ今のプロジェクトの
+ * 銘柄・並べ方・時間足・インジケーター・図形の色・右の余白などを引き継ぐ
+ */
+function newProjectState(): AppState {
+  const t = defaultTemplate();
+  if (t) return applyTemplate({ ...defaultState(), symbol: state.symbol, keymap: structuredClone(state.keymap) }, t.settings);
+  return {
+    ...defaultState(),
+    symbol: state.symbol,
+    zone: state.zone,
+    layout: state.layout,
+    panes: structuredClone(state.panes),
+    indicatorSets: structuredClone(state.indicatorSets),
+    tfColors: structuredClone(state.tfColors),
+    fiboLevels: structuredClone(state.fiboLevels),
+    keymap: structuredClone(state.keymap),
+    hiddenTfs: structuredClone(state.hiddenTfs),
+    hideOneClick: state.hideOneClick,
+    rightOffset: state.rightOffset,
+  };
+}
+
+function newProjectIn(folder: string | undefined) {
+  const where = folder ? `「${folder.split('/').join(' ／ ')}」の中に` : '';
+  const t = defaultTemplate();
+  const name = prompt(`${where}新しいプロジェクトの名前（${t ? `定型「${t.name}」で作ります` : '今のプロジェクトの設定を引き継ぎます'}）`, `プロジェクト ${listProjects().length + 1}`);
+  if (!name) return;
+  reloadInto(() => createProject(name, newProjectState(), folder || undefined));
+}
+
+async function folderAction(act: string, folder: string) {
+  const fail = (e: unknown) => toast(e instanceof Error ? e.message : String(e));
+  if (act === 'new') return newProjectIn(folder);
+  if (act === 'mkdir') {
+    const name = prompt(folder ? `「${folder.split('/').join(' ／ ')}」の中に作るフォルダの名前` : '作るフォルダの名前');
+    if (!name?.trim()) return;
+    if (name.includes('/')) return toast('フォルダの名前に / は使えません（中にフォルダを作るときは、そのフォルダの 📁＋ を押してください）');
+    try {
+      const f = await createFolder(folder ? `${folder}/${name}` : name);
+      openFolder(f);
+      renderProjectPanel();
+    } catch (e) {
+      fail(e);
+    }
+    return;
+  }
+  if (act === 'rename') {
+    const parent = folder.includes('/') ? folder.slice(0, folder.lastIndexOf('/')) : '';
+    const name = prompt('フォルダの新しい名前', folder.slice(parent ? parent.length + 1 : 0));
+    if (!name?.trim()) return;
+    if (name.includes('/')) return toast('フォルダの名前に / は使えません');
+    try {
+      const to = await renameFolder(folder, parent ? `${parent}/${name}` : name);
+      // 開いていたフォルダは、名前を変えた後も開いたままにする
+      const open = openFolders();
+      saveOpenFolders(new Set([...open].map((x) => (x === folder ? to : x.startsWith(`${folder}/`) ? to + x.slice(folder.length) : x))));
+      openFolder(to);
+      renderProjectPanel();
+      renderProjectButton();
+    } catch (e) {
+      fail(e);
+    }
+    return;
+  }
+  if (act === 'rmdir') {
+    if (!confirm(`空のフォルダ「${folder.split('/').join(' ／ ')}」を消しますか？`)) return;
+    try {
+      await deleteFolder(folder);
+      renderProjectPanel();
+    } catch (e) {
+      fail(e);
+    }
+  }
+}
+
+// ---- 定型の画面 ----
+function renderTemplates() {
+  const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+  const rows = templatesCache.templates.map((t) => {
+    const isDefault = t.name === templatesCache.default;
+    const n = esc(t.name);
+    return `<tr><td class="${isDefault ? 'tpl-default' : ''}">${isDefault ? '★ ' : ''}${n}</td><td>
+      <button type="button" data-tpl="apply" data-name="${n}" title="このプロジェクトの並べ方・インジケーター・色などを、この定型にする">当てる</button>
+      <button type="button" data-tpl="default" data-name="${n}" title="新しいプロジェクトを作るときにこの定型を使う">${isDefault ? '★ 解除' : '★ 新規に使う'}</button>
+      <button type="button" data-tpl="overwrite" data-name="${n}" title="今のチャートの設定で、この定型を上書きする">上書き</button>
+      <button type="button" data-tpl="delete" data-name="${n}">削除</button></td></tr>`;
+  });
+  $('#tpl-table').innerHTML = rows.length
+    ? rows.join('')
+    : '<tr><td colspan="2" class="hint">まだ定型がありません。下で名前を付けて、今のチャートを保存してください</td></tr>';
+}
+
+async function openTemplates() {
+  templatesCache = await loadTemplates();
+  renderTemplates();
+  $('#tpl-error').textContent = '';
+  $<HTMLInputElement>('#tpl-name').value = '';
+  const dlg = $<HTMLDialogElement>('#tpl-dialog');
+  if (!dlg.open) dlg.showModal();
+}
+
+function setupTemplates() {
+  void loadTemplates().then((v) => (templatesCache = v));
+  $('#templates-btn').addEventListener('click', () => void openTemplates());
+  const fail = (e: unknown) => ($('#tpl-error').textContent = e instanceof Error ? e.message : String(e));
+  $('#tpl-save').addEventListener('click', async () => {
+    const name = $<HTMLInputElement>('#tpl-name').value.trim();
+    if (!name) return void ($('#tpl-error').textContent = '定型の名前を入れてください');
+    if (templatesCache.templates.some((t) => t.name === name) && !confirm(`「${name}」はもうあります。上書きしますか？`)) return;
+    try {
+      await saveTemplate(name, pickTemplate(state));
+      templatesCache = await loadTemplates();
+      renderTemplates();
+      $<HTMLInputElement>('#tpl-name').value = '';
+      toast(`定型「${name}」を保存しました`);
+    } catch (e) {
+      fail(e);
+    }
+  });
+  $('#tpl-table').addEventListener('click', async (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-tpl]');
+    if (!b) return;
+    const name = b.dataset.name!;
+    const t = templatesCache.templates.find((x) => x.name === name);
+    if (!t) return;
+    try {
+      if (b.dataset.tpl === 'apply') {
+        if (!confirm(`定型「${name}」をこのプロジェクトに当てますか？（並べ方・時間足・インジケーター・色などが置き換わります。検証と図形はそのまま）`)) return;
+        state = applyTemplate(state, t.settings);
+        $<HTMLDialogElement>('#tpl-dialog').close();
+        // 並べ方やインジケーターを作り直すので、保存して読み直す
+        await reloadInto(async () => {});
+        return;
+      }
+      if (b.dataset.tpl === 'default') await setDefaultTemplate(templatesCache.default === name ? null : name);
+      if (b.dataset.tpl === 'overwrite') {
+        if (!confirm(`定型「${name}」を今のチャートの設定で上書きしますか？`)) return;
+        await saveTemplate(name, pickTemplate(state));
+      }
+      if (b.dataset.tpl === 'delete') {
+        if (!confirm(`定型「${name}」を削除しますか？`)) return;
+        await deleteTemplate(name);
+      }
+      templatesCache = await loadTemplates();
+      renderTemplates();
+    } catch (err) {
+      fail(err);
+    }
+  });
+}
+
+function setupProjects() {
+  setupTemplates();
+  const cur = currentMeta();
+  renderProjectButton();
+  const panel = $('#project-panel');
+  $('#project').addEventListener('click', () => setProjectPanel(!!panel.hidden));
+  panel.addEventListener('click', (e) => {
+    const t = e.target as HTMLElement;
+    // フォルダの行のボタン・一番上のボタン
+    const act = t.closest<HTMLButtonElement>('button[data-act]');
+    if (act) {
+      e.stopPropagation();
+      void folderAction(act.dataset.act!, act.dataset.folder ?? '');
+      return;
+    }
+    const b = t.closest<HTMLElement>('.pj-row');
+    if (!b) return;
+    if (b.dataset.folder !== undefined) {
+      // フォルダを開く・閉じる
+      const open = openFolders();
+      const f = b.dataset.folder;
+      if (open.has(f)) for (const x of [...open]) x === f || x.startsWith(`${f}/`) ? open.delete(x) : 0;
+      else open.add(f);
+      saveOpenFolders(open);
+      renderProjectPanel();
+      return;
+    }
+    const id = b.dataset.project!;
+    setProjectPanel(false);
+    if (id !== currentMeta().id) reloadInto(() => switchProject(id));
+  });
+  // ドラッグしてフォルダに落とすと移す
+  panel.addEventListener('dragstart', (e) => {
+    const row = (e.target as HTMLElement).closest<HTMLElement>('[data-project]');
+    if (!row || !e.dataTransfer) return;
+    e.dataTransfer.setData('text/x-fxp-project', row.dataset.project!);
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  const dropTarget = (e: DragEvent) => (e.target as HTMLElement).closest<HTMLElement>('.pj-drop');
+  panel.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer?.types.includes('text/x-fxp-project') || !dropTarget(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    panel.querySelectorAll('.pj-over').forEach((x) => x.classList.remove('pj-over'));
+    dropTarget(e)!.classList.add('pj-over');
+  });
+  panel.addEventListener('dragleave', (e) => dropTarget(e)?.classList.remove('pj-over'));
+  panel.addEventListener('drop', (e) => {
+    const target = dropTarget(e);
+    const id = e.dataTransfer?.getData('text/x-fxp-project');
+    panel.querySelectorAll('.pj-over').forEach((x) => x.classList.remove('pj-over'));
+    if (!target || !id) return;
+    e.preventDefault();
+    const folder = target.dataset.folder ?? '';
+    const p = listProjects().find((x) => x.id === id);
+    if (!p || (p.folder ?? '') === folder) return;
+    setProjectFolder(id, folder).then(
+      () => {
+        if (folder) openFolder(folder);
+        renderProjectPanel();
+        renderProjectButton();
+      },
+      (err) => toast(err instanceof Error ? err.message : String(err)),
+    );
+  });
+  document.addEventListener('mousedown', (e) => {
+    const t = e.target as Node;
+    if (!panel.hidden && !panel.contains(t) && !$('#project').contains(t)) setProjectPanel(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !panel.hidden) setProjectPanel(false);
+  });
   $('#project-menu').addEventListener('click', (ev) => {
     const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
     showMenu(r.left, r.bottom + 2, [
-      [
-        '新しいプロジェクト…',
-        () => {
-          const name = prompt('新しいプロジェクトの名前', `プロジェクト ${listProjects().length + 1}`);
-          if (!name) return;
-          // 銘柄・並べ方・時間足・インジケーター・図形の色・右の余白は今の設定を引き継ぐ
-          const fresh: AppState = {
-            ...defaultState(),
-            symbol: state.symbol,
-            zone: state.zone,
-            layout: state.layout,
-            panes: structuredClone(state.panes),
-            indicatorSets: structuredClone(state.indicatorSets),
-            tfColors: structuredClone(state.tfColors),
-            fiboLevels: structuredClone(state.fiboLevels),
-            keymap: structuredClone(state.keymap),
-            hiddenTfs: structuredClone(state.hiddenTfs),
-            hideOneClick: state.hideOneClick,
-            rightOffset: state.rightOffset,
-          };
-          reloadInto(() => createProject(name, fresh));
-        },
-      ],
+      // 今のプロジェクトと同じフォルダに作る
+      ['新しいプロジェクト…', () => newProjectIn(currentMeta().folder)],
       [
         '名前を変更…',
         () => {
           const name = prompt('プロジェクトの名前', currentMeta().name);
           if (!name) return;
-          sel.selectedOptions[0].textContent = name;
-          renameProject(cur.id, name).catch((e) => toast(e instanceof Error ? e.message : String(e)));
+          renameProject(cur.id, name).then(renderProjectButton, (e) => toast(e instanceof Error ? e.message : String(e)));
         },
       ],
-      ['複製', () => reloadInto(() => createProject(`${currentMeta().name} のコピー`, structuredClone(state)))],
+      [
+        'フォルダに入れる…',
+        () => {
+          const used = [...new Set(listProjects().map((x) => x.folder).filter(Boolean))];
+          const folder = prompt(
+            `入れるフォルダの名前（空にするとフォルダから出します。「実トレード/2026」のように / で区切ると 2 段になります）${used.length ? `\n今あるフォルダ: ${used.join('、')}` : ''}`,
+            currentMeta().folder ?? '',
+          );
+          if (folder === null) return;
+          setProjectFolder(cur.id, folder).then(
+            () => {
+              renderProjectButton();
+              toast(currentMeta().folder ? `「${currentMeta().folder}」に入れました` : 'フォルダから出しました');
+            },
+            (e) => toast(e instanceof Error ? e.message : String(e)),
+          );
+        },
+      ],
+      ['複製', () => reloadInto(() => createProject(`${currentMeta().name} のコピー`, structuredClone(state), currentMeta().folder))],
       [
         'ファイルに書き出す',
         () => {

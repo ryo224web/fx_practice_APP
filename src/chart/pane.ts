@@ -29,7 +29,7 @@ export interface PaneHost {
   /** このチャートをクリックした（操作の対象にする） */
   activate(pane: ChartPane): void;
   /** 左端まで表示した（前の月を読み込む） */
-  nearLeftEdge(): void;
+  nearLeftEdge(pane: ChartPane): void;
   /** 右の余白（足の本数）を三角のつまみで変えた */
   setRightOffset(bars: number): void;
   /** 表示の範囲が変わった（スクロール・拡大縮小）。ほかのチャートを合わせるのに使う */
@@ -158,7 +158,7 @@ export class ChartPane {
           if (this.shown.start > 0) {
             this.extraBars += CHART_MAX_BARS;
             this.render(true, true);
-          } else host.nearLeftEdge();
+          } else host.nearLeftEdge(this);
         });
       }
       this.placeShiftHandle();

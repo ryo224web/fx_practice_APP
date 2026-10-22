@@ -699,3 +699,134 @@ dialog .error {
 .key-slot.waiting {
   outline: 2px solid #4493f8;
 }
+
+/* ---- プロジェクトの一覧（フォルダの木） ---- */
+.group.project {
+  position: relative;
+}
+#project {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#project::after {
+  content: ' ▾';
+  color: var(--muted);
+}
+#project-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  min-width: 280px;
+  max-width: 420px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 6px 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.3);
+}
+#project-panel ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+#project-panel li > ul {
+  padding-left: 16px;
+}
+#project-panel .pj-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 12px;
+  border: none;
+  border-radius: 0;
+  background: none;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+#project-panel .pj-row:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+#project-panel .pj-folder > .pj-row {
+  color: var(--muted);
+}
+#project-panel .pj-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+#project-panel .pj-current {
+  font-weight: bold;
+  color: var(--accent);
+}
+#project-panel .pj-empty {
+  padding: 4px 12px;
+  color: var(--muted);
+}
+#project-panel .pj-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px 6px 12px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+#project-panel .pj-head-acts {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+#project-panel .pj-head-acts button,
+#project-panel .pj-acts button {
+  padding: 0 6px;
+  font-size: 12px;
+}
+#project-panel .pj-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* フォルダの行のボタンは、マウスを乗せたときだけ出す */
+#project-panel .pj-acts {
+  display: none;
+  gap: 2px;
+}
+#project-panel .pj-row:hover .pj-acts {
+  display: flex;
+}
+#project-panel .pj-row:hover .pj-count {
+  display: none;
+}
+#project-panel [data-project] {
+  user-select: none;
+}
+/* ドラッグして落とす先 */
+#project-panel .pj-over {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* ---- 定型 ---- */
+.tpl-save {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.tpl-save input {
+  flex: 1;
+}
+#tpl-table td:first-child {
+  min-width: 200px;
+}
+#tpl-table .tpl-default {
+  color: var(--accent);
+  font-weight: bold;
+}
