@@ -89,6 +89,8 @@ export interface AppState {
   tfColors?: Record<string, string>;
   /** フィボナッチ・エクスパンションの水準（割合。0.618 など）。無ければ初期値（MT4 と同じ）。全部の図形で共通 */
   fiboLevels?: { fibo?: number[]; fiboexp?: number[] };
+  /** ツールバーに出さない時間足（ツールバーの時間足を右クリックして選ぶ） */
+  hiddenTfs?: string[];
   /** キーボードのショートカット（働き → キー。無ければ初期値。src/ui/keys.ts） */
   keymap?: Record<string, string[]>;
   /** チャートの右側の余白（足の本数）。全部のチャートで共通 */

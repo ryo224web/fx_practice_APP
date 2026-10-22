@@ -1567,6 +1567,7 @@ function setupProjects() {
             tfColors: structuredClone(state.tfColors),
             fiboLevels: structuredClone(state.fiboLevels),
             keymap: structuredClone(state.keymap),
+            hiddenTfs: structuredClone(state.hiddenTfs),
             rightOffset: state.rightOffset,
           };
           reloadInto(() => createProject(name, fresh));
@@ -1731,6 +1732,15 @@ function createPanes() {
   if (import.meta.env.DEV) Object.assign(window, { __fx: { panes, active: () => active } });
 }
 
+/** 隠していない時間足（ツールバーと「1 つ長い・短い時間足」のキーで使う） */
+function shownTfs(): Timeframe[] {
+  return (Object.keys(TIMEFRAMES) as Timeframe[]).filter((tf) => !state.hiddenTfs?.includes(tf));
+}
+
+function showTfButtons() {
+  document.querySelectorAll<HTMLButtonElement>('#timeframes [data-tf]').forEach((b) => (b.hidden = !!state.hiddenTfs?.includes(b.dataset.tf!)));
+}
+
 function setupControls() {
   const tfBar = $('#timeframes');
   for (const name of Object.keys(TIMEFRAMES) as Timeframe[]) {
@@ -1740,6 +1750,30 @@ function setupControls() {
     btn.addEventListener('click', () => setTf(name));
     tfBar.append(btn);
   }
+  // 右クリックで、ツールバーに出す時間足を選ぶ（使わない時間足を隠す）
+  tfBar.title = '右クリックで、表示する時間足を選べます';
+  showTfButtons();
+  const tfMenu = (x: number, y: number) =>
+    showMenu(
+      x,
+      y,
+      (Object.keys(TIMEFRAMES) as Timeframe[]).map((tf) => [
+        `${state.hiddenTfs?.includes(tf) ? '　' : '✓'} ${tf}`,
+        () => {
+          const hidden = new Set(state.hiddenTfs ?? []);
+          if (hidden.has(tf)) hidden.delete(tf);
+          else if (hidden.size < Object.keys(TIMEFRAMES).length - 1) hidden.add(tf);
+          state.hiddenTfs = [...hidden];
+          showTfButtons();
+          save();
+          tfMenu(x, y); // 続けて選べるように開いたままにする
+        },
+      ]),
+    );
+  tfBar.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    tfMenu(e.clientX, e.clientY);
+  });
 
   // 図形はすべてのチャートで共通（どのチャートに描いても全部に出る）
   document.querySelectorAll<HTMLButtonElement>('[data-tool]').forEach((b) =>
@@ -2016,7 +2050,6 @@ let keyIndex = commandIndex(resolveKeymap(undefined));
 function runCommand(id: string) {
   if (id.startsWith('tf:')) return setTf(id.slice(3) as Timeframe);
   if (id.startsWith('tool:')) return toggleTool(id.slice(5) as DrawingKind);
-  const tfs = Object.keys(TIMEFRAMES) as Timeframe[];
   switch (id) {
     case 'play':
       return setPlaying(!playing);
@@ -2029,9 +2062,14 @@ function runCommand(id: string) {
     case 'backMin':
       return goTo(cursor - 1);
     case 'tfUp':
-      return setTf(tfs[Math.min(tfs.length - 1, tfs.indexOf(active.tf) + 1)]);
-    case 'tfDown':
-      return setTf(tfs[Math.max(0, tfs.indexOf(active.tf) - 1)]);
+    case 'tfDown': {
+      // 隠した時間足は飛ばす（今の時間足が隠したものでも、その前後の表示している時間足へ）
+      const all = Object.keys(TIMEFRAMES) as Timeframe[];
+      const now = all.indexOf(active.tf);
+      const shown = shownTfs();
+      const next = id === 'tfUp' ? shown.find((tf) => all.indexOf(tf) > now) : shown.reverse().find((tf) => all.indexOf(tf) < now);
+      return next && setTf(next);
+    }
     case 'zoomIn':
       return active.zoom(1.25);
     case 'zoomOut':
