@@ -56,6 +56,9 @@ describe('キーボードのショートカット', () => {
     expect(idx.get('F9')).toBe('newOrder');
     expect(idx.get('Digit1')).toBe('tf:M1');
     expect(idx.get('Digit9')).toBe('tf:MN');
+    // Shift+Z は「標準」。Z だけなら 1 本戻る
+    expect(idx.get('Shift+KeyZ')).toBe('zoomReset');
+    expect(idx.get('KeyZ')).toBe('back');
   });
 
   it('保存した割り当てが優先され、ほかの働きに移したキーは初期値の側から外れる', () => {

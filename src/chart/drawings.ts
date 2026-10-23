@@ -536,6 +536,8 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     ctx.lineWidth = sel ? 2 : 1;
     ctx.font = '11px system-ui, sans-serif';
     const [a, b] = pts;
+    // フィボの水準の数値は、線の右端（価格の目盛りの手前）に、線のすぐ上に書く
+    const rightLabel = (text: string, y: number) => ctx.fillText(text, w - ctx.measureText(text).width - 6, y - 3);
     const line = (x1: number, y1: number, x2: number, y2: number) => {
       ctx.beginPath();
       ctx.moveTo(x1, y1);
@@ -591,7 +593,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
           const y = b.y + (a.y - b.y) * lv;
           const price = d.points[1].p + (d.points[0].p - d.points[1].p) * lv;
           line(x0, y, w, y);
-          ctx.fillText(`${(lv * 100).toFixed(1)}  ${price.toFixed(this.digits)}`, x0 + 4, y - 3);
+          rightLabel(`${(lv * 100).toFixed(1)}  ${price.toFixed(this.digits)}`, y);
         }
         break;
       }
@@ -606,7 +608,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         for (const lv of this.levelsOf('fiboexp')) {
           const y = c.y + (b.y - a.y) * lv;
           line(c.x, y, w, y);
-          ctx.fillText(`FE ${(lv * 100).toFixed(1)}  ${fiboExpPrice(pa, pb, pc, lv).toFixed(this.digits)}`, c.x + 4, y - 3);
+          rightLabel(`FE ${(lv * 100).toFixed(1)}  ${fiboExpPrice(pa, pb, pc, lv).toFixed(this.digits)}`, y);
         }
         break;
       }

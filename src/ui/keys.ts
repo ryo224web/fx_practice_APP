@@ -49,6 +49,7 @@ export const DEFAULT_KEYMAP: Record<string, string[]> = {
   ...Object.fromEntries(TFS.map((tf, i) => [`tf:${tf}`, [`Digit${i + 1}`]])),
   zoomIn: ['+'],
   zoomOut: ['-'],
+  zoomReset: ['Shift+KeyZ'],
   toNow: ['End'],
   'tool:hline': ['KeyH'],
   'tool:trend': ['KeyT'],
