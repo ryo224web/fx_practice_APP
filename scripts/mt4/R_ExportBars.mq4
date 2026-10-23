@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
 //| R_ExportBars.mq4  (Expert Advisor)                                |
-//| Once a day, writes M1 bars of several symbols (up to the end of  |
-//| the previous server day) to monthly CSV files for FX Practice.   |
+//| Every hour, writes M1 bars of several symbols (up to the end of  |
+//| the last finished hour) to monthly CSV files for FX Practice.    |
 //| FX Practice (on the Mac) watches the folder and imports them.    |
 //|                                                                    |
 //| Kept as UTF-8 in git; npm run deploy-mt4 copies it to the MT4     |
@@ -19,28 +19,28 @@
 //|     time,open,high,low,close,volume                               |
 //|     2026.10.01 00:00,151.234,151.240,151.230,151.236,15           |
 //|   fxp_bars\_status.csv   server time, GMT, offset, last bar ...   |
-//| Each day only this month and last month are rewritten (only the   |
-//| finished days). Older months are never touched, so they stay as  |
-//| an archive even after MT4 no longer has those bars.               |
+//| Every hour this month is rewritten (only the finished hours);     |
+//| last month is rewritten once a day. Older months are never        |
+//| touched, so they stay even after MT4 no longer has those bars.    |
 //| Files are written to a temp name first and then renamed.          |
 //+------------------------------------------------------------------+
 #property strict
-#property version     "1.01"
+#property version     "1.02"
 #property copyright   "R（FX Practice 用の自作ツール）"
 #property description "FX Practice 用に、チャート（1 分足）を書き出す EA です。注文は一切出しません。"
-#property description "1 日 1 回（サーバー時刻の日付が変わったら）、前日までの 1 分足を"
+#property description "1 時間ごと（サーバー時刻の正時を過ぎたら）、終わった 1 時間までの 1 分足を"
 #property description "MQL4\\Files\\fxp_bars\\銘柄\\銘柄_年.月.csv に書きます（時刻はサーバー時刻）。"
-#property description "書き直すのは今月と先月だけで、それより前の月のファイルはそのまま残します。"
+#property description "毎時書き直すのは今月だけ、先月は 1 日 1 回。それより前の月のファイルはそのまま残します。"
 #property description "このフォルダは Dropbox にあるので、Mac の FX Practice が自動で取り込みます。"
 
 input string Symbols       = "USDJPY,EURUSD,GBPUSD,AUDUSD,USDCHF,USDCAD,NZDUSD,EURJPY,GBPJPY,XAUUSD"; // Symbols (comma separated)
 input string Suffix        = "";         // Symbol suffix (empty for TitanFX)
 input int    InitialMonths = 12;         // Also write this many past months (if missing)
-input int    CheckEveryMin = 30;         // Check for a new day every N minutes
+input int    CheckEveryMin = 5;          // Check for a new hour every N minutes
 input string Folder        = "fxp_bars"; // Output folder (in MQL4\Files)
 
 string   syms[];
-datetime exportedDay = 0;   // server day (00:00) of the last export
+datetime exportedUntil = 0; // end of the last hour written (server time). 0 = not yet
 
 int OnInit()
 {
@@ -70,16 +70,20 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
-   if(Today() != exportedDay) ExportAll();
+   if(Cutoff() != exportedUntil) ExportAll();
 }
 
 void OnTick() {}
 
-datetime Today()
+// The start of the current server hour: bars before it are finished.
+// (On weekends TimeCurrent stops at the last tick, so nothing is written again.)
+datetime Cutoff()
 {
    datetime now = TimeCurrent();
-   return now - now % 86400;
+   return now - now % 3600;
 }
+
+datetime DayOf(datetime t) { return t - t % 86400; }
 
 string Two(int v) { return (v < 10 ? "0" : "") + IntegerToString(v); }
 
@@ -142,15 +146,16 @@ int WriteRange(string sym, datetime from, datetime to, string file, bool verbose
    return written;
 }
 
+// Writes bars before cutoff. Last month only when withLastMonth (once a day).
 // Returns true when everything that should be written was written.
-bool ExportSymbol(string sym, datetime today)
+bool ExportSymbol(string sym, datetime cutoff, bool withLastMonth)
 {
    bool ok = true;
    string months = "";   // months written this time
    int bars = 0;
    int missing = 0;      // older months MT4 does not have
-   int y = TimeYear(today);
-   int m = TimeMonth(today);
+   int y = TimeYear(cutoff);
+   int m = TimeMonth(cutoff);
    // k = 0: this month, 1: last month, 2..: older months (only if their file is missing)
    for(int k = 0; k <= MathMax(1, InitialMonths); k++)
    {
@@ -160,9 +165,10 @@ bool ExportSymbol(string sym, datetime today)
       datetime from = MonthStart(yy, mm);
       int ny = mm == 12 ? yy + 1 : yy;
       int nm = mm == 12 ? 1 : mm + 1;
-      datetime to = (datetime)MathMin(MonthStart(ny, nm), today); // finished days only
-      if(to <= from) continue;                           // the 1st of the month: nothing finished yet
+      datetime to = (datetime)MathMin(MonthStart(ny, nm), cutoff); // finished hours only
+      if(to <= from) continue;                            // first hour of the month: nothing finished yet
       string file = sym + "_" + IntegerToString(yy) + "." + Two(mm) + ".csv";
+      if(k == 1 && !withLastMonth) continue;
       if(k >= 2 && FileIsExist(Folder + "\\" + sym + "\\" + file)) continue;
       int n = WriteRange(sym, from, to, file, k <= 1);
       if(n > 0)
@@ -181,12 +187,14 @@ bool ExportSymbol(string sym, datetime today)
 
 void ExportAll()
 {
-   datetime today = Today();
+   datetime cutoff = Cutoff();
+   // last month is rewritten once a day (and on the first run)
+   bool withLastMonth = exportedUntil == 0 || DayOf(exportedUntil) != DayOf(cutoff);
    bool ok = true;
    for(int i = 0; i < ArraySize(syms); i++)
-      if(!ExportSymbol(syms[i], today)) ok = false;
+      if(!ExportSymbol(syms[i], cutoff, withLastMonth)) ok = false;
    // when MT4 was still downloading history, try again at the next check
-   if(ok) exportedDay = today;
+   if(ok) exportedUntil = cutoff;
 
    // Status: lets FX Practice check the server time zone (offset = server - GMT, in seconds)
    datetime now = TimeCurrent();
@@ -197,7 +205,7 @@ void ExportAll()
                       TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS) + "," +
                       IntegerToString((int)(now - TimeGMT())) + "," +
                       AccountCompany() + "," + AccountServer() + "," +
-                      TimeToString(today, TIME_DATE) + "\r\n");
+                      TimeToString(cutoff, TIME_DATE | TIME_MINUTES) + "\r\n");
    FileClose(f);
    FileMove(Folder + "\\_status.tmp", 0, Folder + "\\_status.csv", FILE_REWRITE);
 }
