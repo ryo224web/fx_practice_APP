@@ -59,6 +59,7 @@ describe('キーボードのショートカット', () => {
     // Shift+Z は「標準」。Z だけなら 1 本戻る
     expect(idx.get('Shift+KeyZ')).toBe('zoomReset');
     expect(idx.get('KeyZ')).toBe('back');
+    expect(idx.get('KeyO')).toBe('easyOrder');
   });
 
   it('保存した割り当てが優先され、ほかの働きに移したキーは初期値の側から外れる', () => {

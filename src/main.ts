@@ -2664,6 +2664,8 @@ function runCommand(id: string) {
       return setCrosshair(!crosshairOn);
     case 'newOrder':
       return openOrderDialog();
+    case 'easyOrder':
+      return $('#easyorder-btn').click();
   }
 }
 

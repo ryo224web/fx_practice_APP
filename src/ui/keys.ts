@@ -37,6 +37,7 @@ export const KEY_COMMANDS: KeyCommand[] = [
   { id: 'tool:fibo', label: 'フィボナッチ', group: '描画' },
   { id: 'tool:fiboexp', label: 'フィボナッチ・エクスパンション', group: '描画' },
   { id: 'newOrder', label: '新規注文', group: '注文' },
+  { id: 'easyOrder', label: 'EasyOrder を開く・閉じる', group: '注文' },
 ];
 
 /** 初期の割り当て（1 つの働きに 2 つまで） */
@@ -57,6 +58,7 @@ export const DEFAULT_KEYMAP: Record<string, string[]> = {
   'tool:fibo': ['KeyF'],
   'tool:fiboexp': ['KeyE'],
   newOrder: ['F9'],
+  easyOrder: ['KeyO'],
 };
 
 /** 割り当てられないキー（決まった働きがある） */
