@@ -53,7 +53,11 @@ document.head.append(Object.assign(document.createElement('style'), { textConten
 
 const rule = DEFAULT_SERVER_RULE;
 /** 再生速度（1 秒に進む 1 分足の本数） */
-const SPEEDS = [1, 2, 5, 15, 30, 60, 240, 720, 1440];
+/**
+ * 再生の速さ（1 秒に、今のチャートの時間足で何本進むか）。時間足を変えても見た目の速さは同じ
+ * （以前は「1 秒に何分」で、H1 でちょうどよい速さのまま M1 にすると跳びとびになった。2026-10-23）
+ */
+const SPEEDS = [0.5, 1, 2, 3, 5, 8, 12, 20, 40];
 const DEFAULT_BALANCE = 1_000_000;
 const DEFAULT_LEVERAGE = 500;
 const DAY_BARS = 1440;
@@ -510,7 +514,7 @@ function setPlaying(on: boolean) {
       const dt = last ? Math.min(ts - last, 1000) : 0;
       last = ts;
       acc += (dt / 1000) * SPEEDS[state.speed];
-      const n = Math.min(Math.floor(acc), 5000);
+      const n = Math.min(Math.floor(acc), 500);
       if (n > 0) {
         acc -= n;
         const atEnd = cursor >= md.bid.length - 1;
@@ -519,7 +523,12 @@ function setPlaying(on: boolean) {
           toast('データの最後に着きました');
           return;
         }
-        if (goTo(cursor + n)) {
+        // 今のチャートの時間足で n 本先（足の終わり）まで進む。作りかけの足は、その足の終わりまでを 1 本と数える
+        const { agg } = getAgg(active.tf);
+        const k = lastLE(agg.starts, cursor);
+        const endOf = (j: number) => (j + 1 < agg.starts.length ? agg.starts[j + 1] - 1 : md.bid.length - 1);
+        const target = cursor < endOf(k) ? endOf(k + n - 1) : endOf(k + n);
+        if (goTo(target)) {
           setPlaying(false);
           return;
         }
@@ -843,9 +852,7 @@ function toast(msg: string) {
 }
 
 function speedLabel(n: number) {
-  if (n < 60) return `${n} 分 / 秒`;
-  if (n < 1440) return `${n / 60} 時間 / 秒`;
-  return `${n / 1440} 日 / 秒`;
+  return `${n} 本 / 秒`;
 }
 
 // ---------------- 注文の画面 ----------------
