@@ -30,8 +30,8 @@
       </div>
       <select id="layout" aria-label="チャートの並べ方" title="チャートの並べ方（時間足とインジケーターはチャートごと。クリックしたチャートが操作の対象）">
         <option value="1">1 画面</option>
-        <option value="2h">左右に 2 画面</option>
-        <option value="2v">上下に 2 画面</option>
+        <option value="2h">左右 2 画面</option>
+        <option value="2v">上下 2 画面</option>
         <option value="4">4 画面</option>
       </select>
       <div class="group">
@@ -39,19 +39,18 @@
         <button id="zoom-out" title="縮小">－</button>
         <button id="zoom-reset" title="拡大縮小と価格の目盛りを初めの状態に戻す（見ている場所はそのまま）">標準</button>
         <button id="to-now" title="最新の足へ移動（End。拡大率はそのまま）">⇥</button>
-        <button id="toggle-history" title="決済した取引を矢印で表示" aria-pressed="true">履歴矢印</button>
-        <button id="toggle-oneclick" title="左上のワンクリック注文（SELL・BUY とロット）を出す・隠す" aria-pressed="true">ワンクリック</button>
+        <button id="toggle-history" title="決済した取引を矢印で表示" aria-pressed="true">矢印</button>
+        <button id="toggle-oneclick" title="左上のワンクリック注文（SELL・BUY とロット）を出す・隠す" aria-pressed="true">1クリック</button>
       </div>
       <button id="indicators-btn" title="移動平均・RCI の設定">インジケーター</button>
       <button id="templates-btn" title="定型（並べ方・時間足・インジケーター・色などに名前を付けて保存し、どのプロジェクトにも当てられる。MT4 の定型チャートと同じ）">定型</button>
       <button id="keys-btn" title="キーボードのショートカットを変える">キー</button>
       <button id="easyorder-btn" title="損切り幅と許容する損失からロットを計算して注文" aria-pressed="false">EasyOrder</button>
       <button id="new-order" title="新規注文（F9）">新規注文</button>
-      <label class="zone">
-        表示時刻
-        <select id="zone">
+      <label class="zone" title="表示する時刻（サーバー時間は MT4 と同じ NY+7）">
+        <select id="zone" aria-label="表示時刻">
           <option value="jst">日本時間</option>
-          <option value="server">サーバー時間（NY+7）</option>
+          <option value="server">サーバー時間</option>
         </select>
       </label>
       <span id="status"></span>
@@ -105,6 +104,7 @@
         <button data-tab="history">口座履歴</button>
         <button data-tab="stats">成績</button>
         <button data-tab="mt4">MT4 履歴</button>
+        <button data-tab="memo" title="このプロジェクトのメモ（何を検証しているか・気づいたことなど）">メモ</button>
       </nav>
     </section>
 

@@ -662,6 +662,21 @@ function renderTerminal(force = false) {
   const scroll = termBody.scrollTop;
   const ctx = { account: shownAccount(), readOnly: mt4Mode(), feed, index: cursor, digits: md.digits, time: (t: number) => formatTime(t, state.zone, rule) };
   const tab = state.terminalTab as TerminalTab;
+  document.querySelectorAll<HTMLButtonElement>('#terminal-tabs button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tab === tab)));
+  if (tab === 'memo') {
+    // 書いている途中で作り直すと入力が消えるので、一度だけ作る
+    if (!termBody.querySelector('#memo')) {
+      termBody.innerHTML = `<textarea id="memo" spellcheck="false" placeholder="このプロジェクトのメモ。何を検証しているか（手法・ルール・期間）、気づいたこと、次にやることなど。プロジェクトと一緒に保存されます"></textarea>`;
+      const area = termBody.querySelector<HTMLTextAreaElement>('#memo')!;
+      area.value = state.note ?? '';
+      area.addEventListener('input', () => {
+        state.note = area.value;
+        renderProjectButton();
+        save();
+      });
+    }
+    return;
+  }
   termBody.innerHTML =
     tab === 'history'
       ? renderHistory(ctx)
@@ -1791,12 +1806,19 @@ function renderProjectButton() {
   const cur = currentMeta();
   const btn = $('#project');
   btn.textContent = cur.name;
-  btn.title = `${cur.folder ? `${cur.folder.split('/').join(' ／ ')} ／ ` : ''}${cur.name}（クリックでプロジェクトの一覧）`;
+  // メモの最初の数行もマウスを乗せると出す
+  const note = (state?.note ?? '').trim().split('\n').slice(0, 4).join('\n');
+  btn.title = `${cur.folder ? `${cur.folder.split('/').join(' ／ ')} ／ ` : ''}${cur.name}（クリックでプロジェクトの一覧）${note ? `\n\n${note}` : ''}`;
 }
 
 function setProjectPanel(show: boolean) {
   const panel = $('#project-panel');
-  if (show) renderProjectPanel();
+  if (show) {
+    renderProjectPanel();
+    const r = $('#project').getBoundingClientRect();
+    panel.style.left = `${Math.max(4, r.left)}px`;
+    panel.style.top = `${r.bottom + 4}px`;
+  }
   panel.hidden = !show;
   $('#project').setAttribute('aria-expanded', String(show));
 }
@@ -2682,13 +2704,16 @@ function updateStatus(ms = firstPaintMs) {
   firstPaintMs = ms;
   const months = md.loadedMonths;
   const range = months.length ? `${months[0]}〜${months[months.length - 1]}` : '';
-  statusEl.textContent = `${manifest ? md.symbol.toUpperCase() : '仮データ'} ${range} / 表示まで ${ms} ms`;
-  const tips = [storeInfo().remote ? `プロジェクトの保存先: ${storeInfo().dir}` : 'プロジェクトはブラウザの中だけに保存しています'];
-  if (!manifest) statusEl.textContent += '（npm run import-data で実データを入れてください）';
+  // ツールバーが 1 行に収まるよう、ふだん出すのは TitanFX の足の最新と注意だけ。読み込んでいる範囲・表示までの時間（R1）はマウスを乗せると出る
+  statusEl.textContent = manifest ? '' : '仮データ（npm run import-data で実データを入れてください）';
+  const tips = [
+    `${manifest ? md.symbol.toUpperCase() : '仮データ'} ${range} を読み込み中 / 表示まで ${ms} ms`,
+    storeInfo().remote ? `プロジェクトの保存先: ${storeInfo().dir}` : 'プロジェクトはブラウザの中だけに保存しています',
+  ];
   // MT4 から書き出した直近の足（server/mt4Bars.ts）
   const titan = manifest?.symbols[md.symbol]?.titan;
   if (titan) {
-    statusEl.textContent += ` / TitanFX 〜${formatTime(titan.to, state.zone, rule).slice(5)}`;
+    statusEl.textContent += `TitanFX 〜${formatTime(titan.to, state.zone, rule).slice(5)}`;
     tips.push(`${formatTime(titan.from, state.zone, rule)} からは MT4（TitanFX）の 1 分足、それより前は Dukascopy`);
   }
   if (barsStatus) {

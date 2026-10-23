@@ -3,7 +3,7 @@
 import { formatMoney, formatPrice } from '../core/format';
 import type { Account, HistoryRow, PriceFeed } from '../trade/account';
 
-export type TerminalTab = 'trade' | 'history' | 'stats' | 'mt4';
+export type TerminalTab = 'trade' | 'history' | 'stats' | 'mt4' | 'memo';
 
 interface Ctx {
   account: Account;

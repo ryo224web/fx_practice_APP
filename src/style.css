@@ -104,9 +104,13 @@ td.sell {
 /* ---- 上のツールバー ---- */
 .toolbar {
   display: flex;
-  flex-wrap: wrap;
+  /* 1 行に収める（狭いときは右端の表示から縮め、それでも足りなければ横にスクロール） */
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  white-space: nowrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
@@ -125,8 +129,20 @@ td.sell {
 
 #status {
   margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--muted);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+.toolbar > :not(#status) {
+  flex-shrink: 0;
+}
+/* ツールバーのボタンは左右の余白を少し詰める（1 行に収めるため） */
+.toolbar button,
+.toolbar select {
+  padding: 2px 6px;
 }
 
 /* ---- チャート ---- */
@@ -715,9 +731,8 @@ dialog .error {
   color: var(--muted);
 }
 #project-panel {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
+  /* ツールバーは横にスクロールするので、その外に出す（位置は開くときに決める） */
+  position: fixed;
   z-index: 20;
   min-width: 280px;
   max-width: 420px;
@@ -829,4 +844,19 @@ dialog .error {
 #tpl-table .tpl-default {
   color: var(--accent);
   font-weight: bold;
+}
+
+/* ---- メモ ---- */
+#memo {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-height: 120px;
+  padding: 8px 10px;
+  border: none;
+  outline: none;
+  resize: none;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.6 system-ui, sans-serif;
 }
