@@ -121,7 +121,9 @@ export class IndicatorLayer {
     const common = { lineWidth: 1 as const, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false };
     for (const m of config.ma) {
       if (!m.enabled || !(m.period >= 1)) continue;
-      const series = this.chart.addSeries(LineSeries, { ...common, color: m.color }, 0);
+      // 縦の目盛りはローソク足だけで合わせる（TradingView の「価格チャートのみスケール」と同じ）。
+      // 離れた移動平均まで収めようとすると、ローソク足が潰れて見えるため
+      const series = this.chart.addSeries(LineSeries, { ...common, color: m.color, autoscaleInfoProvider: () => null }, 0);
       this.lines.push({ series, values: (inp, j) => this.maValue(inp, j, m) });
     }
     // RCI は段ごとにサブウィンドウを 1 つ使う（表示する段だけ、上から 1, 2 …）

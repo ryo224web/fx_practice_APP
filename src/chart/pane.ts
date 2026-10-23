@@ -123,6 +123,8 @@ export class ChartPane {
       wickUpColor: '#26a69a',
       wickDownColor: '#ef5350',
     });
+    // 縦の目盛りの上下の余白は TradingView くらいに狭く（初期値は上 20%・下 10% で、ローソク足が潰れて見えた）
+    this.series.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0.08 } });
     // 注文の線のドラッグを図形より優先するため、先に登録する
     this.overlay = new TradeOverlay(box, this.mapper);
     this.series.attachPrimitive(this.overlay);
