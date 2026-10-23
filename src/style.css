@@ -860,3 +860,14 @@ dialog .error {
   color: var(--fg);
   font: 13px/1.6 system-ui, sans-serif;
 }
+
+/* 真ん中のボタンで測る線と札 */
+.pane-chart svg.measure {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 3;
+  pointer-events: none;
+  overflow: visible;
+}

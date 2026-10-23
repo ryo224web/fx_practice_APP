@@ -36,8 +36,10 @@ export interface PaneHost {
   rangeChanged(pane: ChartPane): void;
   /** マウスがこのチャートに入った（このチャートの動きにほかを合わせる） */
   lead(pane: ChartPane): void;
-  /** マウスの真ん中のボタンを押した（十字線を出す・消す） */
-  toggleCrosshair(): void;
+  /** マウスの真ん中のボタンを押している間だけ十字線を出す（on: 押した / off: 離した） */
+  holdCrosshair(on: boolean): void;
+  /** 1 pip の値幅（測るときに使う） */
+  pip(): number;
 }
 
 /**
@@ -140,17 +142,36 @@ export class ChartPane {
 
     el.addEventListener('mousedown', () => host.activate(this), true);
     el.addEventListener('mouseenter', () => host.lead(this));
-    // 真ん中のボタン（ホイールを押す）で十字線。ブラウザの自動スクロールは止める
+    // 真ん中のボタン（ホイールを押す）を押している間だけ十字線を出し、押した所から今のマウスの所までを測る（MT4 と同じ。
+    // 本数 / pips / 価格）。離すと消える。ブラウザの自動スクロールは止める
+    this.measureEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    this.measureEl.classList.add('measure');
+    box.append(this.measureEl);
     el.addEventListener(
       'mousedown',
       (e) => {
         if (e.button !== 1) return;
         e.preventDefault();
         e.stopPropagation();
-        host.toggleCrosshair();
+        const p = this.pointAt(e);
+        if (!p) return;
+        this.measureFrom = p;
+        host.holdCrosshair(true);
+        this.drawMeasure(p);
       },
       true,
     );
+    window.addEventListener('mousemove', (e) => {
+      if (!this.measureFrom) return;
+      const p = this.pointAt(e);
+      if (p) this.drawMeasure(p);
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (e.button !== 1 || !this.measureFrom) return;
+      this.measureFrom = null;
+      this.measureEl.innerHTML = '';
+      host.holdCrosshair(false);
+    });
     el.addEventListener('auxclick', (e) => e.button === 1 && e.preventDefault());
     // ホイール（縦）とトラックパッドのピンチ（ctrl 付きのホイールとして届く）で拡大・縮小。右端（最新の足の側）は動かさない。
     // 横のスクロール（トラックパッドの左右）はチャートの部品に任せる（時間を動かす）
@@ -414,6 +435,38 @@ export class ChartPane {
     this.spacing = w / bars;
     if (!this.zoomRange) requestAnimationFrame(() => (this.zoomRange = null));
     this.zoomRange = next;
+  }
+
+  /** 真ん中のボタンで測るときの始まり（押した所） */
+  private measureFrom: { x: number; y: number; logical: number; price: number } | null = null;
+  private measureEl: SVGSVGElement;
+
+  /** マウスの所（ローソク足の欄の中での位置と、足の位置・価格） */
+  private pointAt(e: MouseEvent): { x: number; y: number; logical: number; price: number } | null {
+    const r = this.el.getBoundingClientRect();
+    const x = Math.max(0, Math.min(this.chart.timeScale().width(), e.clientX - r.left));
+    const y = Math.max(0, Math.min(this.chart.panes()[0]?.getHeight() ?? r.height, e.clientY - r.top));
+    const logical = this.chart.timeScale().coordinateToLogical(x);
+    const price = this.series.coordinateToPrice(y);
+    return logical === null || price === null ? null : { x, y, logical, price };
+  }
+
+  /** 押した所から p までの点線と「本数 / pips / 価格」を描く */
+  private drawMeasure(p: { x: number; y: number; logical: number; price: number }) {
+    const a = this.measureFrom!;
+    const bars = Math.round(p.logical) - Math.round(a.logical);
+    const pips = (p.price - a.price) / this.host.pip();
+    const text = `${bars} 本 / ${pips.toFixed(1)} pips / ${p.price.toFixed(this.host.digits())}`;
+    const w = this.chart.timeScale().width();
+    // 札はマウスの右下。端からはみ出すときは反対側へ
+    const tw = text.length * 7 + 12;
+    const lx = p.x + 14 + tw > w ? p.x - 14 - tw : p.x + 14;
+    const ly = p.y + 30 > (this.chart.panes()[0]?.getHeight() ?? 0) ? p.y - 30 : p.y + 10;
+    const color = pips >= 0 ? '#38bdf8' : '#de7a7a';
+    this.measureEl.innerHTML = `<line x1="${a.x}" y1="${a.y}" x2="${p.x}" y2="${p.y}" stroke="${color}" stroke-width="1.5" stroke-dasharray="5 4" />
+      <circle cx="${a.x}" cy="${a.y}" r="3" fill="${color}" />
+      <rect x="${lx}" y="${ly}" width="${tw}" height="20" rx="4" fill="#161b22" stroke="${color}" />
+      <text x="${lx + 6}" y="${ly + 14}" fill="#e6edf3" font-size="12" font-family="system-ui, sans-serif">${text}</text>`;
   }
 
   setCrosshair(on: boolean) {

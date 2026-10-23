@@ -2230,7 +2230,8 @@ function createPanes() {
     activate: setActivePane,
     nearLeftEdge: loadEarlier,
     lead: (p) => (leader = p),
-    toggleCrosshair: () => setCrosshair(!crosshairOn),
+    holdCrosshair: (on) => setCrosshair(on),
+    pip: () => spec.pip,
     rangeChanged: (p) => {
       // チャートはいつも連動する。マウスで動かしているチャートにだけ、ほかを合わせる（合わせた側の動きでは何もしない）
       if (p !== leader || p.el.hidden) return;
