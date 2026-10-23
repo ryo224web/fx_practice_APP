@@ -24,6 +24,10 @@ const BUY = '#4493f8';
 const SELL = '#f85149';
 const SL = '#f85149';
 const TP = '#3fb950';
+// EasyOrder の線の色
+const EO_ENTRY = '#3fb950';
+const EO_TP = '#38bdf8';
+const EO_SL = '#f85149';
 const MT4 = '#d2a8ff';
 const PREVIEW = '#9a9a9a';
 const HIT = 5;
@@ -139,9 +143,10 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
     }
     const pv = view.preview;
     if (pv) {
-      if (pv.entry !== null) want.push({ key: 'pe', ticket: 0, role: 'eo-entry', price: pv.entry, color: pv.side === 'buy' ? BUY : SELL, title: pv.labels.entry, style: LineStyle.Solid, width: 2 });
-      if (pv.sl !== null) want.push({ key: 'ps', ticket: 0, role: 'eo-sl', price: pv.sl, color: SL, title: pv.labels.sl, style: LineStyle.Solid, width: 2 });
-      if (pv.tp !== null) want.push({ key: 'pt', ticket: 0, role: 'eo-tp', price: pv.tp, color: TP, title: pv.labels.tp, style: LineStyle.Solid, width: 2 });
+      // EasyOrder の線: エントリーは緑、T/P はスカイブルー、S/L は赤
+      if (pv.entry !== null) want.push({ key: 'pe', ticket: 0, role: 'eo-entry', price: pv.entry, color: EO_ENTRY, title: pv.labels.entry, style: LineStyle.Solid, width: 2 });
+      if (pv.sl !== null) want.push({ key: 'ps', ticket: 0, role: 'eo-sl', price: pv.sl, color: EO_SL, title: pv.labels.sl, style: LineStyle.Solid, width: 2 });
+      if (pv.tp !== null) want.push({ key: 'pt', ticket: 0, role: 'eo-tp', price: pv.tp, color: EO_TP, title: pv.labels.tp, style: LineStyle.Solid, width: 2 });
     }
     for (const m of view.imported?.open ?? []) {
       want.push({ key: `me${m.ticket}`, ticket: m.ticket, role: 'entry', price: m.openPrice, color: MT4, title: `MT4 #${m.ticket} ${m.side} ${lot(m.lots)}`, style: LineStyle.Dashed, fixed: true });

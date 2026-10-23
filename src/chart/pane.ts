@@ -45,6 +45,8 @@ export interface PaneHost {
  * 今の足から古い方へこの本数だけ渡す（左端まで動かすと、さらに古い足を足す）
  */
 const CHART_MAX_BARS = 30_000;
+const UP_COLOR = '#a5d6a7';
+const DOWN_COLOR = '#de7a7a';
 
 function crosshairTime(sec: number): string {
   const d = new Date(sec * 1000);
@@ -113,15 +115,18 @@ export class ChartPane {
       timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 12, shiftVisibleRangeOnNewBar: true },
       // 十字線はふだん出さない（MT4 と同じく、真ん中のボタンで出す）
       crosshair: { mode: CrosshairMode.Hidden },
+      // ホイール・ピンチの拡大は自分でする（チャートの部品はマウスの位置を中心に拡大するが、TradingView のように右端を動かさない）
+      handleScale: { mouseWheel: false, pinch: false },
       // 十字線の日時は MT4 と同じ「2026.10.08 05:00」。チャートの時刻は表示の時刻帯にずらした値なので UTC として読む
       localization: { locale: 'ja-JP', timeFormatter: (t: Time) => crosshairTime(t as number) },
     });
+    // ローソク足の色: 陽線は淡い緑、陰線は淡い赤（2026-10-23 に指定された画面の色に合わせた）
     this.series = this.chart.addSeries(CandlestickSeries, {
-      upColor: '#26a69a',
-      downColor: '#ef5350',
+      upColor: UP_COLOR,
+      downColor: DOWN_COLOR,
       borderVisible: false,
-      wickUpColor: '#26a69a',
-      wickDownColor: '#ef5350',
+      wickUpColor: UP_COLOR,
+      wickDownColor: DOWN_COLOR,
     });
     // 縦の目盛りの上下の余白は TradingView くらいに狭く（初期値は上 20%・下 10% で、ローソク足が潰れて見えた）
     this.series.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0.08 } });
@@ -147,6 +152,21 @@ export class ChartPane {
       true,
     );
     el.addEventListener('auxclick', (e) => e.button === 1 && e.preventDefault());
+    // ホイール（縦）とトラックパッドのピンチ（ctrl 付きのホイールとして届く）で拡大・縮小。右端（最新の足の側）は動かさない。
+    // 横のスクロール（トラックパッドの左右）はチャートの部品に任せる（時間を動かす）
+    el.addEventListener(
+      'wheel',
+      (e) => {
+        const vertical = Math.abs(e.deltaY) > Math.abs(e.deltaX);
+        if (!e.ctrlKey && !vertical) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const px = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+        // ピンチは細かく届くので強めに。ホイール 1 目盛り（約 100）で 2 割ほど
+        this.zoom(Math.exp(-px * (e.ctrlKey ? 0.01 : 0.002)));
+      },
+      { capture: true, passive: false },
+    );
     let edgeCheck = 0;
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
       // 左端に来たかは次のフレームで、その時の範囲で見る（描き直した直後は、古い時間足の位置のまま一瞬だけ
@@ -285,6 +305,14 @@ export class ChartPane {
     ts.scrollToPosition(ts.options().rightOffset, false);
   }
 
+  /** ローソク足の欄に見えている価格の幅（上端 − 下端）。描く前は null */
+  visiblePriceSpan(): number | null {
+    const h = this.chart.panes()[0]?.getHeight() ?? 0;
+    const top = this.series.coordinateToPrice(0);
+    const bottom = this.series.coordinateToPrice(h);
+    return h > 0 && top !== null && bottom !== null ? Math.abs(top - bottom) : null;
+  }
+
   /** 最新の足（今の時刻）が右端に見えているか（右の余白の分は除く） */
   isAtNow(): boolean {
     const ts = this.chart.timeScale();
@@ -367,9 +395,25 @@ export class ChartPane {
     for (const pane of this.chart.panes()) for (const s of pane.getSeries()) s.priceScale().applyOptions({ autoScale: true });
   }
 
+  /** zoom で決めて、まだチャートに反映されていない範囲（ホイールは 1 フレームに何回も届くので、続けて重ねる） */
+  private zoomRange: { from: number; to: number } | null = null;
+
+  /**
+   * 拡大・縮小。右端（右の余白込みの右端）を動かさずに、見える本数を変える（TradingView と同じ。
+   * チャートの部品の barSpacing の設定は、続けて変えると効かないことがあるので、見える範囲で決める）
+   */
   zoom(factor: number) {
-    this.spacing = Math.max(1, Math.min(60, this.spacing * factor));
-    this.chart.timeScale().applyOptions({ barSpacing: this.spacing });
+    const ts = this.chart.timeScale();
+    const r = this.zoomRange ?? ts.getVisibleLogicalRange();
+    const w = ts.width();
+    if (!r || w <= 0) return;
+    // 足の幅は 1〜60px の間
+    const bars = Math.max(w / 60, Math.min(w, (r.to - r.from) / factor));
+    const next = { from: r.to - bars, to: r.to };
+    ts.setVisibleLogicalRange(next);
+    this.spacing = w / bars;
+    if (!this.zoomRange) requestAnimationFrame(() => (this.zoomRange = null));
+    this.zoomRange = next;
   }
 
   setCrosshair(on: boolean) {

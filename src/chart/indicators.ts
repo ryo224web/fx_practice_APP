@@ -10,12 +10,16 @@ export interface MaConfig {
   period: number;
   type: 'sma' | 'ema';
   color: string;
+  /** 線の太さ（1〜4 px。無ければ 1） */
+  width?: number;
 }
 
 export interface RciLine {
   enabled: boolean;
   period: number;
   color: string;
+  /** 線の太さ（1〜4 px。無ければ 1） */
+  width?: number;
 }
 
 /** RCI のサブウィンドウ 1 段（線は 4 本） */
@@ -55,6 +59,9 @@ export function normalizeIndicators(cfg: IndicatorConfig | (Omit<IndicatorConfig
   while (rci.length < RCI_PANES) rci.push(structuredClone(DEFAULT_INDICATORS.rci[rci.length]));
   return { ma: cfg.ma, rci: rci.slice(0, RCI_PANES) };
 }
+
+/** 線の太さ（1〜4。チャートの部品が受け付ける形にする） */
+const lineWidth = (w: number | undefined) => Math.max(1, Math.min(4, Math.round(w ?? 1))) as 1 | 2 | 3 | 4;
 
 /** RCI の目安の線 */
 const RCI_LEVELS = [95, 80, 0, -80, -95];
@@ -123,7 +130,7 @@ export class IndicatorLayer {
       if (!m.enabled || !(m.period >= 1)) continue;
       // 縦の目盛りはローソク足だけで合わせる（TradingView の「価格チャートのみスケール」と同じ）。
       // 離れた移動平均まで収めようとすると、ローソク足が潰れて見えるため
-      const series = this.chart.addSeries(LineSeries, { ...common, color: m.color, autoscaleInfoProvider: () => null }, 0);
+      const series = this.chart.addSeries(LineSeries, { ...common, color: m.color, lineWidth: lineWidth(m.width), autoscaleInfoProvider: () => null }, 0);
       this.lines.push({ series, values: (inp, j) => this.maValue(inp, j, m) });
     }
     // RCI は段ごとにサブウィンドウを 1 つ使う（表示する段だけ、上から 1, 2 …）
@@ -135,7 +142,7 @@ export class IndicatorLayer {
       lines.forEach((l, n) => {
         const series = this.chart.addSeries(
           LineSeries,
-          { ...common, color: l.color, autoscaleInfoProvider: () => ({ priceRange: { minValue: -100, maxValue: 100 } }) },
+          { ...common, color: l.color, lineWidth: lineWidth(l.width), autoscaleInfoProvider: () => ({ priceRange: { minValue: -100, maxValue: 100 } }) },
           paneIndex,
         );
         if (n === 0) {

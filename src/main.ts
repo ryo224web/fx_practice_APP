@@ -354,8 +354,9 @@ async function ensureWindow(fromT: number, toT: number, exact = false) {
  * 時刻 time（UTC）の時点へ移る（日時への移動・巻き戻し・開き直し）。
  * - 戻るときは、time より後の操作を消し、手前の区切りから計算し直す
  * - 進むときは、途中の約定も計算する（価格データは上限ずつ読みながら進むので、何年先でもメモリは増えない）
+ * keepView なら、見ている場所と拡大率を変えない（1 本戻るとき。日時への移動などは、移った時刻を右端に出す）
  */
-async function travel(time: number) {
+async function travel(time: number, keepView = false) {
   if (traveling) return;
   traveling = true;
   setPlaying(false);
@@ -374,7 +375,7 @@ async function travel(time: number) {
         state.cursor = t.baseline.time;
         cursor = i;
         freshRunner();
-        afterTravel();
+        afterTravel(keepView);
         return;
       }
     }
@@ -410,15 +411,16 @@ async function travel(time: number) {
     await ensureWindow(time - 62 * 86_400_000, time, true);
     cursor = Math.max(0, md.indexAtOrBefore(Math.min(time, runner.account.time)));
     state.cursor = md.bid[cursor].t;
-    afterTravel();
+    afterTravel(keepView);
   } finally {
     traveling = false;
   }
 }
 
-function afterTravel() {
-  renderChart(true);
-  scrollToNow();
+function afterTravel(keepView = false) {
+  // 見ている場所を保つときは、右端の時刻と足の幅で戻す（最新を見ていれば、戻した後の最新）
+  renderChart(true, keepView);
+  if (!keepView) scrollToNow();
   refresh();
   updateStatus();
   void ensureIndicatorHistory();
@@ -463,7 +465,8 @@ function goTo(target: number, pause = true): boolean {
   if (target < cursor) {
     // 戻るときは、手前の区切りから計算し直す（データの読み込みが要ることもあるので非同期）
     const i = Math.max(0, target);
-    void travel(target < 0 ? md.bid[0].t - 60_000 : md.bid[i].t);
+    // 1 本・1 分戻るときは、拡大率も見ている場所もそのまま（進むときと同じ）
+    void travel(target < 0 ? md.bid[0].t - 60_000 : md.bid[i].t, true);
     return false;
   }
   target = Math.min(md.bid.length - 1, target);
@@ -1403,12 +1406,18 @@ const TYPE_JA: Record<string, string> = {
   sellstop: '売り逆指値',
 };
 
+/**
+ * S/L・T/P（指値・逆指値ならエントリーも）を今の価格の近くに置く。開くたびに置き直す。
+ * 離す幅は、今のチャートに見えている価格の幅の 6%（どの銘柄・時間足・拡大率でも画面の上で同じくらいの近さ）。T/P はその 2 倍（RR 2）
+ */
 function eoSetDefaults() {
   const e = eo();
   const bid = md.bid[cursor].c;
-  if (e.sl === null) e.sl = roundPrice(bid - 20 * spec.pip);
-  if (e.tp === null) e.tp = roundPrice(bid + 40 * spec.pip);
-  if (e.mode === 'pending' && e.entry === null) e.entry = roundPrice(bid);
+  const span = active.visiblePriceSpan();
+  const d = Math.max(spec.pip, span ? span * 0.06 : 20 * spec.pip);
+  e.entry = e.mode === 'pending' ? roundPrice(bid) : null;
+  e.sl = roundPrice(bid - d);
+  e.tp = roundPrice(bid + 2 * d);
 }
 
 function eoPreview(): OrderPreview | null {
@@ -1488,13 +1497,8 @@ function setupEasyOrder() {
   const e = () => eo();
   $('#easyorder-btn').addEventListener('click', () => {
     e().open = !e().open;
-    if (e().open) {
-      // 前回の S/L・T/P が今の価格から遠すぎれば置き直す
-      const bid = md.bid[cursor].c;
-      const far = (p: number | null) => p !== null && Math.abs(p - bid) > 300 * spec.pip;
-      if (far(e().sl) || far(e().tp) || far(e().entry)) Object.assign(e(), { sl: null, tp: null, entry: null });
-      eoSetDefaults();
-    }
+    // 開くたびに、S/L・T/P を今の価格の近くに置き直す（前回の位置は使わない）
+    if (e().open) eoSetDefaults();
     refresh();
   });
   $('#eo-close').addEventListener('click', () => {
@@ -1503,7 +1507,8 @@ function setupEasyOrder() {
   });
   $('#eo-mode').addEventListener('change', (ev) => {
     e().mode = (ev.target as HTMLSelectElement).value as EasyOrderState['mode'];
-    eoSetDefaults();
+    // 成行 ↔ 指値・逆指値を切り替えても、S/L・T/P は動かさない（エントリーが無ければ今の価格に置く）
+    if (e().mode === 'pending' && e().entry === null) e().entry = roundPrice(md.bid[cursor].c);
     refresh();
   });
   $('#eo-unit').addEventListener('change', (ev) => {
@@ -1540,28 +1545,34 @@ function paneState(p: ChartPane): PaneState {
   return state.panes![p.index];
 }
 
+/** 線の太さを選ぶ欄（1〜4 px） */
+function widthCell(i: number, w: number | undefined) {
+  const cur = w ?? 1;
+  return `<td><select data-i="${i}" data-f="width" title="線の太さ">${[1, 2, 3, 4].map((n) => `<option value="${n}" ${n === cur ? 'selected' : ''}>${n}</option>`).join('')}</select></td>`;
+}
+
 function openIndicatorDialog(cfg: IndicatorConfig = indicatorsFor(active.tf)) {
   cfg = normalizeIndicators(cfg);
   $('#ind-title').textContent = `インジケーター（${active.tf} 用 ・ ${active.tf} のチャートすべてに使う）`;
   const ma = $('#ind-ma');
   ma.innerHTML =
-    '<tr><td></td><td>期間</td><td>種類</td><td>色</td></tr>' +
+    '<tr><td></td><td>期間</td><td>種類</td><td>色</td><td>太さ</td></tr>' +
     cfg.ma
       .map(
         (m, i) => `<tr><td><input type="checkbox" data-i="${i}" data-f="enabled" ${m.enabled ? 'checked' : ''} /></td>
         <td><input type="number" min="1" step="1" data-i="${i}" data-f="period" value="${m.period}" /></td>
         <td><select data-i="${i}" data-f="type"><option value="sma" ${m.type === 'sma' ? 'selected' : ''}>単純（SMA）</option><option value="ema" ${m.type === 'ema' ? 'selected' : ''}>指数（EMA）</option></select></td>
-        <td><input type="color" data-i="${i}" data-f="color" value="${m.color}" /></td></tr>`,
+        <td><input type="color" data-i="${i}" data-f="color" value="${m.color}" /></td>${widthCell(i, m.width)}</tr>`,
       )
       .join('');
   $('#ind-rci-wrap').innerHTML = cfg.rci
     .map(
       (rp, k) => `<h3>RCI ${k + 1} 段目（サブウィンドウ）<label class="inline"><input class="ind-rci-on" data-k="${k}" type="checkbox" ${rp.enabled ? 'checked' : ''} /> 表示する</label></h3>
-      <table class="ind-table" id="ind-rci-${k}"><tr><td></td><td>期間</td><td>色</td></tr>${rp.lines
+      <table class="ind-table" id="ind-rci-${k}"><tr><td></td><td>期間</td><td>色</td><td>太さ</td></tr>${rp.lines
         .map(
           (l, i) => `<tr><td><input type="checkbox" data-i="${i}" data-f="enabled" ${l.enabled ? 'checked' : ''} /></td>
           <td><input type="number" min="2" step="1" data-i="${i}" data-f="period" value="${l.period}" /></td>
-          <td><input type="color" data-i="${i}" data-f="color" value="${l.color}" /></td></tr>`,
+          <td><input type="color" data-i="${i}" data-f="color" value="${l.color}" /></td>${widthCell(i, l.width)}</tr>`,
         )
         .join('')}</table>`,
     )
@@ -1576,7 +1587,14 @@ function readIndicatorDialog(): IndicatorConfig {
       const out = { ...b } as Record<string, unknown>;
       document.querySelectorAll<HTMLInputElement | HTMLSelectElement>(`${table} [data-i="${i}"]`).forEach((el) => {
         const f = el.dataset.f!;
-        out[f] = el instanceof HTMLInputElement && el.type === 'checkbox' ? el.checked : f === 'period' ? Math.max(1, Math.round(Number(el.value))) : el.value;
+        out[f] =
+          el instanceof HTMLInputElement && el.type === 'checkbox'
+            ? el.checked
+            : f === 'period'
+              ? Math.max(1, Math.round(Number(el.value)))
+              : f === 'width'
+                ? Math.max(1, Math.min(4, Number(el.value)))
+                : el.value;
       });
       return out as T;
     });

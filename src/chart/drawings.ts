@@ -533,7 +533,8 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     const color = this.colorOf(d);
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
-    ctx.lineWidth = sel ? 2 : 1;
+    // 選んでいないときも太さ 2（1 だと薄く暗く見える）。選んでいるときは 3
+    ctx.lineWidth = sel ? 3 : 2;
     ctx.font = '11px system-ui, sans-serif';
     const [a, b] = pts;
     // フィボの水準の数値は、線の右端（価格の目盛りの手前）に、線のすぐ上に書く
