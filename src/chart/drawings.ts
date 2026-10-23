@@ -237,7 +237,10 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     return true;
   }
 
-  /** 仮の点と、ダブルクリックで重なった点を取り除いて確定する。2 点に満たなければ消す */
+  /**
+   * 仮の点と、ダブルクリックで重なった点を取り除いて確定する。2 点に満たなければ消す。
+   * 確定した線は 1 本ずつ独立したトレンドラインにする（余計な 1 本だけを消せるように。2026-10-23）
+   */
   private endPoly() {
     const d = this.drawings.find((x) => x.id === this.polyId);
     this.polyId = null;
@@ -251,10 +254,28 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       if (a && b && Math.hypot(a.x - b.x, a.y - b.y) < 3) continue;
       pts.push(pt);
     }
-    d.points = pts;
-    if (pts.length < 2) this.drawings = this.drawings.filter((x) => x !== d);
+    const segments: Drawing[] = [];
+    for (let k = 1; k < pts.length; k++) segments.push({ id: crypto.randomUUID(), kind: 'trend', points: [pts[k - 1], pts[k]], color: COLORS.trend, tf: d.tf });
+    const at = this.drawings.indexOf(d);
+    this.drawings = [...this.drawings.slice(0, at), ...segments, ...this.drawings.slice(at + 1)];
+    this.selectedId = segments.length ? segments[segments.length - 1].id : null;
     this.onChange();
     this.refresh();
+  }
+
+  /** ポリラインを描いている途中なら、最後に置いた点（＝最後の 1 本）を取り消す。点が無くなれば描くのをやめる */
+  undoPolyPoint(): boolean {
+    const d = this.drawings.find((x) => x.id === this.polyId);
+    if (!d) return false;
+    // 最後の点はマウスに付いてくる仮の点。その手前の、置いた点を消す
+    d.points.splice(d.points.length - 2, 1);
+    if (d.points.length < 2) {
+      this.drawings = this.drawings.filter((x) => x !== d);
+      this.polyId = null;
+      this.setTool(null);
+    }
+    this.refresh();
+    return true;
   }
 
   deleteSelected(): boolean {

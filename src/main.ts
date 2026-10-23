@@ -1441,7 +1441,9 @@ function eoPreview(): OrderPreview | null {
 function eoRender() {
   const e = eo();
   const panel = $('#easyorder');
+  const wasHidden = panel.hidden;
   panel.hidden = !e.open;
+  if (wasHidden && e.open) placeEasyOrder();
   $('#easyorder-btn').setAttribute('aria-pressed', String(e.open));
   if (!e.open) return;
   const setVal = (id: string, v: number | null, digits = md.digits) => {
@@ -1493,8 +1495,42 @@ function eoSend() {
   }
 }
 
+/** EasyOrder の欄を、覚えた場所に置く（チャートの欄からはみ出さないように） */
+function placeEasyOrder() {
+  const panel = $('#easyorder');
+  const pos = eo().pos;
+  if (!pos) return;
+  const area = $('#chart-area').getBoundingClientRect();
+  const x = Math.max(0, Math.min(area.width - panel.offsetWidth, pos.x));
+  const y = Math.max(0, Math.min(area.height - 40, pos.y));
+  panel.style.left = `${x}px`;
+  panel.style.top = `${y}px`;
+}
+
 function setupEasyOrder() {
   const e = () => eo();
+  // 見出しをつかんで欄を動かす。離した場所を覚え、次からもそこに出す
+  const panel = $('#easyorder');
+  $('#easyorder .eo-head').addEventListener('mousedown', (ev) => {
+    if ((ev.target as HTMLElement).closest('button') || ev.button !== 0) return;
+    ev.preventDefault();
+    const area = $('#chart-area').getBoundingClientRect();
+    const start = panel.getBoundingClientRect();
+    const dx = ev.clientX - start.left;
+    const dy = ev.clientY - start.top;
+    const move = (m: MouseEvent) => {
+      e().pos = { x: Math.round(m.clientX - area.left - dx), y: Math.round(m.clientY - area.top - dy) };
+      placeEasyOrder();
+    };
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      save();
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  });
+  window.addEventListener('resize', placeEasyOrder);
   $('#easyorder-btn').addEventListener('click', () => {
     e().open = !e().open;
     // 開くたびに、S/L・T/P を今の価格の近くに置き直す（前回の位置は使わない）
@@ -1533,9 +1569,11 @@ function setupEasyOrder() {
   bindNum('#eo-entry', 'entry', false);
   $('#eo-send').addEventListener('click', eoSend);
   for (const p of panes)
-    p.overlay.onPreviewEdit = (field, price) => {
+    p.overlay.onPreviewEdit = (field, price, live) => {
       e()[field] = roundPrice(price);
-      refresh();
+      // 動かしている途中は、線と EasyOrder の数値だけを描き直す（軽くするため）。離したら全部
+      if (live) renderQuotes();
+      else refresh();
     };
 }
 
@@ -2649,7 +2687,8 @@ function onKey(e: KeyboardEvent) {
   switch (e.key) {
     case 'Delete':
     case 'Backspace':
-      if (!panes.some((p) => p.drawings.deleteSelected())) return;
+      // ポリラインを描いている途中なら最後の 1 本だけを取り消す。それ以外は選んでいる図形を消す
+      if (!panes.some((p) => p.drawings.undoPolyPoint()) && !panes.some((p) => p.drawings.deleteSelected())) return;
       break;
     case 'Enter':
       // 描いている途中のポリラインを終える

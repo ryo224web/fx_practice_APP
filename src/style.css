@@ -298,6 +298,9 @@ td.sell {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 4px;
+  /* ここをつかんで動かす */
+  cursor: move;
+  user-select: none;
 }
 
 #easyorder .eo-head button {

@@ -43,6 +43,8 @@ export interface EasyOrderState {
   entry: number | null;
   sl: number | null;
   tp: number | null;
+  /** 欄を置いた場所（チャートの欄の左上からの px）。無ければ左上 */
+  pos?: { x: number; y: number };
 }
 
 /** 読み込んだ MT4 の取引履歴 */

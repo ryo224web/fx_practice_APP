@@ -82,7 +82,8 @@ type WantedLine = LineInfo & { color: string; title: string; style: LineStyle; w
 
 export class TradeOverlay implements ISeriesPrimitive<Time> {
   onEdit: (edit: LineEdit) => void = () => {};
-  onPreviewEdit: (field: PreviewField, price: number) => void = () => {};
+  /** EasyOrder の線を動かした。live は動かしている途中（離す前。数値だけを先に変える） */
+  onPreviewEdit: (field: PreviewField, price: number, live?: boolean) => void = () => {};
   showHistory = true;
   /** 口座履歴で選んだ取引。エントリーに縦線を引いて分かりやすくする */
   highlight: { openTime: number; closeTime: number } | null = null;
@@ -222,7 +223,10 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
     this.drag.price = Number((Math.round(m.price / step) * step).toFixed(this.view.digits));
     // クリックしただけ（動かしていない）なら何もしない
     this.drag.moved = Math.abs(this.drag.price - this.drag.info.price) >= step / 2;
-    this.update(this.view);
+    // EasyOrder の線は、動かしている間もロット・損益・RR を変える
+    const { info } = this.drag;
+    if (this.drag.moved && info.role.startsWith('eo-')) this.onPreviewEdit(info.role.slice(3) as PreviewField, this.drag.price, true);
+    else this.update(this.view);
   }
 
   private onUp(e: MouseEvent) {
