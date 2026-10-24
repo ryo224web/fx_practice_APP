@@ -46,6 +46,7 @@ import { lossAt, lotsForRisk } from './trade/risk';
 import { analyze, excursionOf, tradesCsv, type Analysis, type TradeRecord } from './trade/analysis';
 import { renderHistory, renderMt4, renderTrade, type Mt4Row, type TerminalTab } from './ui/terminal';
 import { quickSummary, REPORT_CSS, reportBody, reportHtml } from './ui/report';
+import { loadAppSettings, saveAppSettings } from './appSettings';
 import './style.css';
 
 // 成績レポートの見た目（書き出すファイルと同じものを画面にも使う）
@@ -1779,7 +1780,7 @@ let keyDraft: Record<string, string[]> = {};
 /** キーを待っている枠（働きと何番目か） */
 let keyWaiting: { id: string; slot: number } | null = null;
 
-function openKeysDialog(map: Record<string, string[]> = resolveKeymap(state.keymap)) {
+function openKeysDialog(map: Record<string, string[]> = resolveKeymap(keymap)) {
   keyDraft = structuredClone(map);
   keyWaiting = null;
   renderKeysDialog();
@@ -1965,7 +1966,7 @@ const defaultTemplate = () => templatesCache.templates.find((t) => t.name === te
  */
 function newProjectState(): AppState {
   const t = defaultTemplate();
-  if (t) return applyTemplate({ ...defaultState(), symbol: state.symbol, keymap: structuredClone(state.keymap) }, t.settings);
+  if (t) return applyTemplate({ ...defaultState(), symbol: state.symbol }, t.settings);
   return {
     ...defaultState(),
     symbol: state.symbol,
@@ -1975,7 +1976,6 @@ function newProjectState(): AppState {
     indicatorSets: structuredClone(state.indicatorSets),
     tfColors: structuredClone(state.tfColors),
     fiboLevels: structuredClone(state.fiboLevels),
-    keymap: structuredClone(state.keymap),
     hiddenTfs: structuredClone(state.hiddenTfs),
     hideOneClick: state.hideOneClick,
     rightOffset: state.rightOffset,
@@ -2583,10 +2583,10 @@ function setupControls() {
   $('#keys-btn').addEventListener('click', () => openKeysDialog());
   $('#keys-reset').addEventListener('click', () => openKeysDialog(resolveKeymap(undefined)));
   $('#keys-apply').addEventListener('click', () => {
-    state.keymap = keyDraft;
+    keymap = keyDraft;
     keyIndex = commandIndex(resolveKeymap(keyDraft));
+    void saveAppSettings({ keymap: keyDraft });
     $<HTMLDialogElement>('#keys-dialog').close();
-    save();
   });
   $('#keys-table').addEventListener('click', (e) => {
     const b = (e.target as HTMLElement).closest<HTMLButtonElement>('.key-slot');
@@ -2717,6 +2717,8 @@ async function jump() {
 }
 
 /** キーボードのショートカット（「ショートカット」の画面で変えられる。src/ui/keys.ts） */
+/** キーボードのショートカット（全部のプロジェクトで共通。src/appSettings.ts） */
+let keymap: Record<string, string[]> | undefined;
 let keyIndex = commandIndex(resolveKeymap(undefined));
 
 function runCommand(id: string) {
@@ -2801,9 +2803,12 @@ function onKey(e: KeyboardEvent) {
 
 // ---------------- 起動 ----------------
 async function start() {
-  const store = await initStore();
+  const [store, settings] = await Promise.all([initStore(), loadAppSettings()]);
   state = { ...defaultState(), ...loadState() };
-  keyIndex = commandIndex(resolveKeymap(state.keymap));
+  // キーの設定は全部のプロジェクトで共通。共通の設定がまだ無ければ（以前はプロジェクトごと）、今のプロジェクトの設定を共通にする
+  keymap = settings.keymap ?? state.keymap;
+  if (!settings.keymap && state.keymap) void saveAppSettings({ keymap: state.keymap });
+  keyIndex = commandIndex(resolveKeymap(keymap));
   migratePanes();
   createPanes();
   manifest = await loadManifest();

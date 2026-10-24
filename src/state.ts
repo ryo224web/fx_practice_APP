@@ -106,7 +106,7 @@ export interface AppState {
   note?: string;
   /** 左上のワンクリック注文を隠す */
   hideOneClick?: boolean;
-  /** キーボードのショートカット（働き → キー。無ければ初期値。src/ui/keys.ts） */
+  /** 以前の保存のキーボードのショートカット。今は全部のプロジェクトで共通（src/appSettings.ts）。共通の設定がまだ無いときだけ使う */
   keymap?: Record<string, string[]>;
   /** チャートの右側の余白（足の本数）。全部のチャートで共通 */
   rightOffset?: number;

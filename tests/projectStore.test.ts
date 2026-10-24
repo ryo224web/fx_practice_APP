@@ -54,6 +54,20 @@ describe('プロジェクトの保存（フォルダ）', () => {
     fetch(`${base}/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, state: { n: 1 }, updated: 1 }) });
   const files = async () => (await readdir(path.join(dir, 'projects'))).filter((f) => f.endsWith('.fxp.json')).sort();
 
+  it('キーの設定は共通。まだ無ければ、キーを変えてあるプロジェクトのうち一番新しいものから引き継ぐ', async () => {
+    const save = (id: string, name: string, state: unknown, updated: number) =>
+      fetch(`${base}/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, state, updated }) });
+    await save('a', '古い', { keymap: { play: ['KeyA'] } }, 1);
+    await save('b', '新しい', { keymap: { play: ['KeyB'] } }, 3);
+    await save('c', 'キーを変えていない', { n: 1 }, 5);
+    const settings = base.replace('/api/projects', '/api/settings');
+    expect((await (await fetch(settings)).json()).keymap).toEqual({ play: ['KeyB'] });
+    // 一度決まったら、プロジェクトの方は見ない
+    await fetch(settings, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keymap: { play: ['KeyC'] } }) });
+    await save('d', 'もっと新しい', { keymap: { play: ['KeyD'] } }, 9);
+    expect((await (await fetch(settings)).json()).keymap).toEqual({ play: ['KeyC'] });
+  });
+
   it('名前のファイル名で保存し、名前を変えるとファイル名も変わる', async () => {
     await put('id-1', 'プロジェクト 1');
     expect(await files()).toEqual(['プロジェクト 1.fxp.json']);

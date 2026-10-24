@@ -6,6 +6,7 @@
 //   <dir>/projects/.locks/<ID>.json               どの Mac が開いているか（別の Mac で同時に開かないための目印）
 //   <dir>/templates/<名前>.fxt.json                定型（チャートの並べ方・インジケーター・色など。プロジェクトに当てる）
 //   <dir>/templates/_settings.json                新しいプロジェクトに使う定型の名前
+//   <dir>/settings.json                           全部のプロジェクトで共通の設定（キーボードのショートカット。/api/settings）
 //   <dir>/backups/<ID>/<日時>.fxp.json             上書き・削除する前の控え（10 分に 1 回まで、プロジェクトごとに 30 個。「ファイルから読み込む」で戻せる）
 //
 // 書く前・消す前に、そのファイルの中の ID が本当にそのプロジェクトかを確かめる（Finder や Dropbox がファイルを動かしても、
@@ -393,9 +394,52 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
     return send(res, 405, { error: 'method not allowed' });
   }
 
+  // ---- 共通の設定（/api/settings）----
+  //   GET  /           { keymap?, … }
+  //   PUT  /  { … }    渡した項目だけ書き換える
+  const appSettings = path.join(dir, 'settings.json');
+
+  /**
+   * キーの設定は以前はプロジェクトごとだった。共通の設定にまだ無ければ、キーを変えてあるプロジェクトのうち
+   * 一番最近保存したものの設定を引き継ぐ（初めて開いたプロジェクトがキーを変えていないものでも、作り直さなくて済むように）
+   */
+  async function keymapFromProjects(): Promise<unknown> {
+    let best: { updated: number; keymap: unknown } | null = null;
+    for (const rel of await walk()) {
+      const p = await readJson<ProjectFile>(abs(rel));
+      const keymap = (p?.state as { keymap?: unknown } | undefined)?.keymap;
+      if (keymap && p && (!best || p.updated > best.updated)) best = { updated: p.updated, keymap };
+    }
+    return best?.keymap;
+  }
+
+  async function handleSettings(req: IncomingMessage, res: ServerResponse) {
+    if (req.method === 'GET') {
+      const cur = (await readJson<Record<string, unknown>>(appSettings)) ?? {};
+      if (!cur.keymap) {
+        const keymap = await keymapFromProjects();
+        if (keymap) {
+          cur.keymap = keymap;
+          await writeJson(appSettings, cur);
+        }
+      }
+      return send(res, 200, cur);
+    }
+    if (req.method === 'PUT') {
+      const patch = (await body(req)) as Record<string, unknown>;
+      const cur = (await readJson<Record<string, unknown>>(appSettings)) ?? {};
+      await writeJson(appSettings, { ...cur, ...patch });
+      return send(res, 200, { ok: true });
+    }
+    return send(res, 405, { error: 'method not allowed' });
+  }
+
   return {
     name: 'fx-project-store',
     configureServer(server) {
+      server.middlewares.use('/api/settings', (req, res) => {
+        handleSettings(req, res).catch((e) => send(res, 500, { error: e instanceof Error ? e.message : String(e) }));
+      });
       server.middlewares.use('/api/projects', (req, res) => {
         handle(req, res).catch((e) => send(res, 500, { error: e instanceof Error ? e.message : String(e) }));
       });
