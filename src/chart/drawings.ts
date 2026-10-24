@@ -29,6 +29,8 @@ export interface Drawing {
   color: string;
   /** 描いた時間足。色はこの時間足の色になる（「図形の色」で時間足ごとに決める） */
   tf?: string;
+  /** チャネルを右へ延ばすか（レイ。MT4 と同じ）。無ければ延ばす。ダブルクリックで切り替える */
+  ray?: boolean;
 }
 
 /** 時間足ごとの図形の色（初期値） */
@@ -120,8 +122,12 @@ function rayEnd(a: Px, b: Px, w: number): Px {
   return { x, y: a.y + ((b.y - a.y) * (x - a.x)) / (b.x - a.x) };
 }
 
-/** チャネルの平行線の、基準線からの縦のずれ（px） */
-function channelOffset(a: Px, b: Px, c: Px): number {
+/** 描いている途中（A→B をドラッグしている間）のチャネルの平行線の位置。描き終えたときと同じ、基準線の 40px 下 */
+const CHANNEL_PREVIEW_DY = 40;
+
+/** チャネルの平行線の、基準線からの縦のずれ（px）。C がまだ無ければ（描いている途中）決まった幅 */
+function channelOffset(a: Px, b: Px, c: Px | null | undefined): number {
+  if (!c) return CHANNEL_PREVIEW_DY;
   const base = b.x === a.x ? a.y : a.y + ((b.y - a.y) * (c.x - a.x)) / (b.x - a.x);
   return c.y - base;
 }
@@ -181,6 +187,13 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     if (d && (d.kind === 'fibo' || d.kind === 'fiboexp')) {
       e.stopPropagation();
       this.onEditLevels(d.kind);
+    }
+    // チャネルはダブルクリックでレイ（右へ延ばす）を切り替える
+    if (d && d.kind === 'channel') {
+      e.stopPropagation();
+      d.ray = d.ray === false;
+      this.onChange();
+      this.refresh();
     }
   }
 
@@ -353,12 +366,9 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
           for (let q = 1; q < pts.length; q++) if (distToSegment(px, pts[q - 1]!, pts[q]!) <= HIT) hit = true;
           break;
         case 'channel': {
-          const c = pts[2]!;
-          const dy = channelOffset(a, b, c);
-          const end = rayEnd(a, b, w);
-          hit =
-            distToSegment(px, a, end) <= HIT ||
-            distToSegment(px, { x: a.x, y: a.y + dy }, { x: end.x, y: end.y + dy }) <= HIT;
+          const dy = channelOffset(a, b, pts[2]);
+          const end = d.ray === false ? b : rayEnd(a, b, w);
+          hit = [0, dy / 2, dy].some((o) => distToSegment(px, { x: a.x, y: a.y + o }, { x: end.x, y: end.y + o }) <= HIT);
           break;
         }
         case 'rect': {
@@ -437,11 +447,9 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       };
       this.drawings.push(d);
       this.selectedId = d.id;
-      if (onePoint(d.kind)) {
-        this.finishCreate();
-      } else {
-        this.drag = { id: d.id, handle: 1, start: { l: m.l, p: m.p }, orig: d.points.map(() => ({ l: m.l, p: m.p })), moved: false, creating: true };
-      }
+      // 水平線・垂直線は押している間マウスに付いてきて、離した所に置く。ほかは 2 点目（B）を動かす
+      const handle = onePoint(d.kind) ? 0 : 1;
+      this.drag = { id: d.id, handle, start: { l: m.l, p: m.p }, orig: d.points.map(() => ({ l: m.l, p: m.p })), moved: false, creating: true };
       e.stopPropagation();
       e.preventDefault();
       this.refresh();
@@ -507,6 +515,11 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     const drag = this.drag;
     this.drag = null;
     if (drag.creating) {
+      const d = this.drawings.find((x) => x.id === drag.id);
+      if (d && onePoint(d.kind)) {
+        this.finishCreate();
+        return;
+      }
       if (!drag.moved) {
         // ドラッグせずに離した → もう 1 回クリックした所を 2 点目にする
         this.placing = drag.id;
@@ -521,9 +534,9 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   private finishCreate() {
     const d = this.drawings.find((x) => x.id === this.selectedId);
     if (d?.kind === 'channel' && d.points.length === 2 && this.series) {
-      // 平行線は、とりあえず基準線の 40px 下に置く（後からドラッグで動かす）
+      // 平行線は、とりあえず基準線の 40px 下に置く（描いている間に見せていた所。後からドラッグで動かす）
       const y = this.series.priceToCoordinate(d.points[0].p);
-      const p = y === null ? null : this.series.coordinateToPrice(y + 40);
+      const p = y === null ? null : this.series.coordinateToPrice(y + CHANNEL_PREVIEW_DY);
       d.points.push({ t: d.points[0].t, p: p ?? d.points[0].p });
     }
     if (d?.kind === 'fiboexp' && d.points.length === 2) {
@@ -599,9 +612,10 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         ctx.stroke();
         break;
       case 'channel': {
-        const c = pts[2];
-        const dy = channelOffset(a, b, c);
-        const end = rayEnd(a, b, w);
+        // 描いている途中（C がまだ無い）も、描き終えたときと同じ形で見せる
+        const dy = channelOffset(a, b, pts[2]);
+        // レイを外していれば B まで（右へ延ばさない）
+        const end = d.ray === false ? b : rayEnd(a, b, w);
         ctx.globalAlpha = 0.08;
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
@@ -613,6 +627,12 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         ctx.globalAlpha = 1;
         line(a.x, a.y, end.x, end.y);
         line(a.x, a.y + dy, end.x, end.y + dy);
+        // 中央線（2 本のちょうど真ん中。点線）
+        ctx.save();
+        ctx.setLineDash([4, 4]);
+        ctx.lineWidth = 1;
+        line(a.x, a.y + dy / 2, end.x, end.y + dy / 2);
+        ctx.restore();
         break;
       }
       case 'rect': {
