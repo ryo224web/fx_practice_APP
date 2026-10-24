@@ -356,7 +356,10 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         case 'rect': {
           const [x1, x2] = [Math.min(a.x, b.x), Math.max(a.x, b.x)];
           const [y1, y2] = [Math.min(a.y, b.y), Math.max(a.y, b.y)];
-          hit = px.x >= x1 - HIT && px.x <= x2 + HIT && px.y >= y1 - HIT && px.y <= y2 + HIT;
+          // 枠の線の上だけ（中をクリックしても選ばない。中にある足やほかの線を触れるように）
+          const inX = px.x >= x1 - HIT && px.x <= x2 + HIT;
+          const inY = px.y >= y1 - HIT && px.y <= y2 + HIT;
+          hit = (inY && (Math.abs(px.x - x1) <= HIT || Math.abs(px.x - x2) <= HIT)) || (inX && (Math.abs(px.y - y1) <= HIT || Math.abs(px.y - y2) <= HIT));
           break;
         }
         case 'fibo': {
