@@ -2299,12 +2299,12 @@ const tfAnchor = new WeakMap<ChartPane, number>();
 
 function setTf(tf: Timeframe) {
   // 見ていた場所（右端の時刻）を保つ。最新の足を見ていたら、新しい時間足でも最新へ。
-  // 週足・月足の右端は足の始まりの時刻しか分からないので、前に保った時刻がその足の中なら、そちらを使う
+  // 週足・月足の右端は足の終わりの時刻しか分からないので、前に保った時刻がその足の中なら、そちらを使う
   // （月足で今月を見ていても「最新」ではなく、その中の前に保った時刻に戻る）
   let anchor = active.currentAnchor();
   const hint = tfAnchor.get(active);
   const base = active.anchorTime();
-  if (hint !== undefined && base !== null && hint >= base && hint < base + (active.tf === 'MN' ? 31 * 1440 : TIMEFRAMES[active.tf]) * 60_000) anchor = hint;
+  if (hint !== undefined && base !== null && hint <= base && hint > base - (active.tf === 'MN' ? 31 * 1440 : TIMEFRAMES[active.tf]) * 60_000) anchor = hint;
   if (anchor === null) tfAnchor.delete(active);
   else tfAnchor.set(active, anchor);
   active.tf = tf;

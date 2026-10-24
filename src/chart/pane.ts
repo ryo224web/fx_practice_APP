@@ -287,21 +287,24 @@ export class ChartPane {
   }
 
   /**
-   * 連動の目印の時刻: 右の余白を除いた右端（最新の足を表示しているなら、その足の時刻）。
-   * 時間足が違っても、この時刻をそろえれば同じ場面を見られる
+   * 連動の目印の時刻: 画面の右端の足の「終わり」の時刻（次の足の始まり）。
+   * 時間足が違っても、この時刻をそろえれば同じ場面を見られる。
+   * - 始まりの時刻でそろえると、H1 の 10:00 の足（〜11:00）から M5 に変えたとき 10:00 の足までしか出ず、右端が 1 時間分ずれる
+   * - 右の余白（三角のつまみ）の位置でそろえると、過去を見ているときは余白の所にも足が並んでいるので、
+   *   余白が広いほど、長い時間足に変えたときに画面の右端が先へ延びる（余白 145 本で M1 → M5 なら約 10 時間）
    */
   anchorTime(): number | null {
     const ts = this.chart.timeScale();
     const r = ts.getVisibleLogicalRange();
-    return r ? this.mapper.toTime(r.to - ts.options().rightOffset) : null;
+    return r ? this.mapper.toTime(r.to + 1) : null;
   }
 
-  /** 目印の時刻が同じ位置に来るように動かす（表示する本数＝拡大率はそのまま） */
+  /** 目印の時刻が画面の右端に来るように動かす（表示する本数＝拡大率はそのまま） */
   alignTo(time: number) {
     const ts = this.chart.timeScale();
     const r = ts.getVisibleLogicalRange();
     if (!r) return;
-    const to = this.mapper.toLogical(time) + ts.options().rightOffset;
+    const to = this.mapper.toLogical(time) - 1;
     if (Math.abs(to - r.to) < 0.01) return;
     ts.setVisibleLogicalRange({ from: to - (r.to - r.from), to });
   }
@@ -334,14 +337,17 @@ export class ChartPane {
     return h > 0 && top !== null && bottom !== null ? Math.abs(top - bottom) : null;
   }
 
-  /** 最新の足（今の時刻）が右端に見えているか（右の余白の分は除く） */
+  /**
+   * 最新の足（今の時刻）が画面に見えているか。右の余白の所まで来ていなくても、見えていれば最新を見ているとみなす
+   * （余白が画面の幅より広いと、チャートは余白の所まで動かせないため）
+   */
   isAtNow(): boolean {
     const ts = this.chart.timeScale();
-    return ts.scrollPosition() >= ts.options().rightOffset - 1;
+    return ts.scrollPosition() >= Math.min(ts.options().rightOffset, 1) - 1;
   }
 
   /**
-   * time（UTC。anchorTime と同じ、右の余白を除いた右端の時刻）が右端に来るように全部描き直す（null なら最新の足）。
+   * time（UTC。anchorTime と同じ、画面の右端の足の終わりの時刻）が右端に来るように全部描き直す（null なら最新の足）。
    * 時間足を変えたときに使う。遠い過去を見ていたら、そこまでの足をチャートに渡す。
    * 足の幅（拡大率）は変えない（描き直した直後は前の時間足の位置のままなので、新しい時間足の足の数を超えていると
    * チャートが範囲を縮めてしまう。その幅を使うと勝手に拡大される）
@@ -382,8 +388,11 @@ export class ChartPane {
   private restoreView(v: { anchor: number | null; spacing: number }, last: number) {
     const ts = this.chart.timeScale();
     ts.applyOptions({ barSpacing: v.spacing });
-    const at = v.anchor === null ? last : Math.min(last, this.mapper.toLogical(v.anchor));
-    ts.scrollToPosition(at - last + ts.options().rightOffset, false);
+    // 右端の時刻（足の終わり）の直前を含む足を画面の右端に置く（長い時間足に変えたときも、その足が欠けないように）。
+    // 最新の足が右の余白より左に来るほど先なら、最新の足を見ているのと同じにする
+    const ro = ts.options().rightOffset;
+    const edge = v.anchor === null ? Infinity : Math.ceil(this.mapper.toLogical(v.anchor) - 1 - 1e-6);
+    ts.scrollToPosition(Math.min(edge - last, ro), false);
     this.spacing = v.spacing;
     this.pendingView = v;
     requestAnimationFrame(() => requestAnimationFrame(() => (this.pendingView = null)));
