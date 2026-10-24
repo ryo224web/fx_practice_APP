@@ -36,8 +36,10 @@ export interface PaneHost {
   rangeChanged(pane: ChartPane): void;
   /** マウスがこのチャートに入った（このチャートの動きにほかを合わせる） */
   lead(pane: ChartPane): void;
-  /** マウスの真ん中のボタンを押している間だけ十字線を出す（on: 押した / off: 離した） */
-  holdCrosshair(on: boolean): void;
+  /** マウスの真ん中のボタンで十字線を出す・消す */
+  toggleCrosshair(): void;
+  /** 十字線を出しているか */
+  crosshairOn(): boolean;
   /** 1 pip の値幅（測るときに使う） */
   pip(): number;
 }
@@ -142,21 +144,27 @@ export class ChartPane {
 
     el.addEventListener('mousedown', () => host.activate(this), true);
     el.addEventListener('mouseenter', () => host.lead(this));
-    // 真ん中のボタン（ホイールを押す）を押している間だけ十字線を出し、押した所から今のマウスの所までを測る（MT4 と同じ。
-    // 本数 / pips / 価格）。離すと消える。ブラウザの自動スクロールは止める
+    // 真ん中のボタン（ホイールを押す）をクリックすると十字線を出す・消す（MT4 と同じ。ブラウザの自動スクロールは止める）。
+    // 十字線を出している間は、左ボタンでドラッグすると押した所から今のマウスの所までを測る（MT4 と同じ。本数 / pips / 価格）。
+    // そのドラッグではチャートを動かさない。離すと測った線も十字線も消える（MT4 と同じ）
     this.measureEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     this.measureEl.classList.add('measure');
     box.append(this.measureEl);
     el.addEventListener(
       'mousedown',
       (e) => {
-        if (e.button !== 1) return;
-        e.preventDefault();
-        e.stopPropagation();
+        if (e.button === 1) {
+          e.preventDefault();
+          e.stopPropagation();
+          host.toggleCrosshair();
+          return;
+        }
+        if (e.button !== 0 || !host.crosshairOn() || this.drawings.tool) return;
         const p = this.pointAt(e);
         if (!p) return;
+        e.preventDefault();
+        e.stopPropagation();
         this.measureFrom = p;
-        host.holdCrosshair(true);
         this.drawMeasure(p);
       },
       true,
@@ -167,10 +175,11 @@ export class ChartPane {
       if (p) this.drawMeasure(p);
     });
     window.addEventListener('mouseup', (e) => {
-      if (e.button !== 1 || !this.measureFrom) return;
+      if (e.button !== 0 || !this.measureFrom) return;
       this.measureFrom = null;
       this.measureEl.innerHTML = '';
-      host.holdCrosshair(false);
+      // 測り終えたら十字線も消す（MT4 と同じ）
+      if (host.crosshairOn()) host.toggleCrosshair();
     });
     el.addEventListener('auxclick', (e) => e.button === 1 && e.preventDefault());
     // ホイール（縦）とトラックパッドのピンチ（ctrl 付きのホイールとして届く）で拡大・縮小。右端（最新の足の側）は動かさない。
@@ -446,7 +455,7 @@ export class ChartPane {
     this.zoomRange = next;
   }
 
-  /** 真ん中のボタンで測るときの始まり（押した所） */
+  /** 十字線を出しているときに、左ボタンで測る始まり（押した所） */
   private measureFrom: { x: number; y: number; logical: number; price: number } | null = null;
   private measureEl: SVGSVGElement;
 
