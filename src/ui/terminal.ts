@@ -149,7 +149,7 @@ export function renderMt4(rows: Mt4Row[], info: Mt4Info | null, digits: number, 
     ? `時刻のずれ（自動判定）: <b>${off} 時間</b>　価格が足に収まった: <b>${info.matched}/${info.checked}</b>`
     : `時刻のずれ: <b>${off} 時間</b>（この銘柄では判定できていません。価格データが無いか、取引がありません）`;
   const updated = info.auto && info.updated ? `（最後に MT4 が書き出したのは ${time(info.updated)}）` : '';
-  const head = `${bar}<span class="hint">${esc(info.fileName)}${updated}　${judged}${info.others ? `　（他の銘柄 ${info.others} 件は表示していません）` : ''}　行をダブルクリックで、その取引の直前へ移動</span></div>`;
+  const head = `${bar}<span class="hint">${esc(info.fileName)}${updated}　${judged}${info.others ? `　（他の銘柄 ${info.others} 件は表示していません）` : ''}　行をダブルクリック: 済んだ取引はチャートでその場所を表示（時刻はそのまま）、まだの取引はエントリーの直前まで進む</span></div>`;
   const body = rows.map((r) => {
     const cls = r.status === 'wait' ? 'pending' : '';
     const pl = r.status === 'closed' ? money(r.profit + r.swap + r.commission) : r.status === 'open' && r.floating !== null ? money(r.floating) : '<td></td>';

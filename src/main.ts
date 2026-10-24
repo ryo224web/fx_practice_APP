@@ -1412,11 +1412,23 @@ function showHistoryTrade(ticket: number, closeTime: number) {
   if (!panes[0].overlay.showHistory) $('#toggle-history').click();
 }
 
+/**
+ * MT4 履歴の行をダブルクリックしたとき。
+ * - もうエントリーした取引（保有中・決済済み）: リプレイの時刻は動かさず、チャートをその取引の所へ動かして縦線を引く
+ * - まだの取引: エントリーする足の 1 本前まで進む（→ で進めるとエントリーが現れる）
+ */
 async function jumpToTrade(ticket: number) {
   const t = mt4Trades().find((x) => x.ticket === ticket);
   if (!t) return;
   const openUtc = mt4ToUtc(t.openServer);
-  // エントリーする足の 1 本前に置く（→ で進めるとエントリーが現れる）
+  const now = md.bid[cursor].t;
+  if (openUtc < now + 60_000) {
+    // 決済がまだ先なら、今の時刻までを見せる（先の足はまだ無い）
+    const closeUtc = t.closeServer === null ? now : Math.min(mt4ToUtc(t.closeServer), now);
+    for (const p of panes) p.overlay.setHighlight({ openTime: openUtc, closeTime: closeUtc });
+    for (const p of visiblePanes()) p.showTimeRange(openUtc, closeUtc);
+    return;
+  }
   await travel(Math.floor(openUtc / 60_000) * 60_000 - 60_000);
 }
 
