@@ -98,6 +98,8 @@ export interface AppState {
   indicatorSets?: Record<string, IndicatorConfig>;
   /** 時間足ごとの図形の色（決めていない時間足は初期値） */
   tfColors?: Record<string, string>;
+  /** 図形の種類ごとの線の太さ（1〜4。無ければ 2） */
+  lineWidths?: Partial<Record<string, number>>;
   /** フィボナッチ・エクスパンションの水準（割合。0.618 など）。無ければ初期値（MT4 と同じ）。全部の図形で共通 */
   fiboLevels?: { fibo?: number[]; fiboexp?: number[] };
   /** ツールバーに出さない時間足（ツールバーの時間足を右クリックして選ぶ） */

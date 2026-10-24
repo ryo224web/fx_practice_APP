@@ -25,7 +25,7 @@
         <button data-tool="fibo" title="フィボナッチ・リトレースメント（F）">Fib</button>
         <button data-tool="fiboexp" title="フィボナッチ・エクスパンション（E。A→B をドラッグし、もう 1 回クリックして C を置く）">FE</button>
         <button id="fibo-levels-btn" title="フィボナッチ・エクスパンションの水準を足す・消す・変える（図形のダブルクリックでも開く）">水準</button>
-        <button id="tf-colors-btn" title="図形の色を時間足ごとに決める（描いたチャートの時間足の色になる）">色</button>
+        <button id="tf-colors-btn" title="図形の色（時間足ごと）と線の太さ（図形ごと）を決める">色</button>
         <button id="clear-drawings" title="この銘柄の図形をすべて削除">全消去</button>
       </div>
       <select id="layout" aria-label="チャートの並べ方" title="チャートの並べ方（時間足とインジケーターはチャートごと。クリックしたチャートが操作の対象）">
@@ -114,9 +114,12 @@
 
     <dialog id="color-dialog">
       <form method="dialog">
-        <h2>図形の色（時間足ごと）</h2>
-        <p class="hint">図形は描いたチャートの時間足の色になります。色を変えると、描いてある図形の色も変わります。</p>
-        <table class="ind-table" id="color-table"></table>
+        <h2>図形の色と太さ</h2>
+        <p class="hint">図形は描いたチャートの時間足の色になります。色・太さを変えると、描いてある図形も変わります。</p>
+        <div class="color-cols">
+          <div><h3>色（時間足ごと）</h3><table class="ind-table" id="color-table"></table></div>
+          <div><h3>線の太さ（図形ごと）</h3><table class="ind-table" id="width-table"></table></div>
+        </div>
         <div class="buttons">
           <button type="button" id="color-reset">初期設定に戻す</button>
           <button value="cancel" formnovalidate>キャンセル</button>

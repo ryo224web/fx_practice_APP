@@ -1,6 +1,6 @@
 import { type CandlestickData, type Time, type UTCTimestamp } from 'lightweight-charts';
 import { commandIndex, KEY_COMMANDS, keyLabel, keyOf, resolveKeymap } from './ui/keys';
-import { DEFAULT_TF_COLORS, FIBO_EXP_LEVELS, FIBO_LEVELS, levelsFromPercents, type DrawingKind } from './chart/drawings';
+import { DEFAULT_LINE_WIDTH, DEFAULT_TF_COLORS, DRAWING_LABELS, FIBO_EXP_LEVELS, FIBO_LEVELS, levelsFromPercents, type DrawingKind } from './chart/drawings';
 import { DEFAULT_INDICATORS, normalizeIndicators, type IndicatorConfig } from './chart/indicators';
 import { ChartPane, type PaneHost } from './chart/pane';
 import { type LineEdit, type OrderPreview } from './chart/trades';
@@ -1732,9 +1732,13 @@ function applyIndicators(tfs: string[], cfg: IndicatorConfig) {
 }
 
 // ---------------- 図形の色（時間足ごと） ----------------
-function openColorDialog(colors: Record<string, string>) {
+function openColorDialog(colors: Record<string, string>, widths: Partial<Record<string, number>> = state.lineWidths ?? {}) {
   $('#color-table').innerHTML = (Object.keys(TIMEFRAMES) as Timeframe[])
     .map((tf) => `<tr><td>${tf}</td><td><input type="color" data-tf="${tf}" value="${colors[tf] ?? DEFAULT_TF_COLORS[tf]}" /></td></tr>`)
+    .join('');
+  const opts = (v: number) => [1, 2, 3, 4].map((n) => `<option value="${n}" ${n === v ? 'selected' : ''}>${n}</option>`).join('');
+  $('#width-table').innerHTML = (Object.keys(DRAWING_LABELS) as DrawingKind[])
+    .map((k) => `<tr><td>${DRAWING_LABELS[k]}</td><td><select data-kind="${k}">${opts(widths[k] ?? DEFAULT_LINE_WIDTH)}</select></td></tr>`)
     .join('');
   const dlg = $<HTMLDialogElement>('#color-dialog');
   if (!dlg.open) dlg.showModal();
@@ -1975,6 +1979,7 @@ function newProjectState(): AppState {
     panes: structuredClone(state.panes),
     indicatorSets: structuredClone(state.indicatorSets),
     tfColors: structuredClone(state.tfColors),
+    lineWidths: structuredClone(state.lineWidths),
     fiboLevels: structuredClone(state.fiboLevels),
     hiddenTfs: structuredClone(state.hiddenTfs),
     hideOneClick: state.hideOneClick,
@@ -2370,6 +2375,7 @@ function createPanes() {
     p.overlay.onEdit = onLineEdit;
     p.drawings.colorOf = (d) => (d.tf ? (state.tfColors?.[d.tf] ?? DEFAULT_TF_COLORS[d.tf] ?? d.color) : d.color);
     p.drawings.levelsOf = levelsOf;
+    p.drawings.widthOf = (k) => state.lineWidths?.[k] ?? DEFAULT_LINE_WIDTH;
     p.drawings.onEditLevels = () => openLevelsDialog();
     p.setRightOffset(state.rightOffset ?? 12);
     return p;
@@ -2572,11 +2578,14 @@ function setupControls() {
 
   $('#indicators-btn').addEventListener('click', () => openIndicatorDialog());
   $('#tf-colors-btn').addEventListener('click', () => openColorDialog(state.tfColors ?? {}));
-  $('#color-reset').addEventListener('click', () => openColorDialog({}));
+  $('#color-reset').addEventListener('click', () => openColorDialog({}, {}));
   $('#color-apply').addEventListener('click', () => {
     const colors: Record<string, string> = {};
     document.querySelectorAll<HTMLInputElement>('#color-table input[data-tf]').forEach((el) => (colors[el.dataset.tf!] = el.value));
     state.tfColors = colors;
+    const widths: Record<string, number> = {};
+    document.querySelectorAll<HTMLSelectElement>('#width-table select[data-kind]').forEach((el) => (widths[el.dataset.kind!] = Number(el.value)));
+    state.lineWidths = widths;
     for (const p of panes) p.drawings.refresh();
     $<HTMLDialogElement>('#color-dialog').close();
     save();

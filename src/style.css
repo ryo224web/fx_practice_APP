@@ -874,3 +874,16 @@ dialog .error {
   pointer-events: none;
   overflow: visible;
 }
+
+/* 図形の色と太さ: 2 列に並べる */
+.color-cols {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+.color-cols h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
+}

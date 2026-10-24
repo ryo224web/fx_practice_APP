@@ -5,7 +5,7 @@
 import type { AppState } from './state';
 
 /** 定型に入れる設定（検証・図形・MT4 履歴・キーボードは入れない） */
-export const TEMPLATE_KEYS = ['layout', 'panes', 'indicatorSets', 'tfColors', 'fiboLevels', 'hiddenTfs', 'rightOffset', 'zone', 'hideOneClick'] as const;
+export const TEMPLATE_KEYS = ['layout', 'panes', 'indicatorSets', 'tfColors', 'lineWidths', 'fiboLevels', 'hiddenTfs', 'rightOffset', 'zone', 'hideOneClick'] as const;
 export type TemplateSettings = Partial<Pick<AppState, (typeof TEMPLATE_KEYS)[number]>>;
 
 export interface ChartTemplate {

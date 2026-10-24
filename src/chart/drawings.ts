@@ -33,6 +33,9 @@ export interface Drawing {
   ray?: boolean;
 }
 
+/** 図形の線の太さ（初期値） */
+export const DEFAULT_LINE_WIDTH = 2;
+
 /** 時間足ごとの図形の色（初期値） */
 export const DEFAULT_TF_COLORS: Record<string, string> = {
   M1: '#9a9a9a',
@@ -142,6 +145,8 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   tf = 'M15';
   /** 図形の色（時間足ごとの色を main.ts で決める） */
   colorOf: (d: Drawing) => string = (d) => (d.tf ? (DEFAULT_TF_COLORS[d.tf] ?? d.color) : d.color);
+  /** 図形の種類ごとの線の太さ（「色・太さ」で決める。選んでいるときは 1 太くする） */
+  widthOf: (kind: DrawingKind) => number = () => DEFAULT_LINE_WIDTH;
   /** フィボナッチ・エクスパンションの水準（main.ts で「水準」の設定を渡す） */
   levelsOf: (kind: 'fibo' | 'fiboexp') => readonly number[] = (k) => (k === 'fibo' ? FIBO_LEVELS : FIBO_EXP_LEVELS);
   /** フィボナッチの図形をダブルクリックしたとき（水準の設定を開く） */
@@ -583,8 +588,9 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     const color = this.colorOf(d);
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
-    // 選んでいないときも太さ 2（1 だと薄く暗く見える）。選んでいるときは 3
-    ctx.lineWidth = sel ? 3 : 2;
+    // 太さは種類ごとに決める（初期値 2。1 だと薄く暗く見えることがある）。選んでいるときは 1 太くする
+    const width = this.widthOf(d.kind);
+    ctx.lineWidth = sel ? width + 1 : width;
     ctx.font = '11px system-ui, sans-serif';
     const [a, b] = pts;
     // フィボの水準の数値は、線の右端（価格の目盛りの手前）に、線のすぐ上に書く
