@@ -887,3 +887,61 @@ dialog .error {
   color: var(--muted);
   font-weight: 500;
 }
+
+/* 図形を選んでいるときの、線の太さと種類の欄（チャートの右上） */
+.pane .draw-style {
+  position: absolute;
+  top: 6px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel, #161b22);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.pane .draw-style[hidden] {
+  display: none;
+}
+.pane .draw-style button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+}
+.pane .draw-style button:hover {
+  background: var(--grid, #1c2128);
+}
+.pane .draw-style button.on {
+  border-color: var(--accent, #4493f8);
+}
+.pane .draw-style button span {
+  display: block;
+  border-radius: 50%;
+  background: currentColor;
+}
+.pane .draw-style i {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--border);
+}
+.pane .draw-style .grip {
+  padding: 0 4px 0 0;
+  color: var(--muted);
+  cursor: grab;
+  font-weight: normal;
+  letter-spacing: -2px;
+  user-select: none;
+}
+.pane .draw-style button.ray {
+  font-weight: 600;
+}

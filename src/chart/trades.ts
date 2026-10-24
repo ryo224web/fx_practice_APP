@@ -3,7 +3,7 @@
 // - ポジションの線をドラッグすると、動かした向きに応じて S/L か T/P を新しく置ける
 // - 決済済みの取引は、建てた所と決済した所を矢印と点線で結ぶ
 // - EasyOrder の S/L・T/P・エントリーの線（発注前）もドラッグで動かせる
-// - 読み込んだ MT4 の取引は紫で表示する（記録のままなので動かせない）
+// - 読み込んだ MT4 の取引は動かせない（記録のまま）。保有中の線は EasyOrder と同じ色、決済した取引の印は紫
 
 import {
   LineStyle,
@@ -149,10 +149,11 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
       if (pv.sl !== null) want.push({ key: 'ps', ticket: 0, role: 'eo-sl', price: pv.sl, color: EO_SL, title: pv.labels.sl, style: LineStyle.Solid, width: 2 });
       if (pv.tp !== null) want.push({ key: 'pt', ticket: 0, role: 'eo-tp', price: pv.tp, color: EO_TP, title: pv.labels.tp, style: LineStyle.Solid, width: 2 });
     }
+    // MT4 の取引の保有中の線は、EasyOrder と同じ色（エントリーは緑、S/L は赤、T/P はスカイブルー）
     for (const m of view.imported?.open ?? []) {
-      want.push({ key: `me${m.ticket}`, ticket: m.ticket, role: 'entry', price: m.openPrice, color: MT4, title: `MT4 #${m.ticket} ${m.side} ${lot(m.lots)}`, style: LineStyle.Dashed, fixed: true });
-      if (m.sl !== null) want.push({ key: `ms${m.ticket}`, ticket: m.ticket, role: 'sl', price: m.sl, color: MT4, title: `MT4 #${m.ticket} sl`, style: LineStyle.Dotted, fixed: true });
-      if (m.tp !== null) want.push({ key: `mt${m.ticket}`, ticket: m.ticket, role: 'tp', price: m.tp, color: MT4, title: `MT4 #${m.ticket} tp`, style: LineStyle.Dotted, fixed: true });
+      want.push({ key: `me${m.ticket}`, ticket: m.ticket, role: 'entry', price: m.openPrice, color: EO_ENTRY, title: `MT4 #${m.ticket} ${m.side} ${lot(m.lots)}`, style: LineStyle.Dashed, fixed: true });
+      if (m.sl !== null) want.push({ key: `ms${m.ticket}`, ticket: m.ticket, role: 'sl', price: m.sl, color: EO_SL, title: `MT4 #${m.ticket} sl`, style: LineStyle.Dotted, fixed: true });
+      if (m.tp !== null) want.push({ key: `mt${m.ticket}`, ticket: m.ticket, role: 'tp', price: m.tp, color: EO_TP, title: `MT4 #${m.ticket} tp`, style: LineStyle.Dotted, fixed: true });
     }
     // ドラッグ中の線は、離すまで動かした位置に置いておく
     if (this.drag) {

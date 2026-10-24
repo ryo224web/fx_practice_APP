@@ -29,8 +29,27 @@ export interface Drawing {
   color: string;
   /** 描いた時間足。色はこの時間足の色になる（「図形の色」で時間足ごとに決める） */
   tf?: string;
-  /** チャネルを右へ延ばすか（レイ。MT4 と同じ）。無ければ延ばす。ダブルクリックで切り替える */
+  /** 右へ延ばすか（レイ。MT4 と同じ）。トレンドラインとチャネルだけ。無ければチャネルは延ばす・トレンドラインは延ばさない。右上の欄の R で切り替える（チャネルはダブルクリックでも） */
   ray?: boolean;
+  /** この図形の線の太さ（1〜4）。無ければ種類ごとの太さ（「色」で決める） */
+  width?: number;
+  /** この図形の線の種類。無ければ実線 */
+  style?: LineKind;
+}
+
+/** レイ（右へ延ばす）を切り替えられる図形 */
+export const hasRay = (kind: DrawingKind) => kind === 'trend' || kind === 'channel';
+/** 右へ延ばしているか（決めていなければ、チャネルは延ばす・トレンドラインは延ばさない） */
+export const rayOn = (d: Drawing) => d.ray ?? d.kind === 'channel';
+
+/** 線の種類（図形を選んだときに右上の欄で変える） */
+export type LineKind = 'solid' | 'dotted' | 'dashed';
+export const LINE_KINDS: LineKind[] = ['solid', 'dotted', 'dashed'];
+/** 線の種類の点線の間隔（太さに合わせて伸ばす） */
+export function lineDash(kind: LineKind | undefined, width: number): number[] {
+  if (kind === 'dotted') return [width, width * 2];
+  if (kind === 'dashed') return [width * 4, width * 3];
+  return [];
 }
 
 /** 図形の線の太さ（初期値） */
@@ -147,6 +166,18 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   colorOf: (d: Drawing) => string = (d) => (d.tf ? (DEFAULT_TF_COLORS[d.tf] ?? d.color) : d.color);
   /** 図形の種類ごとの線の太さ（「色・太さ」で決める。選んでいるときは 1 太くする） */
   widthOf: (kind: DrawingKind) => number = () => DEFAULT_LINE_WIDTH;
+  /** 描き直すたびに呼ぶ（選んでいる図形が変わったら、右上の太さ・線の種類の欄を出す・消すため） */
+  onRefresh: () => void = () => {};
+
+  /** 選んでいる図形（無ければ null） */
+  selected(): Drawing | null {
+    return this.drawings.find((x) => x.id === this.selectedId) ?? null;
+  }
+
+  /** 図形の線の太さ（その図形で決めていなければ種類ごとの太さ） */
+  lineWidthOf(d: Drawing): number {
+    return d.width ?? this.widthOf(d.kind);
+  }
   /** フィボナッチ・エクスパンションの水準（main.ts で「水準」の設定を渡す） */
   levelsOf: (kind: 'fibo' | 'fiboexp') => readonly number[] = (k) => (k === 'fibo' ? FIBO_LEVELS : FIBO_EXP_LEVELS);
   /** フィボナッチの図形をダブルクリックしたとき（水準の設定を開く） */
@@ -196,7 +227,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     // チャネルはダブルクリックでレイ（右へ延ばす）を切り替える
     if (d && d.kind === 'channel') {
       e.stopPropagation();
-      d.ray = d.ray === false;
+      d.ray = !rayOn(d);
       this.onChange();
       this.refresh();
     }
@@ -321,6 +352,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
 
   refresh() {
     this.requestUpdate();
+    this.onRefresh();
   }
 
   // ---- 座標変換 ----
@@ -365,14 +397,14 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
           hit = Math.abs(px.x - a.x) <= HIT;
           break;
         case 'trend':
-          hit = distToSegment(px, a, b) <= HIT;
+          hit = distToSegment(px, a, rayOn(d) ? rayEnd(a, b, w) : b) <= HIT;
           break;
         case 'poly':
           for (let q = 1; q < pts.length; q++) if (distToSegment(px, pts[q - 1]!, pts[q]!) <= HIT) hit = true;
           break;
         case 'channel': {
           const dy = channelOffset(a, b, pts[2]);
-          const end = d.ray === false ? b : rayEnd(a, b, w);
+          const end = rayOn(d) ? rayEnd(a, b, w) : b;
           hit = [0, dy / 2, dy].some((o) => distToSegment(px, { x: a.x, y: a.y + o }, { x: end.x, y: end.y + o }) <= HIT);
           break;
         }
@@ -588,9 +620,12 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     const color = this.colorOf(d);
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
-    // 太さは種類ごとに決める（初期値 2。1 だと薄く暗く見えることがある）。選んでいるときは 1 太くする
-    const width = this.widthOf(d.kind);
+    // 太さは図形ごと（決めていなければ種類ごと。初期値 2。1 だと薄く暗く見えることがある）。選んでいるときは 1 太くする
+    const width = this.lineWidthOf(d);
     ctx.lineWidth = sel ? width + 1 : width;
+    // 線の種類（実線・点線・破線）。フィボの A→B の補助線とチャネルの中央線は、これとは別にいつも細かい点線
+    const dash = lineDash(d.style, width);
+    ctx.setLineDash(dash);
     ctx.font = '11px system-ui, sans-serif';
     const [a, b] = pts;
     // フィボの水準の数値は、線の右端（価格の目盛りの手前）に、線のすぐ上に書く
@@ -608,9 +643,11 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       case 'vline':
         line(a.x, 0, a.x, h);
         break;
-      case 'trend':
-        line(a.x, a.y, b.x, b.y);
+      case 'trend': {
+        const end = rayOn(d) ? rayEnd(a, b, w) : b;
+        line(a.x, a.y, end.x, end.y);
         break;
+      }
       case 'poly':
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
@@ -621,7 +658,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         // 描いている途中（C がまだ無い）も、描き終えたときと同じ形で見せる
         const dy = channelOffset(a, b, pts[2]);
         // レイを外していれば B まで（右へ延ばさない）
-        const end = d.ray === false ? b : rayEnd(a, b, w);
+        const end = rayOn(d) ? rayEnd(a, b, w) : b;
         ctx.globalAlpha = 0.08;
         ctx.beginPath();
         ctx.moveTo(a.x, a.y);
@@ -651,7 +688,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       case 'fibo': {
         ctx.setLineDash([4, 3]);
         line(a.x, a.y, b.x, b.y);
-        ctx.setLineDash([]);
+        ctx.setLineDash(dash);
         const x0 = Math.min(a.x, b.x);
         for (const lv of this.levelsOf('fibo')) {
           const y = b.y + (a.y - b.y) * lv;
@@ -668,7 +705,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         ctx.setLineDash([4, 3]);
         line(a.x, a.y, b.x, b.y);
         line(b.x, b.y, c.x, c.y);
-        ctx.setLineDash([]);
+        ctx.setLineDash(dash);
         for (const lv of this.levelsOf('fiboexp')) {
           const y = c.y + (b.y - a.y) * lv;
           line(c.x, y, w, y);
@@ -678,6 +715,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       }
     }
     if (sel && !onePoint(d.kind)) {
+      ctx.setLineDash([]);
       ctx.fillStyle = '#fff';
       for (const p of handlesOf(d.kind, pts)) {
         ctx.fillRect(p.x - HANDLE, p.y - HANDLE, HANDLE * 2, HANDLE * 2);

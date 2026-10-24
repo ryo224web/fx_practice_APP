@@ -2354,6 +2354,11 @@ function createPanes() {
     toggleCrosshair: () => setCrosshair(!crosshairOn),
     crosshairOn: () => crosshairOn,
     pip: () => spec.pip,
+    styleBarPos: () => styleBarPos,
+    setStyleBarPos: (pos) => {
+      styleBarPos = pos;
+      void saveAppSettings({ styleBarPos: pos });
+    },
     rangeChanged: (p) => {
       // チャートはいつも連動する。マウスで動かしているチャートにだけ、ほかを合わせる（合わせた側の動きでは何もしない）
       if (p !== leader || p.el.hidden) return;
@@ -2729,6 +2734,8 @@ async function jump() {
 /** キーボードのショートカット（「ショートカット」の画面で変えられる。src/ui/keys.ts） */
 /** キーボードのショートカット（全部のプロジェクトで共通。src/appSettings.ts） */
 let keymap: Record<string, string[]> | undefined;
+/** 図形の太さ・線の種類の欄の場所（全部のプロジェクトで共通） */
+let styleBarPos: { right: number; top: number } | null = null;
 let keyIndex = commandIndex(resolveKeymap(undefined));
 
 function runCommand(id: string) {
@@ -2817,6 +2824,7 @@ async function start() {
   state = { ...defaultState(), ...loadState() };
   // キーの設定は全部のプロジェクトで共通。共通の設定がまだ無ければ（以前はプロジェクトごと）、今のプロジェクトの設定を共通にする
   keymap = settings.keymap ?? state.keymap;
+  styleBarPos = settings.styleBarPos ?? null;
   if (!settings.keymap && state.keymap) void saveAppSettings({ keymap: state.keymap });
   keyIndex = commandIndex(resolveKeymap(keymap));
   migratePanes();

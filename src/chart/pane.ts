@@ -3,7 +3,7 @@
 
 import { CandlestickSeries, CrosshairMode, createChart, type CandlestickData, type IChartApi, type ISeriesApi, type Time } from 'lightweight-charts';
 import { mergeBars, TIMEFRAMES, type Aggregated, type Bar, type Timeframe } from '../core/candles';
-import { DrawingManager } from './drawings';
+import { DrawingManager, hasRay, LINE_KINDS, lineDash, rayOn, type LineKind } from './drawings';
 import { IndicatorLayer, type IndicatorConfig } from './indicators';
 import { TimeMapper } from './mapper';
 import { TradeOverlay } from './trades';
@@ -42,6 +42,10 @@ export interface PaneHost {
   crosshairOn(): boolean;
   /** 1 pip の値幅（測るときに使う） */
   pip(): number;
+  /** 図形の太さ・線の種類の欄を置いた場所（チャートの右端・上端からの距離。px）。動かしていなければ null */
+  styleBarPos(): { right: number; top: number } | null;
+  /** 図形の太さ・線の種類の欄を動かした（離したときに 1 回） */
+  setStyleBarPos(pos: { right: number; top: number }): void;
 }
 
 /**
@@ -83,6 +87,9 @@ export class ChartPane {
   readonly drawings: DrawingManager;
   readonly indicators: IndicatorLayer;
   private readonly legend: HTMLElement;
+  /** 図形を選んでいるときに右上に出す、線の太さと種類の欄 */
+  private readonly styleBar: HTMLElement;
+  private styleBarKey = '';
   /** MT4 の「チャートの右端をずらす」三角のつまみ */
   private readonly shiftHandle: HTMLElement;
   private shown = { tf: '' as Timeframe | '', k: -1, version: -1, start: -1 };
@@ -139,6 +146,45 @@ export class ChartPane {
     this.series.attachPrimitive(this.overlay);
     this.drawings = new DrawingManager(box, this.mapper);
     this.series.attachPrimitive(this.drawings);
+    // 図形を選んでいる間だけ、右上（価格の目盛りの手前）に線の太さ（1〜4）と種類（実線・点線・破線）の欄を出す
+    this.styleBar = document.createElement('div');
+    this.styleBar.className = 'draw-style';
+    this.styleBar.hidden = true;
+    el.append(this.styleBar);
+    // 欄を押しても、図形の選択が外れたりチャートが動いたりしないように。左端のつまみをつかむと欄を動かせる
+    this.styleBar.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (!(e.target as HTMLElement).closest('.grip')) return;
+      const area = el.getBoundingClientRect();
+      const start = this.styleBar.getBoundingClientRect();
+      // つかんだ所から欄の右上までのずれ
+      const dx = start.right - e.clientX;
+      const dy = e.clientY - start.top;
+      let pos = { right: area.right - start.right, top: start.top - area.top };
+      const move = (m: MouseEvent) => {
+        pos = { right: Math.round(area.right - (m.clientX + dx)), top: Math.round(m.clientY - dy - area.top) };
+        this.placeStyleBar(pos);
+      };
+      const up = () => {
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', up);
+        host.setStyleBarPos(pos);
+      };
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up);
+    });
+    this.styleBar.addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button');
+      const d = this.drawings.selected();
+      if (!b || !d) return;
+      if (b.dataset.w) d.width = Number(b.dataset.w);
+      if (b.dataset.s) d.style = b.dataset.s as LineKind;
+      if (b.dataset.ray) d.ray = !rayOn(d);
+      this.drawings.onChange();
+      this.drawings.refresh();
+    });
+    this.drawings.onRefresh = () => this.renderStyleBar();
     this.indicators = new IndicatorLayer(this.chart);
     this.indicators.setConfig(indicators);
 
@@ -485,6 +531,43 @@ export class ChartPane {
       <circle cx="${a.x}" cy="${a.y}" r="3" fill="${color}" />
       <rect x="${lx}" y="${ly}" width="${tw}" height="20" rx="4" fill="#161b22" stroke="${color}" />
       <text x="${lx + 6}" y="${ly + 14}" fill="#e6edf3" font-size="12" font-family="system-ui, sans-serif">${text}</text>`;
+  }
+
+  private renderStyleBar() {
+    const d = this.drawings.selected();
+    const w = d ? this.drawings.lineWidthOf(d) : 0;
+    const st = d?.style ?? 'solid';
+    const key = d ? `${d.id}:${w}:${st}:${rayOn(d)}` : '';
+    if (key === this.styleBarKey) return;
+    this.styleBarKey = key;
+    this.styleBar.hidden = !d;
+    if (!d) return;
+    const names: Record<LineKind, string> = { solid: '実線', dotted: '点線', dashed: '破線' };
+    this.styleBar.innerHTML =
+      '<b class="grip" title="つかんで欄を動かす">⋮⋮</b>' +
+      [1, 2, 3, 4]
+        .map((n) => `<button type="button" data-w="${n}" class="${n === w ? 'on' : ''}" title="線の太さ ${n}"><span style="width:${n * 2 + 3}px;height:${n * 2 + 3}px"></span></button>`)
+        .join('') +
+      '<i></i>' +
+      LINE_KINDS.map(
+        (k) =>
+          `<button type="button" data-s="${k}" class="${k === st ? 'on' : ''}" title="${names[k]}"><svg width="30" height="10"><line x1="2" y1="5" x2="28" y2="5" stroke="currentColor" stroke-width="2" stroke-dasharray="${lineDash(k, 2).join(' ')}" /></svg></button>`,
+      ).join('') +
+      (hasRay(d.kind)
+        ? `<i></i><button type="button" data-ray="1" class="ray ${rayOn(d) ? 'on' : ''}" title="レイ（右へ延ばす）。押すたびに延ばす・延ばさないを切り替える">R</button>`
+        : '');
+    this.placeStyleBar(this.host.styleBarPos());
+  }
+
+  /** 欄を置く（チャートの右端・上端からの距離。決めていなければ価格の目盛りの手前の右上）。チャートからはみ出さないようにする */
+  private placeStyleBar(pos: { right: number; top: number } | null) {
+    const p = pos ?? { right: this.chart.priceScale('right').width() + 8, top: 6 };
+    const w = this.el.clientWidth;
+    const h = this.el.clientHeight;
+    const bw = this.styleBar.offsetWidth;
+    const bh = this.styleBar.offsetHeight;
+    this.styleBar.style.right = `${Math.max(0, Math.min(w - bw, p.right))}px`;
+    this.styleBar.style.top = `${Math.max(0, Math.min(h - bh, p.top))}px`;
   }
 
   setCrosshair(on: boolean) {
