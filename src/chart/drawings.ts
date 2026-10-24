@@ -98,6 +98,13 @@ function onePoint(kind: DrawingKind) {
   return kind === 'hline' || kind === 'vline';
 }
 
+/** つまみの位置。長方形は 4 隅（2 = A の時刻・B の価格、3 = B の時刻・A の価格）、ほかは点そのもの */
+function handlesOf(kind: DrawingKind, pts: Px[]): Px[] {
+  if (kind !== 'rect' || pts.length < 2) return pts;
+  const [a, b] = pts;
+  return [a, b, { x: a.x, y: b.y }, { x: b.x, y: a.y }];
+}
+
 function distToSegment(p: Px, a: Px, b: Px): number {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
@@ -328,7 +335,8 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       if (pts.some((p) => !p)) continue;
       const [a, b] = pts as Px[];
       if (d.id === this.selectedId && !onePoint(d.kind)) {
-        for (let h = 0; h < pts.length; h++) if (Math.hypot(px.x - pts[h]!.x, px.y - pts[h]!.y) <= HIT) return { id: d.id, handle: h };
+        const hs = handlesOf(d.kind, pts as Px[]);
+        for (let h = 0; h < hs.length; h++) if (Math.hypot(px.x - hs[h].x, px.y - hs[h].y) <= HIT) return { id: d.id, handle: h };
       }
       let hit = false;
       switch (d.kind) {
@@ -482,6 +490,11 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     if (Math.abs(dl) > 0 || Math.abs(dp) > 0) drag.moved = true;
     d.points = drag.orig.map((o, k) => {
       if (drag.handle === -1) return { t: this.mapper.toTime(o.l + dl), p: o.p + dp };
+      // 長方形の残りの 2 隅: 2 = (A の時刻, B の価格)、3 = (B の時刻, A の価格)
+      if (d.kind === 'rect' && drag.handle >= 2) {
+        const timeOf = drag.handle === 2 ? 0 : 1;
+        return { t: this.mapper.toTime(k === timeOf ? m.l : o.l), p: k === timeOf ? o.p : m.p };
+      }
       if (k === drag.handle) return { t: this.mapper.toTime(m.l), p: m.p };
       return { t: this.mapper.toTime(o.l), p: o.p };
     });
@@ -640,7 +653,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     }
     if (sel && !onePoint(d.kind)) {
       ctx.fillStyle = '#fff';
-      for (const p of pts) {
+      for (const p of handlesOf(d.kind, pts)) {
         ctx.fillRect(p.x - HANDLE, p.y - HANDLE, HANDLE * 2, HANDLE * 2);
         ctx.strokeRect(p.x - HANDLE, p.y - HANDLE, HANDLE * 2, HANDLE * 2);
       }
