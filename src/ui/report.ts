@@ -25,59 +25,69 @@ export interface ReportInfo {
   hasBalance: boolean;
 }
 
-function item(label: string, value: string, tone = '', hint = '') {
-  return `<div class="stat" ${hint ? `title="${esc(hint)}"` : ''}><span>${label}</span><b class="${tone}">${value}</b></div>`;
+type Tone = 'high' | 'low' | 'case';
+const BADGE: Record<Tone, string> = { high: '高いほど良い', low: '低いほど良い', case: '状況による' };
+
+/** 説明つきの表の 1 行: 名前・値・目安・説明 */
+function row(label: string, value: string, tone: string, badge: Tone, note: string) {
+  return `<tr><td>${label}</td><td class="num ${tone}">${value}</td><td><span class="badge ${badge}">${BADGE[badge]}</span></td><td class="note">${esc(note)}</td></tr>`;
 }
 
-function group(title: string, items: string[]) {
-  return `<section class="stat-group"><h4>${title}</h4>${items.join('')}</section>`;
+function section(title: string, rows: string[]) {
+  return `<tr class="section"><th colspan="4">${title}</th></tr>${rows.join('')}`;
 }
 
-function summaryGroups(s: Summary, info: ReportInfo): string {
-  return [
-    group('概要', [
-      item('取引回数', `${s.trades} 回`),
-      item('勝率', pct(s.winRate)),
-      item('純損益', yen(s.net), cls(s.net)),
-      ...(info.hasBalance ? [item('初期資金からの増減', pct(s.returnPct), cls(s.returnPct))] : []),
-      item('プロフィットファクター', num(s.profitFactor, 2), '', '総利益 ÷ 総損失。1 より大きければ利益が出ている'),
-      item('期待値（1 回あたり）', yen(s.expectancy), cls(s.expectancy), '純損益 ÷ 取引回数'),
-      item('リスクリワード', num(s.payoff, 2), '', '平均利益 ÷ 平均損失'),
+/** 主な数字を、目安（高いほど良い・低いほど良い）と説明つきで並べる */
+function explainedTable(s: Summary, info: ReportInfo): string {
+  const perMonth = (v: number) => (s.months > 0 ? v / s.months : NaN);
+  const one = s.months <= 1 ? '（1 か月分なので合計と同じ）' : `（${s.months} か月の平均）`;
+  return `<table class="report-table explained"><tbody>${[
+    section('トレード', [
+      row('合計トレード', `${s.trades}`, '', 'case', '期間中に決済したトレードの数。多い・少ないに良し悪しはなく、取引の頻度を表す'),
+      row('勝ちトレード', `${s.wins}`, '', 'high', '損益がプラスで終わったトレードの数'),
+      row('負けトレード', `${s.losses}`, '', 'low', `損益がマイナスで終わったトレードの数${s.even ? `（ちょうど 0 が ${s.even} 回）` : ''}`),
+      row('連続勝ち', `${s.maxConsecWins}`, '', 'high', '一番長く続いた連勝の数'),
+      row('連続負け', `${s.maxConsecLosses}`, '', 'low', '一番長く続いた連敗の数。大きいほど、資金が続けて減るリスクが高い'),
+      row('トレード / 日', num(s.tradesPerDay, 2), '', 'case', '1 日あたりの平均の回数（最初のエントリーから最後の決済までの日数で割る）'),
+      row('トレード / 月', num(perMonth(s.trades), 1), '', 'case', `1 か月あたりの回数${one}`),
+      row('勝ちトレード / 月', num(perMonth(s.wins), 1), '', 'high', `1 か月あたりの勝ちの数${one}`),
+      row('負けトレード / 月', num(perMonth(s.losses), 1), '', 'low', `1 か月あたりの負けの数${one}`),
+      row('1 トレードの最大利益', yen(s.maxWin), 'pos', 'high', '一番利益が大きかったトレード。この 1 回に頼りすぎていないかも見る'),
+      row('1 トレードの最大損失', yen(s.maxLoss), 'neg', 'low', '一番損失が大きかったトレード（小さいほどリスクが低い）'),
     ]),
-    group('損益', [
-      item('勝ち / 負け / 引き分け', `${s.wins} / ${s.losses} / ${s.even}`),
-      item('総利益', yen(s.grossProfit), 'pos'),
-      item('総損失', yen(s.grossLoss), 'neg'),
-      item('平均利益', yen(s.avgWin), 'pos'),
-      item('平均損失', yen(s.avgLoss), 'neg'),
-      item('最大利益', yen(s.maxWin), 'pos'),
-      item('最大損失', yen(s.maxLoss), 'neg'),
+    section('収益', [
+      row('純損益', yen(s.net), cls(s.net), 'high', '期間の損益の合計（スワップ・手数料込み）'),
+      ...(info.hasBalance ? [row('初期資金からの増減', pct(s.returnPct), cls(s.returnPct), 'high', '純損益 ÷ 初期資金')] : []),
+      row('総利益', yen(s.grossProfit), 'pos', 'high', '勝ちトレードの利益の合計'),
+      row('総損失', yen(s.grossLoss), 'neg', 'low', '負けトレードの損失の合計（小さいほど良い）'),
+      row('純損益 / 月', yen(perMonth(s.net)), cls(s.net), 'high', `1 か月あたりの純損益${one}`),
+      row('平均利益', yen(s.avgWin), 'pos', 'high', '勝ちトレード 1 回あたりの利益'),
+      row('平均損失', yen(s.avgLoss), 'neg', 'low', '負けトレード 1 回あたりの損失（小さいほど良い）'),
+      row('期待値（1 回あたり）', yen(s.expectancy), cls(s.expectancy), 'high', '純損益 ÷ トレード数。1 回トレードするといくら増える（減る）か'),
+      row('リスクリワード', num(s.payoff, 2), '', 'high', '平均利益 ÷ 平均損失。1 より大きければ、勝つときの方が大きい'),
+      row('最大ドローダウン', `${yen(s.maxDrawdown)}${info.hasBalance ? `（${pct(s.maxDrawdownPct)}）` : ''}`, 'neg', 'low', '残高（累積の損益）が一番高い所から、どれだけ下がったかの最大'),
+      row('プロフィットファクター', num(s.profitFactor, 2), '', 'high', '総利益 ÷ 総損失。1 未満は損失の方が多い。1.5 以上あると良いとされる'),
+      row('利率 %', num(s.returnToDrawdownPct, 2), cls(s.returnToDrawdownPct), 'high', '純損益 ÷ 最大ドローダウン × 100。下げの大きさに対して、どれだけ増えたか'),
     ]),
-    group('pips', [
-      item('合計', pips(s.totalPips), cls(s.totalPips)),
-      item('平均', pips(s.avgPips), cls(s.avgPips)),
-      item('勝ちの平均', pips(s.avgWinPips), 'pos'),
-      item('負けの平均', pips(s.avgLossPips), 'neg'),
-      item('最大の含み益の平均（MFE）', pips(s.avgMfe), '', '保有中に一番有利だったときの値幅'),
-      item('最大の含み損の平均（MAE）', pips(s.avgMae), '', '保有中に一番不利だったときの値幅'),
+    section('pips', [
+      row('合計', pips(s.totalPips), cls(s.totalPips), 'high', '値幅の合計（勝ちがプラス）。銘柄が混ざっていると、銘柄ごとの 1 pip の大きさが違う'),
+      row('平均', pips(s.avgPips), cls(s.avgPips), 'high', '1 トレードあたりの値幅'),
+      row('勝ちの平均', pips(s.avgWinPips), 'pos', 'high', '勝ちトレードの平均の値幅'),
+      row('負けの平均', pips(s.avgLossPips), 'neg', 'low', '負けトレードの平均の値幅（小さいほど良い）'),
+      row('最大の含み益の平均（MFE）', pips(s.avgMfe), '', 'case', '保有中に一番有利だったときの値幅。今の銘柄で価格データがある取引だけ'),
+      row('最大の含み損の平均（MAE）', pips(s.avgMae), '', 'case', '保有中に一番不利だったときの値幅。今の銘柄で価格データがある取引だけ'),
+      row('平均 R', s.rTrades ? `${num(s.avgR, 2)} R（${s.rTrades} 回）` : '—', cls(s.avgR), 'high', '決済した時点の S/L までの値幅を 1R とした損益。S/L を建値や利益側に動かした取引は除く'),
     ]),
-    group('リスク', [
-      item('最大ドローダウン', `${yen(s.maxDrawdown)}${info.hasBalance ? `（${pct(s.maxDrawdownPct)}）` : ''}`, 'neg', '残高の一番高い所からの下げ'),
-      item('リカバリーファクター', num(s.recoveryFactor, 2), '', '純損益 ÷ 最大ドローダウン'),
-      item('最大連勝', `${s.maxConsecWins} 回`),
-      item('最大連敗', `${s.maxConsecLosses} 回`),
-      item('平均 R', s.rTrades ? `${num(s.avgR, 2)} R（${s.rTrades} 回）` : '—', cls(s.avgR), '決済した時点の S/L までの値幅を 1R とした損益'),
+    section('その他・統計', [
+      row('最大ロット', num(s.maxLots, 2), '', 'case', '使った一番大きいロット。資金管理のルールどおりかを見る'),
+      row('リカバリーファクター', num(s.recoveryFactor, 2), cls(s.recoveryFactor), 'high', '純損益 ÷ 最大ドローダウン。下げからの回復の力の目安'),
+      row('リライアビリティファクター', num(s.reliability, 2), cls(s.reliability), 'high', '（平均損益 ÷ 損益の標準偏差）× √トレード数。プラスで大きいほど、偶然ではなく勝てている目安（2 以上でかなり確か）'),
+      row('勝率', pct(s.winRate), '', 'high', '勝ちトレードの割合。平均利益と平均損失の比とあわせて見る'),
+      row('負け率', pct(s.trades ? (s.losses / s.trades) * 100 : NaN), '', 'low', '負けトレードの割合'),
+      row('平均の保有時間', `${mins(s.avgHold)}（勝ち ${mins(s.avgHoldWin)} / 負け ${mins(s.avgHoldLoss)}）`, '', 'case', '建ててから決済するまでの時間'),
+      row('決済の内訳', `S/L ${s.slHits} / T/P ${s.tpHits} / 手動 ${s.manual}`, '', 'case', '記録の価格が S/L・T/P と同じかで見分ける'),
     ]),
-    group('保有時間・頻度', [
-      item('平均', mins(s.avgHold)),
-      item('勝ちの平均', mins(s.avgHoldWin)),
-      item('負けの平均', mins(s.avgHoldLoss)),
-      item('最長 / 最短', `${mins(s.maxHold)} / ${mins(s.minHold)}`),
-      item('期間', `${num(s.days, 1)} 日`),
-      item('1 日あたり', `${num(s.tradesPerDay, 1)} 回`),
-    ]),
-    group('決済の内訳', [item('S/L', `${s.slHits} 回`), item('T/P', `${s.tpHits} 回`), item('手動', `${s.manual} 回`)]),
-  ].join('');
+  ].join('')}</tbody></table>`;
 }
 
 function sideTable(a: Analysis): string {
@@ -106,6 +116,19 @@ function bucketTable(bs: Bucket[], head: string): string {
     .join('')}</tbody></table>`;
 }
 
+/** 週別・時間帯別などの表（買い・売りの内訳つき） */
+function sideBucketTable(bs: Bucket[], head: string): string {
+  const used = bs.filter((b) => b.trades > 0);
+  if (!used.length) return '<p class="hint">データがありません</p>';
+  const rate = (w: number, n: number) => (n ? pct((w / n) * 100) : '—');
+  return `<table class="report-table"><thead><tr><th>${head}</th><th>回数</th><th>純損益</th><th>勝率</th><th>買い</th><th>買いの勝率</th><th>売り</th><th>売りの勝率</th></tr></thead><tbody>${used
+    .map(
+      (b) =>
+        `<tr><td>${esc(b.label)}</td><td class="num">${b.trades}</td><td class="num ${cls(b.net)}">${yen(b.net)}</td><td class="num">${pct(b.winRate)}</td><td class="num">${b.longs}</td><td class="num">${rate(b.longWins, b.longs)}</td><td class="num">${b.shorts}</td><td class="num">${rate(b.shortWins, b.shorts)}</td></tr>`,
+    )
+    .join('')}</tbody></table>`;
+}
+
 const toBars = (bs: Bucket[]) => bs.map((b) => ({ label: b.label, value: b.net, note: `${b.trades} 回・勝率 ${pct(b.winRate)}` }));
 
 /** 成績タブの一番上に置く、簡単な一覧（詳しいものはその下と、書き出したレポートで見る） */
@@ -127,12 +150,14 @@ export function reportBody(a: Analysis, info: ReportInfo, initialBalance: number
   return `<div class="report">
     ${card('気づき（数字から読み取れること）', a.insights.length ? `<ul class="insights">${a.insights.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '<p class="hint">取引が増えると表示します</p>', true)}
     ${card('残高の推移（薄い赤はドローダウン）', equityChart(a.equity, info.hasBalance ? initialBalance : 0), true)}
-    ${card('主な数字', `<div class="stat-groups">${summaryGroups(s, info)}</div>`, true)}
+    ${card('主な数字（目安と説明つき）', explainedTable(s, info), true)}
+    ${a.bySymbol.length > 1 ? card('銘柄別', sideBucketTable(a.bySymbol, '銘柄'), true) : ''}
     ${card('取引ごとの損益', barChart(a.trades.map((t, i) => ({ label: `${i + 1}`, value: t.profit, note: `#${t.ticket} ${t.side} ${t.pips.toFixed(1)} pips` }))), true)}
     ${card('pips の分布（回数）', barChart(a.pipsHistogram.map((b, i) => ({ label: b.label, value: b.trades, tone: i < 6 ? 'neg' : 'pos' })), { labelEvery: 2, unit: ' 回' }))}
     ${card('買い・売り別', sideTable(a))}
     ${card('曜日別の損益（エントリーした日）', barChart(toBars(a.byWeekday), { labelEvery: 1 }) + bucketTable(a.byWeekday, '曜日'))}
-    ${card('時間帯別の損益（エントリーした時刻）', barChart(toBars(a.bySession), { labelEvery: 1 }) + bucketTable(a.bySession, '時間帯'))}
+    ${card('週別（月曜始まり・エントリーした日）', sideBucketTable(a.byWeek, '週'), true)}
+    ${card('時間帯別（エントリーした時刻）', barChart(toBars(a.bySession), { labelEvery: 1 }) + sideBucketTable(a.bySession, '時間帯'), true)}
     ${card('時刻別の損益（エントリーした時刻・1 時間ごと）', barChart(toBars(a.byHour), { labelEvery: 3 }), true)}
     ${card('保有時間別の損益', barChart(toBars(a.byHold), { labelEvery: 1 }) + bucketTable(a.byHold, '保有時間'))}
     ${card('月別', bucketTable(a.byMonth, '月'))}
@@ -155,7 +180,13 @@ export const REPORT_CSS = `
 .report-table { width: 100%; border-collapse: collapse; margin-top: 6px; font-variant-numeric: tabular-nums; }
 .report-table th, .report-table td { padding: 2px 6px; border-bottom: 1px solid var(--grid); text-align: left; }
 .report-table th { color: var(--muted); font-weight: 500; }
-.report-table td.num { text-align: right; }
+.report-table td.num { text-align: right; white-space: nowrap; }
+.report-table.explained td:first-child { white-space: nowrap; }
+.report-table.explained td.note { color: var(--muted); }
+.report-table tr.section th { padding-top: 10px; color: var(--fg); font-weight: 600; }
+.badge { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; white-space: nowrap; background: var(--grid); color: var(--muted); }
+.badge.high { color: var(--pos); }
+.badge.low { color: var(--neg); }
 ${CHART_CSS}
 `;
 

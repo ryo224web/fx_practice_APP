@@ -647,9 +647,9 @@ let mt4AccountCache: { key: string; account: Account } | null = null;
 function mt4Account(): Account {
   const t = test();
   const now = md.bid[cursor].t + 60_000;
-  const key = `${now}:${state.mt4?.fileName}:${state.mt4?.trades.length}:${mt4Offset().hours}:${md.symbol}:${t.startTime}:${t.initialBalance}`;
+  const key = `${now}:${mt4Rev}:${state.mt4?.month}:${mt4Offset().hours}:${md.symbol}:${t.startTime}:${t.initialBalance}`;
   if (mt4AccountCache?.key === key) return mt4AccountCache.account;
-  const a = buildMt4Account(spec, account.settings, state.mt4?.trades ?? [], {
+  const a = buildMt4Account(spec, account.settings, mt4All(), {
     start: t.startTime,
     balance: t.initialBalance,
     now,
@@ -715,13 +715,15 @@ function excursion(symbol: string, side: 'buy' | 'sell', openTime: number, close
 /** 銘柄ごとの 1 pip（口座履歴にほかの銘柄が混ざっていても pips を正しく出すため） */
 function pipOf(symbol: string): number {
   const s = symbol.toLowerCase();
-  const digits = manifest?.symbols[s]?.digits ?? (/jpy/i.test(s) || /xau/i.test(s) ? 3 : 5);
+  // ほかの株価指数・暗号資産（MT4 の履歴に混ざることがある）は 1 ポイントを 1 pip とする（BTCUSD・JP225 は symbolSpec のとおり）
+  if (/eth|us30|nas|spx|ger|dax/.test(s)) return 1;
+  const digits = manifest?.symbols[s]?.digits ?? (/jpy/i.test(s) || /xau/i.test(s) ? 3 : /btc/i.test(s) ? 2 : /225/.test(s) ? 1 : 5);
   return symbolSpec(s, digits).pip;
 }
 
 function statsRecords(source: 'virtual' | 'mt4'): TradeRecord[] {
   if (source === 'mt4') {
-    return (state.mt4?.trades ?? [])
+    return mt4All()
       .filter((t) => t.closeServer !== null && t.closePrice !== null)
       .map((t) => {
         const openTime = mt4ToUtc(t.openServer);
@@ -729,6 +731,7 @@ function statsRecords(source: 'virtual' | 'mt4'): TradeRecord[] {
         const dir = t.side === 'buy' ? 1 : -1;
         return {
           ticket: t.ticket,
+          symbol: t.symbol,
           side: t.side,
           lots: t.lots,
           openTime,
@@ -751,6 +754,7 @@ function statsRecords(source: 'virtual' | 'mt4'): TradeRecord[] {
     return [
       {
         ticket: h.ticket,
+        symbol: h.symbol.toUpperCase(),
         side: h.side,
         lots: h.lots,
         openTime: h.openTime,
@@ -776,7 +780,7 @@ let statsCache: { key: string; a: Analysis } | null = null;
 function currentAnalysis(): { a: Analysis; source: 'virtual' | 'mt4'; initial: number } {
   const source = state.statsSource === 'mt4' && state.mt4 ? 'mt4' : 'virtual';
   const initial = source === 'virtual' ? test().initialBalance : 0;
-  const key = `${source}:${mt4Mode()}:${shownAccount().history.length}:${state.mt4?.fileName}:${state.mt4?.trades.length}:${mt4Offset().hours}:${state.zone}:${dataVersion}:${md.symbol}`;
+  const key = `${source}:${mt4Mode()}:${shownAccount().history.length}:${mt4Rev}:${state.mt4?.month}:${mt4Offset().hours}:${state.zone}:${dataVersion}:${md.symbol}`;
   if (statsCache?.key !== key) {
     statsCache = { key, a: analyze(statsRecords(source), initial, spec.pip, (t) => toDisplay(t, state.zone, rule)) };
   }
@@ -785,7 +789,9 @@ function currentAnalysis(): { a: Analysis; source: 'virtual' | 'mt4'; initial: n
 
 function statsInfo(source: 'virtual' | 'mt4') {
   return {
-    sourceLabel: source === 'mt4' ? `MT4 の履歴（${state.mt4?.fileName ?? ''}）` : mt4Mode() ? `MT4 の取引（この検証の口座。${state.mt4?.fileName ?? ''}）` : '仮想の取引',
+    sourceLabel:
+      (source === 'mt4' ? `MT4 の履歴（${state.mt4?.fileName ?? ''}）` : mt4Mode() ? `MT4 の取引（この検証の口座。${state.mt4?.fileName ?? ''}）` : '仮想の取引') +
+      (source === 'mt4' || mt4Mode() ? monthLabel() : ''),
     symbolLabel: md.symbol.toUpperCase(),
     hasBalance: source === 'virtual',
   };
@@ -795,7 +801,14 @@ function renderStatsTab(): string {
   const { a, source, initial } = currentAnalysis();
   const btn = (src: string, label: string, disabled = false) =>
     `<button type="button" data-action="stats-src" data-src="${src}" aria-pressed="${source === src}" ${disabled ? 'disabled title="MT4 履歴タブで読み込むと選べます"' : ''}>${label}</button>`;
-  const bar = `<div class="mt4-bar">${btn('virtual', mt4Mode() ? 'この検証の口座（MT4）' : '仮想の取引')}${btn('mt4', 'MT4 の履歴', !state.mt4)}
+  const months = mt4Months();
+  const month =
+    state.mt4 && (source === 'mt4' || mt4Mode())
+      ? `<select data-action="mt4-month" title="この月（サーバー時刻）に決済した MT4 の取引だけを使います（MT4 履歴タブと共通）">
+          <option value="">すべての月</option>${months.map((m) => `<option value="${m}" ${m === state.mt4?.month ? 'selected' : ''}>${m.replace('-', ' 年 ')} 月</option>`).join('')}
+        </select>`
+      : '';
+  const bar = `<div class="mt4-bar">${btn('virtual', mt4Mode() ? 'この検証の口座（MT4）' : '仮想の取引')}${btn('mt4', 'MT4 の履歴', !state.mt4)}${month}
     <span class="sep"></span>
     <button type="button" data-action="export-csv" title="取引の一覧を CSV で保存（Excel で開ける）">CSV で書き出す</button>
     <button type="button" data-action="export-html" title="グラフ付きのレポートを 1 つの HTML ファイルで保存">レポートを書き出す</button>
@@ -817,14 +830,17 @@ function exportStats(kind: 'csv' | 'html') {
   const { a, source, initial } = currentAnalysis();
   const info = statsInfo(source);
   const date = new Date().toISOString().slice(0, 10);
-  const base = `成績_${currentMeta().name}_${source === 'mt4' ? 'MT4' : '仮想'}_${date}`.replace(/[\\/:*?"<>|]/g, '_');
+  // 月を決めた MT4 の取引なら、毎月の振り返りのファイルと同じ名前（2026_10_stats）
+  const monthly = state.mt4?.month && (source === 'mt4' || mt4Mode()) ? state.mt4.month.replace('-', '_') : '';
+  const base = (monthly ? `${monthly}_stats` : `成績_${currentMeta().name}_${source === 'mt4' ? 'MT4' : '仮想'}_${date}`).replace(/[\\/:*?"<>|]/g, '_');
   const time = (t: number) => formatTime(t, state.zone, rule);
   if (kind === 'csv') {
     download(`${base}.csv`, tradesCsv(a.trades, time, md.digits, spec.pip, (t) => toDisplay(t, state.zone, rule)), 'text/csv');
   } else {
     const zone = state.zone === 'jst' ? '日本時間' : 'サーバー時間';
     const subtitle = `${currentMeta().name} ・ ${info.sourceLabel} ・ ${a.summary.trades} 回 ・ 時刻は${zone} ・ ${date} 作成`;
-    download(`${base}.html`, reportHtml(`成績レポート（${info.symbolLabel}）`, subtitle, reportBody(a, info, initial)), 'text/html');
+    const title = monthly ? `${monthly} 統計サマリー` : `成績レポート（${info.symbolLabel}）`;
+    download(`${base}.html`, reportHtml(title, subtitle, reportBody(a, info, initial)), 'text/html');
   }
 }
 
@@ -832,7 +848,18 @@ function mt4Info() {
   const m = state.mt4;
   if (!m) return null;
   const off = mt4Offset();
-  return { fileName: m.fileName, offsetHours: off.hours, matched: off.matched, checked: off.checked, detected: off.detected, others: m.trades.length - mt4Trades().length };
+  return {
+    fileName: m.fileName,
+    offsetHours: off.hours,
+    matched: off.matched,
+    checked: off.checked,
+    detected: off.detected,
+    others: mt4All().length - mt4Trades().length,
+    auto: !!m.auto,
+    updated: m.auto ? historyMtime : 0,
+    month: m.month ?? '',
+    months: mt4Months(),
+  };
 }
 
 function refresh() {
@@ -993,7 +1020,7 @@ function openNewTestDialog() {
     // MT4 の取引にしたら、開始日時をその銘柄の最初の取引の 1 日前にする
     if (src.value !== 'mt4') return;
     const sym = $<HTMLSelectElement>('#nt-symbol').value || md.symbol;
-    const opens = (state.mt4?.trades ?? []).filter((x) => x.symbol.toLowerCase() === sym).map((x) => mt4ToUtc(x.openServer));
+    const opens = mt4All().filter((x) => x.symbol.toLowerCase() === sym).map((x) => mt4ToUtc(x.openServer));
     if (opens.length) $<HTMLInputElement>('#nt-start').value = toLocalInput(Math.min(...opens) - 86_400_000, state.zone, rule);
   };
   hint();
@@ -1032,6 +1059,8 @@ async function startTest(symbol: string, start: number, balance: number, leverag
   refresh();
   updateStatus();
   save(true);
+  // MT4 の取引の検証で、まだ履歴が無ければ、MT4 が自動で書き出す履歴を読み込む
+  if (source === 'mt4' && !state.mt4) void startMt4Auto();
   return null;
 }
 
@@ -1089,8 +1118,36 @@ async function detectMt4ForSymbol(): Promise<{ hours: number; matched: number; c
   return result;
 }
 
+/** state.mt4 を変えたら増やす（計算し直しの目印。決済しただけでは件数が変わらないため） */
+let mt4Rev = 0;
+function mt4Changed() {
+  mt4Rev++;
+  mt4EventCache = null;
+}
+
+/** サーバー時刻の月（"2026-10"） */
+const serverMonth = (server: number) => new Date(server).toISOString().slice(0, 7);
+
+/**
+ * 使う MT4 の取引（全銘柄）。月を決めてあれば、その月に決済した取引と、その月の終わりまでに建てて保有中の取引だけ
+ * （月はサーバー時刻。MT4 のレポートの期間と同じ）
+ */
+function mt4All(): Mt4Trade[] {
+  const m = state.mt4;
+  if (!m) return [];
+  if (!m.month) return m.trades;
+  return m.trades.filter((t) => (t.closeServer !== null ? serverMonth(t.closeServer) === m.month : serverMonth(t.openServer) <= m.month!));
+}
+
+/** 履歴に含まれる月（決済した月。新しい順） */
+function mt4Months(): string[] {
+  return [...new Set((state.mt4?.trades ?? []).map((t) => serverMonth(t.closeServer ?? t.openServer)))].sort().reverse();
+}
+
+const monthLabel = () => (state.mt4?.month ? ` ・ ${state.mt4.month.replace('-', ' 年 ')} 月の取引` : '');
+
 function mt4Trades(): Mt4Trade[] {
-  return (state.mt4?.trades ?? []).filter((t) => t.symbol.toLowerCase() === md.symbol);
+  return mt4All().filter((t) => t.symbol.toLowerCase() === md.symbol);
 }
 
 const priceLookup: PriceLookup = {
@@ -1105,7 +1162,7 @@ let mt4EventCache: { key: string; events: { t: number; label: string }[] } | nul
 
 /** エントリー・決済が起きる 1 分足の時刻（昇順） */
 function mt4Events() {
-  const key = `${md.symbol}:${state.mt4?.fileName}:${state.mt4?.trades.length}:${mt4Offset().hours}`;
+  const key = `${md.symbol}:${mt4Rev}:${state.mt4?.month}:${mt4Offset().hours}`;
   if (mt4EventCache?.key === key) return mt4EventCache.events;
   const minute = (t: number) => Math.floor(t / 60_000) * 60_000;
   const events: { t: number; label: string }[] = [];
@@ -1316,8 +1373,8 @@ async function readText(file: File): Promise<string> {
 async function loadMt4File(file: File) {
   const trades = parseHistoryFile(file.name, await readText(file));
   if (!trades.length) return toast('取引が見つかりませんでした（詳細レポートの .htm か、R_ExportHistory.mq4 の .csv を選んでください）');
-  state.mt4 = { fileName: file.name, trades, offsetHours: 0, matched: 0, checked: 0, bySymbol: {} };
-  mt4EventCache = null;
+  state.mt4 = { fileName: file.name, trades, offsetHours: 0, matched: 0, checked: 0, bySymbol: {}, month: state.mt4?.month };
+  mt4Changed();
   const mine = mt4Trades();
   const det = await detectMt4ForSymbol();
   state.terminalTab = 'mt4';
@@ -1382,13 +1439,13 @@ function eoCalc() {
     e.mode === 'market' ? 'market' : side === 'buy' ? (entry < ask ? 'buylimit' : 'buystop') : entry > bid ? 'selllimit' : 'sellstop';
   const rate = jpyRate(cursor);
   const riskJpy = e.riskUnit === 'pct' ? (account.balance * e.risk) / 100 : e.risk;
-  const lots = lotsForRisk({ riskJpy, entry, sl: e.sl, contract: spec.contract, rate });
+  const lots = lotsForRisk({ riskJpy, entry, sl: e.sl, contract: spec.contract, rate, step: spec.lotStep });
   const dir = side === 'buy' ? 1 : -1;
   const slPips = ((e.sl - entry) * dir) / spec.pip;
   const tpPips = e.tp === null ? null : ((e.tp - entry) * dir) / spec.pip;
   let error: string | null = null;
   if (!Number.isFinite(rate)) error = '円に換算できません（USDJPY のデータが必要です）';
-  else if (lots < 0.01) error = '最小ロット（0.01）でも損失が指定を超えます。S/L を近づけるか、許容する損失を増やしてください';
+  else if (lots < spec.lotStep) error = `最小ロット（${spec.lotStep}）でも損失が指定を超えます。S/L を近づけるか、許容する損失を増やしてください`;
   return {
     ok: true as const,
     error,
@@ -2206,6 +2263,8 @@ async function changeSymbol(symbol: string) {
   freshRunner();
   renderChart(true);
   scrollToNow();
+  // EasyOrder を開いたままなら、S/L・T/P を新しい銘柄の価格の近くに置き直す（前の銘柄の価格のままだと桁が違う）
+  if (eo().open) eoSetDefaults();
   refresh();
 }
 
@@ -2471,11 +2530,24 @@ function setupControls() {
     }
     if (action === 'export-csv') exportStats('csv');
     if (action === 'export-html') exportStats('html');
+    if (action === 'mt4-auto') void startMt4Auto();
     if (action === 'mt4-clear' && confirm('読み込んだ MT4 の履歴を消しますか？')) {
       state.mt4 = null;
-      mt4EventCache = null;
+      mt4Changed();
       refresh();
       renderTerminal(true);
+    }
+  });
+  termBody.addEventListener('change', (e) => {
+    const el = e.target as HTMLSelectElement;
+    if (el.dataset.action === 'mt4-month' && state.mt4) {
+      state.mt4.month = el.value || undefined;
+      mt4Changed();
+      void detectMt4ForSymbol().then(() => {
+        refresh();
+        renderTerminal(true);
+        save(true);
+      });
     }
   });
   $<HTMLInputElement>('#mt4-file').addEventListener('change', (e) => {
@@ -2833,10 +2905,67 @@ async function pollBars() {
   updateStatus();
 }
 
+// ---------------- MT4 の取引履歴（自動で読み込む） ----------------
+// R_ExportBarsHistory（EA）が、起動したときと取引を建てた・決済したときに書く fx_practice_history.csv を、開発サーバーを通して 1 分ごとに見る。
+// 「MT4 履歴」タブで「MT4 から自動で読み込む」にしたプロジェクトだけ。届いた履歴に丸ごと差し替える（重ならない）
+
+/** 最後に読んだ履歴ファイルの更新時刻 */
+let historyMtime = 0;
+
+async function fetchHistory(since: number): Promise<{ found: boolean; file?: string; mtime?: number; text?: string } | null> {
+  try {
+    const res = await fetch(`/api/mt4/history?since=${since}`, { cache: 'no-store' });
+    if (!res.ok || !res.headers.get('content-type')?.includes('json')) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function pollHistory(quiet = true) {
+  const m = state.mt4;
+  if (!m?.auto) return;
+  const r = await fetchHistory(historyMtime);
+  if (!r?.found || r.mtime === undefined) return;
+  historyMtime = r.mtime;
+  if (r.text === undefined || state.mt4 !== m) return;
+  const trades = parseHistoryFile('fx_practice_history.csv', r.text);
+  if (!trades.length || JSON.stringify(trades) === JSON.stringify(m.trades)) return;
+  const closedBefore = m.trades.filter((t) => t.closeServer !== null).length;
+  m.trades = trades;
+  mt4Changed();
+  await detectMt4ForSymbol();
+  refresh();
+  renderTerminal(true);
+  save(true);
+  const added = trades.filter((t) => t.closeServer !== null).length - closedBefore;
+  if (!quiet) toast(`MT4 の履歴を更新しました（${trades.length} 件${added > 0 ? `。決済 +${added} 件` : ''}）`);
+}
+
+/** 「MT4 から自動で読み込む」 */
+async function startMt4Auto() {
+  const r = await fetchHistory(0);
+  if (!r?.found || !r.text) {
+    toast(`まだ履歴のファイルがありません。T580 の MT4 で R_ExportBarsHistory を動かすと、すぐに届きます（${r?.file ?? 'fx_practice_history.csv'}）`);
+    return;
+  }
+  state.mt4 = { fileName: 'MT4 から自動', trades: [], offsetHours: 0, matched: 0, checked: 0, bySymbol: {}, auto: true, month: state.mt4?.month };
+  historyMtime = 0;
+  await pollHistory(true);
+  state.terminalTab = 'mt4';
+  toast(`MT4 の履歴を読み込みました（${state.mt4?.trades.length ?? 0} 件）。これからは MT4 が書き出すたびに自動で更新します`);
+  refresh();
+  renderTerminal(true);
+}
+
 start()
   .then(() => {
     void pollBars();
-    setInterval(() => void pollBars(), 60_000);
+    void pollHistory(true);
+    setInterval(() => {
+      void pollBars();
+      void pollHistory(false);
+    }, 60_000);
   })
   .catch((e) => {
     console.error(e);

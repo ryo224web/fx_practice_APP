@@ -122,21 +122,34 @@ export interface Mt4Info {
   detected: boolean;
   /** この銘柄以外の取引の件数（表示しない） */
   others: number;
+  /** MT4 の EA が書き出す履歴を自動で読み込んでいるか。updated はそのファイルの更新時刻（ミリ秒。まだなら 0） */
+  auto: boolean;
+  updated: number;
+  /** 使う月（"2026-10"。空なら全部）と、履歴に含まれる月 */
+  month: string;
+  months: string[];
 }
 
 const STATUS_LABEL = { wait: '未エントリー', open: '保有中', closed: '決済済み' };
 
 export function renderMt4(rows: Mt4Row[], info: Mt4Info | null, digits: number, time: (t: number) => string): string {
-  const bar = `<div class="mt4-bar"><button type="button" data-action="mt4-load">MT4 履歴を読み込む…</button>${info ? '<button type="button" data-action="mt4-clear">消す</button>' : ''}`;
+  const auto = `<button type="button" data-action="mt4-auto" aria-pressed="${!!info?.auto}" title="T580 の MT4 の R_ExportBarsHistory（EA）が、取引を建てた・決済したときに書き出す履歴を、自動で読み込み続けます（届くたびに丸ごと差し替えるので、重なりません）">MT4 から自動で読み込む</button>`;
+  const month = info
+    ? `<select data-action="mt4-month" title="この月（サーバー時刻）に決済した取引だけを、口座・成績・チャートに使います">
+        <option value="">すべての月</option>${info.months.map((m) => `<option value="${m}" ${m === info.month ? 'selected' : ''}>${m.replace('-', ' 年 ')} 月</option>`).join('')}
+      </select>`
+    : '';
+  const bar = `<div class="mt4-bar">${auto}<button type="button" data-action="mt4-load">ファイルから読み込む…</button>${month}${info ? '<button type="button" data-action="mt4-clear">消す</button>' : ''}`;
   if (!info) {
-    return `${bar}<span class="hint">MT4 の「口座履歴」の詳細レポート（.htm）か、R_ExportHistory.mq4 で書き出した .csv を読み込みます。読み込んだら、ローソク足を進めると記録どおりにエントリー・決済が表示されます。</span></div>`;
+    return `${bar}<span class="hint">「MT4 から自動で読み込む」にすると、MT4 の取引が自動で届きます。手で読み込むときは、MT4 の「口座履歴」の詳細レポート（.htm）か、R_ExportHistory.mq4 で書き出した .csv を選びます。読み込んだら、ローソク足を進めると記録どおりにエントリー・決済が表示されます。</span></div>`;
   }
   const mark = (v: boolean | null) => (v === null ? '' : v ? '✓' : '<b class="neg" title="記録の価格が、その時刻の足の値幅に入っていません">✗</b>');
   const off = `${info.offsetHours >= 0 ? '+' : ''}${info.offsetHours}`;
   const judged = info.detected
     ? `時刻のずれ（自動判定）: <b>${off} 時間</b>　価格が足に収まった: <b>${info.matched}/${info.checked}</b>`
     : `時刻のずれ: <b>${off} 時間</b>（この銘柄では判定できていません。価格データが無いか、取引がありません）`;
-  const head = `${bar}<span class="hint">${esc(info.fileName)}　${judged}${info.others ? `　（他の銘柄 ${info.others} 件は表示していません）` : ''}　行をダブルクリックで、その取引の直前へ移動</span></div>`;
+  const updated = info.auto && info.updated ? `（最後に MT4 が書き出したのは ${time(info.updated)}）` : '';
+  const head = `${bar}<span class="hint">${esc(info.fileName)}${updated}　${judged}${info.others ? `　（他の銘柄 ${info.others} 件は表示していません）` : ''}　行をダブルクリックで、その取引の直前へ移動</span></div>`;
   const body = rows.map((r) => {
     const cls = r.status === 'wait' ? 'pending' : '';
     const pl = r.status === 'closed' ? money(r.profit + r.swap + r.commission) : r.status === 'open' && r.floating !== null ? money(r.floating) : '<td></td>';

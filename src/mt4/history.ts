@@ -47,6 +47,9 @@ function stopOrNull(s: string): number | null {
 /** ブローカーによって名前が違う銘柄（先頭が一致すれば読み替える。"GOLDmicro" なども） */
 const ALIASES: [string, string][] = [
   ['GOLD', 'XAUUSD'],
+  // 日経 225: TitanFX は JPN225、Dukascopy は JP225、ほかのブローカーの JP225Cash なども
+  ['JPN225', 'JP225'],
+  ['JP225', 'JP225'],
   ['SILVER', 'XAGUSD'],
 ];
 

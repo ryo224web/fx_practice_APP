@@ -3,6 +3,8 @@
 
 export interface TradeRecord {
   ticket: number;
+  /** 銘柄（"XAUUSD" など）。銘柄別の内訳に使う。無ければ 1 銘柄とみなす */
+  symbol?: string;
   side: 'buy' | 'sell';
   lots: number;
   /** UTC ミリ秒 */
@@ -31,6 +33,11 @@ export interface Bucket {
   net: number;
   pips: number;
   winRate: number;
+  /** 買い・売りの回数と勝ち数（週別・時間帯別の表に出す） */
+  longs: number;
+  longWins: number;
+  shorts: number;
+  shortWins: number;
 }
 
 export interface Summary {
@@ -63,6 +70,14 @@ export interface Summary {
   maxDrawdownPct: number;
   /** 純損益 ÷ 最大ドローダウン */
   recoveryFactor: number;
+  /** 純損益 ÷ 最大ドローダウン × 100（リターンとリスクの比の目安） */
+  returnToDrawdownPct: number;
+  /** (1 回あたりの平均損益 ÷ 損益の標準偏差) × √取引回数。プラスで大きいほど、偶然ではなく勝てている目安 */
+  reliability: number;
+  /** 一番大きいロット */
+  maxLots: number;
+  /** 取引した月の数（決済した月）。1 か月あたりの数字に使う */
+  months: number;
   /** 保有時間（分） */
   avgHold: number;
   avgHoldWin: number;
@@ -90,6 +105,10 @@ export interface Analysis {
   equity: { t: number; balance: number; drawdown: number }[];
   trades: TradeRecord[];
   byWeekday: Bucket[];
+  /** 週別（月曜始まり。表示の時刻帯で、エントリーした日） */
+  byWeek: Bucket[];
+  /** 銘柄別（純損益の大きい順） */
+  bySymbol: Bucket[];
   byHour: Bucket[];
   bySession: Bucket[];
   byMonth: Bucket[];
@@ -100,12 +119,12 @@ export interface Analysis {
 }
 
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
-/** 日本時間での市場の時間帯（重なりがあるので、エントリーした時刻で一番近いものに入れる） */
+/** 日本時間での市場の時間帯（エントリーした時刻で分ける。毎月の振り返りで使っていた区切りと同じ） */
 const SESSIONS: { label: string; from: number; to: number }[] = [
-  { label: 'オセアニア（5〜9時）', from: 5, to: 9 },
-  { label: '東京（9〜15時）', from: 9, to: 15 },
-  { label: '欧州（15〜21時）', from: 15, to: 21 },
-  { label: 'NY（21〜翌5時）', from: 21, to: 29 },
+  { label: '早朝（5〜8時）', from: 5, to: 8 },
+  { label: '東京（8〜16時）', from: 8, to: 16 },
+  { label: 'ロンドン（16〜21時）', from: 16, to: 21 },
+  { label: 'ニューヨーク（21〜翌5時）', from: 21, to: 29 },
 ];
 const HOLD_BUCKETS: { label: string; max: number }[] = [
   { label: '15 分未満', max: 15 },
@@ -142,6 +161,10 @@ function emptySummary(): Summary {
     maxDrawdown: 0,
     maxDrawdownPct: 0,
     recoveryFactor: NaN,
+    returnToDrawdownPct: NaN,
+    reliability: NaN,
+    maxLots: 0,
+    months: 0,
     avgHold: NaN,
     avgHoldWin: NaN,
     avgHoldLoss: NaN,
@@ -259,6 +282,12 @@ export function summarize(trades: readonly TradeRecord[], initialBalance: number
   }
   if (!(initialBalance > 0)) s.maxDrawdownPct = NaN;
   s.recoveryFactor = s.maxDrawdown > 0 ? s.net / s.maxDrawdown : NaN;
+  s.returnToDrawdownPct = s.recoveryFactor * 100;
+  const mean = s.net / list.length;
+  const sd = Math.sqrt(list.reduce((a, t) => a + (t.profit - mean) ** 2, 0) / (list.length - 1));
+  s.reliability = list.length > 1 && sd > 0 ? (mean / sd) * Math.sqrt(list.length) : NaN;
+  s.maxLots = Math.max(...list.map((t) => t.lots));
+  s.months = new Set(list.map((t) => new Date(t.closeTime).toISOString().slice(0, 7))).size;
 
   const holds = list.map(holdMin);
   s.avgHold = avg(holds);
@@ -284,12 +313,19 @@ export function summarize(trades: readonly TradeRecord[], initialBalance: number
 }
 
 function bucketize(trades: readonly TradeRecord[], labels: string[], keyOf: (t: TradeRecord) => number): Bucket[] {
-  const out = labels.map((label) => ({ label, trades: 0, wins: 0, net: 0, pips: 0, winRate: NaN }));
+  const out: Bucket[] = labels.map((label) => ({ label, trades: 0, wins: 0, net: 0, pips: 0, winRate: NaN, longs: 0, longWins: 0, shorts: 0, shortWins: 0 }));
   for (const t of trades) {
     const b = out[keyOf(t)];
     if (!b) continue;
     b.trades++;
     if (t.profit > 0) b.wins++;
+    if (t.side === 'buy') {
+      b.longs++;
+      if (t.profit > 0) b.longWins++;
+    } else {
+      b.shorts++;
+      if (t.profit > 0) b.shortWins++;
+    }
     b.net += t.profit;
     b.pips += t.pips;
   }
@@ -330,6 +366,26 @@ export function analyze(trades: readonly TradeRecord[], initialBalance: number, 
       return SESSIONS.findIndex((x) => hh >= x.from && hh < x.to);
     },
   );
+  // 週は月曜始まり（エントリーした日）。"03/30 〜 04/05"
+  const DAY = 86_400_000;
+  const weekStart = (t: number) => {
+    const w = toWall(t);
+    const day = Math.floor(w / DAY) * DAY;
+    return day - ((new Date(day).getUTCDay() + 6) % 7) * DAY;
+  };
+  const md = (t: number) => new Date(t).toISOString().slice(5, 10).replace('-', '/');
+  const weeks = [...new Set(list.map((t) => weekStart(t.openTime)))].sort((a, b) => a - b);
+  const byWeek = bucketize(
+    list,
+    weeks.map((w) => `${md(w)} 〜 ${md(w + 6 * DAY)}`),
+    (t) => weeks.indexOf(weekStart(t.openTime)),
+  );
+  const symbols = [...new Set(list.map((t) => t.symbol ?? ''))];
+  const bySymbol = bucketize(
+    list,
+    symbols.map((x) => x || '（銘柄なし）'),
+    (t) => symbols.indexOf(t.symbol ?? ''),
+  ).sort((a, b) => b.net - a.net);
   const months = [...new Set(list.map((t) => wall(t.closeTime).toISOString().slice(0, 7)))].sort();
   const byMonth = bucketize(list, months, (t) => months.indexOf(wall(t.closeTime).toISOString().slice(0, 7)));
   const byHold = bucketize(
@@ -363,6 +419,8 @@ export function analyze(trades: readonly TradeRecord[], initialBalance: number, 
     equity,
     trades: list,
     byWeekday,
+    byWeek,
+    bySymbol,
     byHour,
     bySession,
     byMonth,

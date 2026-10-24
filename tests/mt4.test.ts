@@ -70,6 +70,9 @@ describe('銘柄名の読み替え', () => {
     expect(normalizeSymbol('usdjpy.a')).toBe('USDJPY');
     expect(normalizeSymbol('EURUSDmicro')).toBe('EURUSD');
     expect(normalizeSymbol('GOLD')).toBe('XAUUSD');
+    expect(normalizeSymbol('JPN225')).toBe('JP225');
+    expect(normalizeSymbol('jp225cash')).toBe('JP225');
+    expect(normalizeSymbol('BTCUSD')).toBe('BTCUSD');
     expect(normalizeSymbol('GOLD.a')).toBe('XAUUSD');
     expect(normalizeSymbol('XAUUSD')).toBe('XAUUSD');
   });

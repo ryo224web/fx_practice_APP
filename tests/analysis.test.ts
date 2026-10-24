@@ -89,3 +89,54 @@ describe('R（決済時の S/L 基準）', () => {
     expect(rMultiple({ ...trade(0, 20), side: 'sell', sl: 149.9 })).toBeNull(); // 売りで利益側
   });
 });
+
+describe('毎月の振り返りの数字（銘柄別・週別・時間帯別）', () => {
+  // 2026-10-19 は月曜。日本時間 9:00 から 1 時間おき
+  const list = [
+    trade(0, 20, { symbol: 'XAUUSD' }),
+    trade(1, -10, { symbol: 'XAUUSD', side: 'sell' }),
+    trade(2, 30, { symbol: 'USDJPY' }),
+    trade(7 * 24, -10, { symbol: 'USDJPY', side: 'sell' }), // 次の週の月曜 9:00
+    trade(7 * 24 + 8, 15, { symbol: 'USDJPY', side: 'sell' }), // 次の週の月曜 17:00（ロンドン）
+  ];
+  const a = analyze(list, 0, PIP, jst);
+
+  it('銘柄別は純損益の大きい順', () => {
+    expect(a.bySymbol.map((b) => [b.label, b.trades, b.net])).toEqual([
+      ['USDJPY', 3, 3500],
+      ['XAUUSD', 2, 1000],
+    ]);
+    expect(a.bySymbol[0].longs).toBe(1);
+    expect(a.bySymbol[0].shorts).toBe(2);
+    expect(a.bySymbol[0].shortWins).toBe(1);
+  });
+
+  it('週は月曜始まりで、日本時間のエントリーした日で分ける', () => {
+    expect(a.byWeek.map((b) => [b.label, b.trades])).toEqual([
+      ['10/19 〜 10/25', 3],
+      ['10/26 〜 11/01', 2],
+    ]);
+  });
+
+  it('時間帯は東京 8〜16 時・ロンドン 16〜21 時・ニューヨーク 21〜翌 5 時', () => {
+    const at = (h: number) => analyze([trade(0, 10, { openTime: Date.UTC(2026, 9, 19, h - 9 < 0 ? h + 15 : h - 9) })], 0, PIP, jst).bySession.find((b) => b.trades)!.label;
+    expect(at(8)).toMatch(/^東京/);
+    expect(at(15)).toMatch(/^東京/);
+    expect(at(16)).toMatch(/^ロンドン/);
+    expect(at(21)).toMatch(/^ニューヨーク/);
+    expect(at(4)).toMatch(/^ニューヨーク/);
+    expect(at(5)).toMatch(/^早朝/);
+  });
+
+  it('リライアビリティファクター = (平均 ÷ 標準偏差) × √回数、利率 % = 純損益 ÷ 最大ドローダウン × 100', () => {
+    const p = list.map((t) => t.profit);
+    const mean = p.reduce((x, y) => x + y, 0) / p.length;
+    const sd = Math.sqrt(p.reduce((x, v) => x + (v - mean) ** 2, 0) / (p.length - 1));
+    expect(a.summary.reliability).toBeCloseTo((mean / sd) * Math.sqrt(p.length), 10);
+    // 累積: 2000, 1000, 4000, 3000, 4500 → 山 4000 から 1000 下がる
+    expect(a.summary.maxDrawdown).toBe(1000);
+    expect(a.summary.returnToDrawdownPct).toBeCloseTo((4500 / 1000) * 100, 10);
+    expect(a.summary.months).toBe(1); // どちらの週も 10 月
+    expect(a.summary.maxLots).toBe(0.1);
+  });
+});

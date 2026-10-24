@@ -27,12 +27,14 @@ describe('MT4 の 1 分足のファイル', () => {
   it('ファイル名から銘柄と期間（サーバー時刻の月。日ごとも読む）を読む。接尾辞や GOLD も読み替える', () => {
     expect(parseBarFileName('USDJPY_2026.10.csv')).toEqual({ symbol: 'usdjpy', start: Date.UTC(2026, 9, 1), end: Date.UTC(2026, 10, 1) });
     expect(parseBarFileName('USDJPY_2026.12.csv')?.end).toBe(Date.UTC(2027, 0, 1));
+    expect(parseBarFileName('BTCUSD_2026.10.csv')?.symbol).toBe('btcusd');
+    expect(parseBarFileName('JPN225_2026.10.csv')?.symbol).toBe('jp225');
     expect(parseBarFileName('USDJPY_2026.10.22.csv')).toEqual({ symbol: 'usdjpy', start: Date.UTC(2026, 9, 22), end: Date.UTC(2026, 9, 23) });
     expect(parseBarFileName('EURUSD.a_2026.10.csv')?.symbol).toBe('eurusd');
     expect(parseBarFileName('GOLD_2026.10.csv')?.symbol).toBe('xauusd');
     expect(parseBarFileName('_status.csv')).toBe(null);
     expect(parseBarFileName('USDJPY_2026.10.csv.tmp')).toBe(null);
-    expect(parseBarFileName('BTCUSD_2026.10.csv')).toBe(null);
+    expect(parseBarFileName('ETHUSD_2026.10.csv')).toBe(null);
   });
 
   it('CSV を読む（見出し・壊れた行は飛ばす）', () => {

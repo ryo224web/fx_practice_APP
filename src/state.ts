@@ -57,6 +57,10 @@ export interface Mt4State {
   checked: number;
   /** 銘柄ごとに自動判定したずれ。価格が足に収まった件数 / 調べた件数 */
   bySymbol?: Record<string, { hours: number; matched: number; checked: number }>;
+  /** MT4 の EA（R_ExportBarsHistory）が書き出す履歴を自動で読み込む（届くたびに丸ごと差し替える） */
+  auto?: boolean;
+  /** この月（"2026-10"。サーバー時刻）に決済した取引だけを使う。無ければ全部 */
+  month?: string;
 }
 
 /** チャートの並べ方: 1 枚 / 左右に 2 枚 / 上下に 2 枚 / 2×2 */

@@ -160,3 +160,55 @@ describe('円に換算できないとき', () => {
     expect(a.apply(feed, 0, { t: T0, kind: 'pending', type: 'buylimit', price: 149, lots: 0.1, sl: null, tp: null })).toMatch(/換算/);
   });
 });
+
+describe('BTCUSD（TitanFX: 小数 2 桁・1 ロット = 1 BTC）', () => {
+  const btc = symbolSpec('btcusd', 2);
+  it('1 pip は 0.1 ドル、1 ロットは 1 BTC', () => {
+    expect(btc.contract).toBe(1);
+    expect(btc.pip).toBe(0.1);
+    expect(btc.quote).toBe('USD');
+  });
+
+  it('損益はドルの値幅 × ロット × USDJPY', () => {
+    const bid: Bar[] = [80000, 81000].map((p, i) => ({ t: T0 + i * 60_000, o: p, h: p, l: p, c: p }));
+    const ask = bid.map((b) => ({ ...b, o: b.o + 22.5, h: b.h + 22.5, l: b.l + 22.5, c: b.c + 22.5 }));
+    const feed: PriceFeed = { bid, ask, jpyRate: () => 150 };
+    const a = new Account(btc, { leverage: 100 }, baseline);
+    expect(a.apply(feed, 0, { t: T0, kind: 'market', side: 'buy', lots: 0.1, sl: null, tp: null })).toBeNull();
+    a.processBar(feed, 1);
+    expect(a.apply(feed, 1, { t: T0 + 60_000, kind: 'close', ticket: 2 })).toBeNull();
+    const h = a.history.at(-1)!;
+    // (81000 - 80022.5) × 0.1 × 1 × 150 = 14,662.5 円
+    expect(h.kind === 'trade' && h.profit).toBeCloseTo(14_662.5, 0);
+  });
+});
+
+describe('JP225（TitanFX の JPN225: 小数 1 桁・契約サイズ 100・損益は円）', () => {
+  const jp = symbolSpec('jp225', 1);
+  it('1 pip は 1 円、1 ロットは 100 倍、損益は円', () => {
+    expect(jp).toMatchObject({ contract: 100, quote: 'JPY', pip: 1 });
+  });
+
+  it('損益は値幅 × ロット × 100（円）', () => {
+    const bid: Bar[] = [62500, 62600].map((p, i) => ({ t: T0 + i * 60_000, o: p, h: p, l: p, c: p }));
+    const ask = bid.map((b) => ({ ...b, o: b.o + 8, h: b.h + 8, l: b.l + 8, c: b.c + 8 }));
+    const feed: PriceFeed = { bid, ask, jpyRate: () => 1 };
+    const a = new Account(jp, { leverage: 10 }, baseline);
+    expect(a.apply(feed, 0, { t: T0, kind: 'market', side: 'buy', lots: 0.1, sl: null, tp: null })).toBeNull();
+    a.processBar(feed, 1);
+    expect(a.apply(feed, 1, { t: T0 + 60_000, kind: 'close', ticket: 2 })).toBeNull();
+    const h = a.history.at(-1)!;
+    // (62600 - 62508) × 0.1 × 100 = 920 円
+    expect(h.kind === 'trade' && h.profit).toBeCloseTo(920, 6);
+  });
+});
+
+describe('ロットの刻み', () => {
+  it('JP225 は 0.1 ロット単位で切り捨てる', async () => {
+    const { lotsForRisk } = await import('../src/trade/risk');
+    const jp = symbolSpec('jp225', 1);
+    // 274.6 円 × 100 = 1 ロットで 27,460 円。1 万円までなら 0.36 → 0.3
+    expect(lotsForRisk({ riskJpy: 10_000, entry: 64700.3, sl: 64425.7, contract: jp.contract, rate: 1, step: jp.lotStep })).toBe(0.3);
+    expect(symbolSpec('usdjpy', 3).lotStep).toBe(0.01);
+  });
+});

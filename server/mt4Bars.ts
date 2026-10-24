@@ -1,5 +1,5 @@
 // MT4（TitanFX）の 1 分足を、共有フォルダ（Dropbox）から自動で取り込む（開発サーバーに組み込む）。
-// Windows 機の MT4 で scripts/mt4/R_ExportBars.mq4（EA）を動かすと、1 日 1 回（前日までの分）
+// Windows 機の MT4 で scripts/mt4/R_ExportBarsHistory.mq4（EA）を動かすと、1 時間ごと（終わった 1 時間までの分）
 //   <dir>/USDJPY/USDJPY_2026.10.csv 銘柄のフォルダに、サーバー時刻の月ごと（time,open,high,low,close,volume。時刻はサーバー時刻）
 //   <dir>/_status.csv               MT4 のサーバー時刻と GMT の差など
 // が書き換わる（今月と先月だけ。それより前の月のファイルはそのまま残る）。
@@ -30,6 +30,8 @@ export const SYMBOL_DIGITS: Record<string, number> = {
   eurjpy: 3,
   gbpjpy: 3,
   xauusd: 3,
+  btcusd: 2,
+  jp225: 1,
 };
 
 const FIELDS = 9;
@@ -284,6 +286,12 @@ export class BarsSync {
   }
 }
 
+/**
+ * R_ExportBarsHistory（EA）が、起動したときと取引を建てた・決済したときに書く取引履歴（R_ExportHistory と同じ形式）。
+ * 共有フォルダ（fxp_bars）の 1 つ上の MQL4/Files にある。環境変数 FXP_HISTORY_FILE で変えられる
+ */
+export const historyFileOf = (barsDir: string) => process.env.FXP_HISTORY_FILE ?? path.join(path.dirname(barsDir), 'fx_practice_history.csv');
+
 export function mt4Bars(dir = process.env.FXP_BARS_DIR ?? DEFAULT_BARS_DIR, dataDir = path.resolve('public/data')): Plugin {
   return {
     name: 'fxp-mt4-bars',
@@ -299,6 +307,19 @@ export function mt4Bars(dir = process.env.FXP_BARS_DIR ?? DEFAULT_BARS_DIR, data
         res.setHeader('Content-Type', 'application/json');
         res.setHeader('Cache-Control', 'no-store');
         res.end(JSON.stringify(sync.status));
+      });
+      // 取引履歴: ?since=<前回の mtime> と同じなら中身は返さない（1 分ごとに見に来るため）
+      server.middlewares.use('/api/mt4/history', async (req, res) => {
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Cache-Control', 'no-store');
+        const file = historyFileOf(dir);
+        const st = await stat(file).catch(() => null);
+        if (!st) return res.end(JSON.stringify({ found: false, file }));
+        const mtime = Math.round(st.mtimeMs);
+        const since = Number(new URL(req.url ?? '', 'http://x').searchParams.get('since'));
+        if (since === mtime) return res.end(JSON.stringify({ found: true, file, mtime }));
+        const text = await readFile(file, 'utf8').catch(() => null);
+        res.end(JSON.stringify(text === null ? { found: false, file } : { found: true, file, mtime, text }));
       });
     },
   };

@@ -35,9 +35,11 @@ const SYMBOLS = {
   eurjpy: 3,
   gbpjpy: 3,
   xauusd: 3,
+  btcusd: 2,
+  jp225: 1,
 };
 
-const FILE_RE = /^([A-Z]+)_1 Min_(Bid|Ask)_.*\.(csv|hst)$/i;
+const FILE_RE = /^([A-Z0-9]+)_1 Min_(Bid|Ask)_.*\.(csv|hst)$/i;
 
 async function exists(p) {
   try {

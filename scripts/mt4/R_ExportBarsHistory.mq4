@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//| R_ExportBars.mq4  (Expert Advisor)                                |
+//| R_ExportBarsHistory.mq4  (Expert Advisor)                         |
 //| Every hour, writes M1 bars of several symbols (up to the end of  |
 //| the last finished hour) to monthly CSV files for FX Practice.    |
 //| FX Practice (on the Mac) watches the folder and imports them.    |
@@ -23,27 +23,38 @@
 //| last month is rewritten once a day. Older months are never        |
 //| touched, so they stay even after MT4 no longer has those bars.    |
 //| Files are written to a temp name first and then renamed.          |
+//|                                                                    |
+//| Also writes the account history (closed trades and open positions)|
+//| to MQL4\Files\fx_practice_history.csv (same format as           |
+//| R_ExportHistory) when the EA starts and whenever a trade opens or |
+//| closes (checked every CheckEveryMin minutes).                     |
+//| Only the period shown in the Account History tab can be read, so  |
+//| set it to "All History" once (right click -> All History).        |
 //+------------------------------------------------------------------+
 #property strict
-#property version     "1.02"
+#property version     "1.03"
 #property copyright   "R（FX Practice 用の自作ツール）"
 #property description "FX Practice 用に、チャート（1 分足）を書き出す EA です。注文は一切出しません。"
 #property description "1 時間ごと（サーバー時刻の正時を過ぎたら）、終わった 1 時間までの 1 分足を"
 #property description "MQL4\\Files\\fxp_bars\\銘柄\\銘柄_年.月.csv に書きます（時刻はサーバー時刻）。"
 #property description "毎時書き直すのは今月だけ、先月は 1 日 1 回。それより前の月のファイルはそのまま残します。"
 #property description "このフォルダは Dropbox にあるので、Mac の FX Practice が自動で取り込みます。"
+#property description "取引履歴も、起動したときと取引を建てた・決済したときに MQL4\\Files\\fx_practice_history.csv に書きます（口座履歴タブを「全履歴」にしておく）。"
 
-input string Symbols       = "USDJPY,EURUSD,GBPUSD,AUDUSD,USDCHF,USDCAD,NZDUSD,EURJPY,GBPJPY,XAUUSD"; // Symbols (comma separated)
+input string Symbols       = "USDJPY,EURUSD,GBPUSD,AUDUSD,USDCHF,USDCAD,NZDUSD,EURJPY,GBPJPY,XAUUSD,BTCUSD,JPN225"; // Symbols (comma separated)
 input string Suffix        = "";         // Symbol suffix (empty for TitanFX)
 input int    InitialMonths = 12;         // Also write this many past months (if missing)
-input int    CheckEveryMin = 5;          // Check for a new hour every N minutes
+input int    CheckEveryMin = 5;          // Check for a new hour / new trades every N minutes
 input string Folder        = "fxp_bars"; // Output folder (in MQL4\Files)
+input string HistoryFile   = "fx_practice_history.csv"; // Account history file (in MQL4\Files). Empty = do not write
 
 string   syms[];
 datetime exportedUntil = 0; // end of the last hour written (server time). 0 = not yet
+string   historySig = "";    // number of closed / open trades when the history was last written
 
 int OnInit()
 {
+   historySig = "";
    string parts[];
    int n = StringSplit(Symbols, ',', parts);
    ArrayResize(syms, 0);
@@ -60,6 +71,7 @@ int OnInit()
    }
    EventSetTimer(MathMax(1, CheckEveryMin) * 60);
    ExportAll();
+   ExportHistory();
    return INIT_SUCCEEDED;
 }
 
@@ -71,6 +83,7 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    if(Cutoff() != exportedUntil) ExportAll();
+   if(HistorySig() != historySig) ExportHistory();
 }
 
 void OnTick() {}
@@ -103,7 +116,7 @@ int WriteRange(string sym, datetime from, datetime to, string file, bool verbose
    int n = CopyRates(sym, PERIOD_M1, from, to - 1, rates);
    if(n <= 0)
    {
-      if(verbose) Print("R_ExportBars: no M1 data for ", sym, " ", TimeToString(from, TIME_DATE), " yet (error ", GetLastError(), "), will try again");
+      if(verbose) Print("R_ExportBarsHistory: no M1 data for ", sym, " ", TimeToString(from, TIME_DATE), " yet (error ", GetLastError(), "), will try again");
       return 0;
    }
    int digits = (int)MarketInfo(sym, MODE_DIGITS);
@@ -115,7 +128,7 @@ int WriteRange(string sym, datetime from, datetime to, string file, bool verbose
    int f = FileOpen(tmp, FILE_WRITE | FILE_TXT | FILE_ANSI);
    if(f == INVALID_HANDLE)
    {
-      Print("R_ExportBars: cannot write ", tmp, " error ", GetLastError());
+      Print("R_ExportBarsHistory: cannot write ", tmp, " error ", GetLastError());
       return -1;
    }
    int written = 0;
@@ -140,7 +153,7 @@ int WriteRange(string sym, datetime from, datetime to, string file, bool verbose
    }
    if(!FileMove(tmp, 0, dst, FILE_REWRITE))
    {
-      Print("R_ExportBars: cannot rename ", tmp, " error ", GetLastError());
+      Print("R_ExportBarsHistory: cannot rename ", tmp, " error ", GetLastError());
       return -1;
    }
    return written;
@@ -180,7 +193,7 @@ bool ExportSymbol(string sym, datetime cutoff, bool withLastMonth)
       else if(n == 0) missing++;
    }
    if(months != "")
-      Print("R_ExportBars: ", sym, " wrote ", months, " (", bars, " bars)",
+      Print("R_ExportBarsHistory: ", sym, " wrote ", months, " (", bars, " bars)",
             missing > 0 ? ", " + IntegerToString(missing) + " older months are not in MT4" : "");
    return ok;
 }
@@ -208,4 +221,79 @@ void ExportAll()
                       TimeToString(cutoff, TIME_DATE | TIME_MINUTES) + "\r\n");
    FileClose(f);
    FileMove(Folder + "\\_status.tmp", 0, Folder + "\\_status.csv", FILE_REWRITE);
+}
+
+// ---------------- account history (same format as R_ExportHistory) ----------------
+
+// Changes when a trade opens or closes, a pending order is filled or deleted,
+// or the period of the Account History tab is changed. (A closed trade never changes;
+// the S/L and T/P of a position are written as they were when it closed.)
+string HistorySig()
+{
+   return IntegerToString(OrdersHistoryTotal()) + "/" + IntegerToString(OrdersTotal());
+}
+
+string HPrice(string symbol, double p)
+{
+   if(p <= 0) return "0";
+   int digits = (int)MarketInfo(symbol, MODE_DIGITS);
+   if(digits <= 0) digits = 5;
+   return DoubleToString(p, digits);
+}
+
+string HTime(datetime t)
+{
+   if(t <= 0) return "";
+   return TimeToString(t, TIME_DATE | TIME_SECONDS);
+}
+
+void WriteOrder(int f, bool closed)
+{
+   int type = OrderType();
+   if(type != OP_BUY && type != OP_SELL) return;
+   string symbol = OrderSymbol();
+   string comment = OrderComment();
+   StringReplace(comment, ",", " ");
+   StringReplace(comment, "\n", " ");
+   FileWriteString(f, IntegerToString(OrderTicket()) + "," +
+                      HTime(OrderOpenTime()) + "," +
+                      (type == OP_BUY ? "buy" : "sell") + "," +
+                      DoubleToString(OrderLots(), 2) + "," +
+                      symbol + "," +
+                      HPrice(symbol, OrderOpenPrice()) + "," +
+                      HPrice(symbol, OrderStopLoss()) + "," +
+                      HPrice(symbol, OrderTakeProfit()) + "," +
+                      (closed ? HTime(OrderCloseTime()) : "") + "," +
+                      (closed ? HPrice(symbol, OrderClosePrice()) : "") + "," +
+                      DoubleToString(OrderCommission(), 2) + "," +
+                      DoubleToString(OrderSwap(), 2) + "," +
+                      DoubleToString(OrderProfit(), 2) + "," +
+                      comment + "\r\n");
+}
+
+// Rewrites the whole file (closed trades shown in the Account History tab + open positions)
+void ExportHistory()
+{
+   if(HistoryFile == "") return;
+   string sig = HistorySig();
+   string tmp = HistoryFile + ".tmp";
+   int f = FileOpen(tmp, FILE_WRITE | FILE_TXT | FILE_ANSI);
+   if(f == INVALID_HANDLE)
+   {
+      Print("R_ExportBarsHistory: cannot write ", tmp, " error ", GetLastError());
+      return;
+   }
+   FileWriteString(f, "ticket,open_time,type,lots,symbol,open_price,sl,tp,close_time,close_price,commission,swap,profit,comment\r\n");
+   for(int i = 0; i < OrdersHistoryTotal(); i++)
+      if(OrderSelect(i, SELECT_BY_POS, MODE_HISTORY)) WriteOrder(f, true);
+   for(int i = 0; i < OrdersTotal(); i++)
+      if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) WriteOrder(f, false);
+   FileClose(f);
+   if(!FileMove(tmp, 0, HistoryFile, FILE_REWRITE))
+   {
+      Print("R_ExportBarsHistory: cannot rename ", tmp, " error ", GetLastError());
+      return;
+   }
+   if(sig != historySig) Print("R_ExportBarsHistory: wrote ", HistoryFile, " (", sig, " closed/open)");
+   historySig = sig;
 }
