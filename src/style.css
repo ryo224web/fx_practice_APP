@@ -945,3 +945,18 @@ dialog .error {
 .pane .draw-style button.ray {
   font-weight: 600;
 }
+
+/* クリックで並べ方を切り替える見出し */
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+th.sortable:hover {
+  color: var(--fg);
+}
+.pane .draw-style button.swatch span {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}

@@ -35,7 +35,14 @@ export interface Drawing {
   width?: number;
   /** この図形の線の種類。無ければ実線 */
   style?: LineKind;
+  /** この図形だけの色（右上の欄の登録した色から選ぶ）。無ければ描いた時間足の色 */
+  custom?: string;
+  /** ロック（右上の欄の 🔒）。動かす・大きさを変える・消すができない（選んで太さ・色などを変えるのはできる）。全消去でも残す */
+  locked?: boolean;
 }
+
+/** 右上の欄に並べる色（初期値。「＋」で足し、右クリックで消す） */
+export const DEFAULT_PALETTE = ['#f85149', '#3fb950', '#4493f8', '#e5a50a', '#a371f7', '#ffffff'];
 
 /** レイ（右へ延ばす）を切り替えられる図形 */
 export const hasRay = (kind: DrawingKind) => kind === 'trend' || kind === 'channel';
@@ -335,7 +342,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   }
 
   deleteSelected(): boolean {
-    if (!this.selectedId) return false;
+    if (!this.selectedId || this.selected()?.locked) return false;
     this.drawings = this.drawings.filter((d) => d.id !== this.selectedId);
     this.selectedId = null;
     this.onChange();
@@ -343,8 +350,9 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     return true;
   }
 
+  /** ロックした図形は残す */
   clearAll() {
-    this.drawings = [];
+    this.drawings = this.drawings.filter((d) => d.locked);
     this.selectedId = null;
     this.onChange();
     this.refresh();
@@ -496,8 +504,9 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     const hit = this.hitDrawing(m.px);
     const before = this.selectedId;
     this.selectedId = hit?.id ?? null;
-    if (hit) {
-      const d = this.drawings.find((x) => x.id === hit.id)!;
+    const d = hit ? this.drawings.find((x) => x.id === hit.id)! : null;
+    // ロックした図形は選ぶだけ（動かさない。ドラッグはチャートを動かす）
+    if (hit && d && !d.locked) {
       this.drag = {
         id: d.id,
         handle: hit.handle,
@@ -714,7 +723,8 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         break;
       }
     }
-    if (sel && !onePoint(d.kind)) {
+    // ロックした図形には、つまみを出さない（動かせないので）
+    if (sel && !onePoint(d.kind) && !d.locked) {
       ctx.setLineDash([]);
       ctx.fillStyle = '#fff';
       for (const p of handlesOf(d.kind, pts)) {

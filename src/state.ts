@@ -117,6 +117,8 @@ export interface AppState {
   activePane?: number;
   easyOrder?: EasyOrderState;
   mt4?: Mt4State | null;
+  /** 「MT4 履歴」タブで古い取引を上にする（無ければ新しい取引が上） */
+  mt4OldestFirst?: boolean;
 }
 
 export interface ProjectMeta {

@@ -5,6 +5,8 @@
 export interface AppSettings {
   /** キーボードのショートカット（働き → キー。無ければ初期値。src/ui/keys.ts） */
   keymap?: Record<string, string[]>;
+  /** 図形の色を変えるときに右上の欄に並べる色 */
+  palette?: string[];
   /** 図形の太さ・線の種類の欄の場所（チャートの右端・上端からの距離。px） */
   styleBarPos?: { right: number; top: number };
 }

@@ -1,6 +1,6 @@
 import { type CandlestickData, type Time, type UTCTimestamp } from 'lightweight-charts';
 import { commandIndex, KEY_COMMANDS, keyLabel, keyOf, resolveKeymap } from './ui/keys';
-import { DEFAULT_LINE_WIDTH, DEFAULT_TF_COLORS, DRAWING_LABELS, FIBO_EXP_LEVELS, FIBO_LEVELS, levelsFromPercents, type DrawingKind } from './chart/drawings';
+import { DEFAULT_LINE_WIDTH, DEFAULT_PALETTE, DEFAULT_TF_COLORS, DRAWING_LABELS, FIBO_EXP_LEVELS, FIBO_LEVELS, levelsFromPercents, type DrawingKind } from './chart/drawings';
 import { DEFAULT_INDICATORS, normalizeIndicators, type IndicatorConfig } from './chart/indicators';
 import { ChartPane, type PaneHost } from './chart/pane';
 import { type LineEdit, type OrderPreview } from './chart/trades';
@@ -696,7 +696,7 @@ function renderTerminal(force = false) {
       : tab === 'stats'
         ? renderStatsTab()
         : tab === 'mt4'
-          ? renderMt4(mt4Rows(), mt4Info(), md.digits, ctx.time)
+          ? renderMt4(mt4Rows(), mt4Info(), md.digits, ctx.time, !!state.mt4OldestFirst)
           : renderTrade(ctx);
   termBody.scrollTop = scroll;
   document.querySelectorAll<HTMLButtonElement>('#terminal-tabs button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tab === tab)));
@@ -2354,6 +2354,11 @@ function createPanes() {
     toggleCrosshair: () => setCrosshair(!crosshairOn),
     crosshairOn: () => crosshairOn,
     pip: () => spec.pip,
+    palette: () => palette,
+    setPalette: (colors) => {
+      palette = colors;
+      void saveAppSettings({ palette: colors });
+    },
     styleBarPos: () => styleBarPos,
     setStyleBarPos: (pos) => {
       styleBarPos = pos;
@@ -2378,7 +2383,7 @@ function createPanes() {
     chartsEl.append(el);
     const p = new ChartPane(i, el, host, ps.tf, indicatorsFor(ps.tf));
     p.overlay.onEdit = onLineEdit;
-    p.drawings.colorOf = (d) => (d.tf ? (state.tfColors?.[d.tf] ?? DEFAULT_TF_COLORS[d.tf] ?? d.color) : d.color);
+    p.drawings.colorOf = (d) => d.custom ?? (d.tf ? (state.tfColors?.[d.tf] ?? DEFAULT_TF_COLORS[d.tf] ?? d.color) : d.color);
     p.drawings.levelsOf = levelsOf;
     p.drawings.widthOf = (k) => state.lineWidths?.[k] ?? DEFAULT_LINE_WIDTH;
     p.drawings.onEditLevels = () => openLevelsDialog();
@@ -2460,7 +2465,7 @@ function setupControls() {
   }
   showTool(null);
   $('#clear-drawings').addEventListener('click', () => {
-    if (active.drawings.drawings.length && confirm(`${md.symbol.toUpperCase()} の図形をすべて消しますか？`)) active.drawings.clearAll();
+    if (active.drawings.drawings.length && confirm(`${md.symbol.toUpperCase()} の図形をすべて消しますか？（ロックした図形は残します）`)) active.drawings.clearAll();
   });
 
   $('#zoom-in').addEventListener('click', () => active.zoom(1.25));
@@ -2555,6 +2560,11 @@ function setupControls() {
     if (action === 'export-csv') exportStats('csv');
     if (action === 'export-html') exportStats('html');
     if (action === 'mt4-auto') void startMt4Auto();
+    if (action === 'mt4-sort') {
+      state.mt4OldestFirst = !state.mt4OldestFirst;
+      renderTerminal(true);
+      save();
+    }
     if (action === 'mt4-clear' && confirm('読み込んだ MT4 の履歴を消しますか？')) {
       state.mt4 = null;
       mt4Changed();
@@ -2734,6 +2744,8 @@ async function jump() {
 /** キーボードのショートカット（「ショートカット」の画面で変えられる。src/ui/keys.ts） */
 /** キーボードのショートカット（全部のプロジェクトで共通。src/appSettings.ts） */
 let keymap: Record<string, string[]> | undefined;
+/** 図形の色を変えるときに並べる色（全部のプロジェクトで共通） */
+let palette: string[] = DEFAULT_PALETTE;
 /** 図形の太さ・線の種類の欄の場所（全部のプロジェクトで共通） */
 let styleBarPos: { right: number; top: number } | null = null;
 let keyIndex = commandIndex(resolveKeymap(undefined));
@@ -2825,6 +2837,7 @@ async function start() {
   // キーの設定は全部のプロジェクトで共通。共通の設定がまだ無ければ（以前はプロジェクトごと）、今のプロジェクトの設定を共通にする
   keymap = settings.keymap ?? state.keymap;
   styleBarPos = settings.styleBarPos ?? null;
+  palette = settings.palette ?? DEFAULT_PALETTE;
   if (!settings.keymap && state.keymap) void saveAppSettings({ keymap: state.keymap });
   keyIndex = commandIndex(resolveKeymap(keymap));
   migratePanes();

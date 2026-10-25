@@ -4,6 +4,8 @@
 import { CandlestickSeries, CrosshairMode, createChart, type CandlestickData, type IChartApi, type ISeriesApi, type Time } from 'lightweight-charts';
 import { mergeBars, TIMEFRAMES, type Aggregated, type Bar, type Timeframe } from '../core/candles';
 import { DrawingManager, hasRay, LINE_KINDS, lineDash, rayOn, type LineKind } from './drawings';
+
+const escAttr = (s: string) => s.replace(/[&"<>]/g, (c) => ({ '&': '&amp;', '"': '&quot;', '<': '&lt;', '>': '&gt;' })[c]!);
 import { IndicatorLayer, type IndicatorConfig } from './indicators';
 import { TimeMapper } from './mapper';
 import { TradeOverlay } from './trades';
@@ -46,6 +48,9 @@ export interface PaneHost {
   styleBarPos(): { right: number; top: number } | null;
   /** 図形の太さ・線の種類の欄を動かした（離したときに 1 回） */
   setStyleBarPos(pos: { right: number; top: number }): void;
+  /** 図形の色を変えるときに並べる色（全部のプロジェクトで共通） */
+  palette(): string[];
+  setPalette(colors: string[]): void;
 }
 
 /**
@@ -181,8 +186,39 @@ export class ChartPane {
       if (b.dataset.w) d.width = Number(b.dataset.w);
       if (b.dataset.s) d.style = b.dataset.s as LineKind;
       if (b.dataset.ray) d.ray = !rayOn(d);
+      if (b.dataset.lock) d.locked = !d.locked;
+      if (b.dataset.c !== undefined) {
+        // 空なら描いた時間足の色に戻す
+        if (b.dataset.c) d.custom = b.dataset.c;
+        else delete d.custom;
+      }
+      if (b.dataset.add) {
+        // 「＋」: 色を選んで登録し、この図形にも当てる
+        const input = this.styleBar.querySelector<HTMLInputElement>('input[type=color]')!;
+        input.value = d.custom ?? this.drawings.colorOf(d);
+        input.onchange = () => {
+          const c = input.value.toLowerCase();
+          const list = this.host.palette();
+          if (!list.includes(c)) this.host.setPalette([...list, c]);
+          d.custom = c;
+          this.styleBarKey = '';
+          this.drawings.onChange();
+          this.drawings.refresh();
+        };
+        input.click();
+        return;
+      }
       this.drawings.onChange();
       this.drawings.refresh();
+    });
+    // 登録した色を右クリックすると、一覧から消す
+    this.styleBar.addEventListener('contextmenu', (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-c]');
+      e.preventDefault();
+      if (!b?.dataset.c) return;
+      this.host.setPalette(this.host.palette().filter((c) => c !== b.dataset.c));
+      this.styleBarKey = '';
+      this.renderStyleBar();
     });
     this.drawings.onRefresh = () => this.renderStyleBar();
     this.indicators = new IndicatorLayer(this.chart);
@@ -537,7 +573,8 @@ export class ChartPane {
     const d = this.drawings.selected();
     const w = d ? this.drawings.lineWidthOf(d) : 0;
     const st = d?.style ?? 'solid';
-    const key = d ? `${d.id}:${w}:${st}:${rayOn(d)}` : '';
+    const palette = this.host.palette();
+    const key = d ? `${d.id}:${w}:${st}:${rayOn(d)}:${d.custom ?? ''}:${!!d.locked}:${palette.join()}` : '';
     if (key === this.styleBarKey) return;
     this.styleBarKey = key;
     this.styleBar.hidden = !d;
@@ -555,7 +592,14 @@ export class ChartPane {
       ).join('') +
       (hasRay(d.kind)
         ? `<i></i><button type="button" data-ray="1" class="ray ${rayOn(d) ? 'on' : ''}" title="レイ（右へ延ばす）。押すたびに延ばす・延ばさないを切り替える">R</button>`
-        : '');
+        : '') +
+      '<i></i>' +
+      palette
+        .map((c) => `<button type="button" data-c="${escAttr(c)}" class="swatch ${d.custom === c ? 'on' : ''}" title="この色にする（右クリックで一覧から消す）"><span style="background:${escAttr(c)}"></span></button>`)
+        .join('') +
+      `<button type="button" data-c="" class="swatch ${d.custom ? '' : 'on'}" title="描いた時間足の色に戻す">↺</button>` +
+      '<button type="button" data-add="1" title="色を選んで一覧に足す（この図形にも当てる）">＋</button><input type="color" hidden />' +
+      `<i></i><button type="button" data-lock="1" class="${d.locked ? 'on' : ''}" title="${d.locked ? 'ロック中（動かせない・消せない）。押すと外す' : 'ロックする（動かせない・消せないようにする）'}">${d.locked ? '🔒' : '🔓'}</button>`;
     this.placeStyleBar(this.host.styleBarPos());
   }
 

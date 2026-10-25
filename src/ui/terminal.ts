@@ -132,7 +132,10 @@ export interface Mt4Info {
 
 const STATUS_LABEL = { wait: '未エントリー', open: '保有中', closed: '決済済み' };
 
-export function renderMt4(rows: Mt4Row[], info: Mt4Info | null, digits: number, time: (t: number) => string): string {
+/**
+ * @param oldestFirst 古い取引を上にする（初期は新しい取引が上。「注文番号」の見出しをクリックで切り替える）
+ */
+export function renderMt4(rows: Mt4Row[], info: Mt4Info | null, digits: number, time: (t: number) => string, oldestFirst = false): string {
   const auto = `<button type="button" data-action="mt4-auto" aria-pressed="${!!info?.auto}" title="T580 の MT4 の R_ExportBarsHistory（EA）が、取引を建てた・決済したときに書き出す履歴を、自動で読み込み続けます（届くたびに丸ごと差し替えるので、重なりません）">MT4 から自動で読み込む</button>`;
   const month = info
     ? `<select data-action="mt4-month" title="この月（サーバー時刻）に決済した取引だけを、口座・成績・チャートに使います">
@@ -150,7 +153,9 @@ export function renderMt4(rows: Mt4Row[], info: Mt4Info | null, digits: number, 
     : `時刻のずれ: <b>${off} 時間</b>（この銘柄では判定できていません。価格データが無いか、取引がありません）`;
   const updated = info.auto && info.updated ? `（最後に MT4 が書き出したのは ${time(info.updated)}）` : '';
   const head = `${bar}<span class="hint">${esc(info.fileName)}${updated}　${judged}${info.others ? `　（他の銘柄 ${info.others} 件は表示していません）` : ''}　行をダブルクリック: 済んだ取引はチャートでその場所を表示（時刻はそのまま）、まだの取引はエントリーの直前まで進む</span></div>`;
-  const body = rows.map((r) => {
+  // 並べ方: 注文時間（同じなら注文番号）の順。初期は新しい取引が上
+  const sorted = rows.slice().sort((a, b) => (a.openUtc - b.openUtc || a.ticket - b.ticket) * (oldestFirst ? 1 : -1));
+  const body = sorted.map((r) => {
     const cls = r.status === 'wait' ? 'pending' : '';
     const pl = r.status === 'closed' ? money(r.profit + r.swap + r.commission) : r.status === 'open' && r.floating !== null ? money(r.floating) : '<td></td>';
     return `<tr data-ticket="${r.ticket}" data-kind="mt4" class="${cls}">
@@ -163,6 +168,6 @@ export function renderMt4(rows: Mt4Row[], info: Mt4Info | null, digits: number, 
   const total = closed.reduce((s, r) => s + r.profit + r.swap + r.commission, 0);
   const floating = rows.reduce((s, r) => s + (r.status === 'open' && r.floating !== null && Number.isFinite(r.floating) ? r.floating : 0), 0);
   const summary = `<tr class="summary"><td colspan="12">決済済み ${closed.length} 件の損益（記録の値）: <b class="${total < 0 ? 'neg' : ''}">${formatMoney(total)}</b>　保有中 ${rows.filter((r) => r.status === 'open').length} 件の含み損益: <b class="${floating < 0 ? 'neg' : ''}">${formatMoney(floating)}</b>　未エントリー ${rows.filter((r) => r.status === 'wait').length} 件</td></tr>`;
-  return `${head}<table><thead><tr><th>注文番号</th><th>状態</th><th>注文時間</th><th>取引種別</th><th>数量</th><th>価格</th><th>決済逆指値(S/L)</th><th>決済指値(T/P)</th><th>決済時間</th><th>価格</th><th>スワップ</th><th>損益</th></tr></thead>
+  return `${head}<table><thead><tr><th class="sortable" data-action="mt4-sort" title="クリックで並べ方を切り替える（新しい順・古い順）">注文番号 ${oldestFirst ? '▲' : '▼'}</th><th>状態</th><th>注文時間</th><th>取引種別</th><th>数量</th><th>価格</th><th>決済逆指値(S/L)</th><th>決済指値(T/P)</th><th>決済時間</th><th>価格</th><th>スワップ</th><th>損益</th></tr></thead>
     <tbody>${summary}${body.join('')}</tbody></table>`;
 }
