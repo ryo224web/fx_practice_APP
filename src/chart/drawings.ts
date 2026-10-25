@@ -321,7 +321,8 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     for (let k = 1; k < pts.length; k++) segments.push({ id: crypto.randomUUID(), kind: 'trend', points: [pts[k - 1], pts[k]], color: COLORS.trend, tf: d.tf });
     const at = this.drawings.indexOf(d);
     this.drawings = [...this.drawings.slice(0, at), ...segments, ...this.drawings.slice(at + 1)];
-    this.selectedId = segments.length ? segments[segments.length - 1].id : null;
+    // 描き終えたら何も選ばない（最後の 1 本が選ばれたままだと気になるため。2026-10-26）
+    this.selectedId = null;
     this.onChange();
     this.refresh();
   }
@@ -466,6 +467,18 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     if (this.tool === 'poly') {
       const pt = { t: this.mapper.toTime(m.l), p: m.p };
       const d = this.drawings.find((x) => x.id === this.polyId);
+      // 描いている途中のポリラインの、もう引いた線（か点）をクリックしたら終わる（最後の仮の線は除く）
+      if (d) {
+        const fixed = d.points.slice(0, -1).map((pt) => this.toPx(pt));
+        const onLine = fixed.some((q, i) => q && (Math.hypot(m.px.x - q.x, m.px.y - q.y) <= HIT || (i > 0 && fixed[i - 1] && distToSegment(m.px, fixed[i - 1]!, q) <= HIT)));
+        if (onLine) {
+          this.finishPoly();
+          e.stopPropagation();
+          e.preventDefault();
+          this.refresh();
+          return;
+        }
+      }
       if (d) {
         // 仮の点をここに固定して、次の仮の点を足す
         d.points[d.points.length - 1] = pt;
