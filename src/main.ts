@@ -366,6 +366,7 @@ async function ensureWindow(fromT: number, toT: number, exact = false) {
 async function travel(time: number, keepView = false) {
   if (traveling) return;
   traveling = true;
+  clearTradeHighlight();
   setPlaying(false);
   try {
     const t = test();
@@ -469,6 +470,8 @@ function notifyFills(events: FillEvent[]) {
 /** target 番目の 1 分足まで動く。約定で止まったら true。pause=false なら途中の約定で止まらない（日時への移動など） */
 function goTo(target: number, pause = true): boolean {
   if (traveling || !runner) return false;
+  // リプレイの時刻が動いたら、行のダブルクリックで指定した取引（縦線）は外す（スクショに古い注文番号が付かないように）
+  if (target !== cursor) clearTradeHighlight();
   if (target < cursor) {
     // 戻るときは、手前の区切りから計算し直す（データの読み込みが要ることもあるので非同期）
     const i = Math.max(0, target);
@@ -1411,6 +1414,7 @@ function showHistoryTrade(ticket: number, closeTime: number) {
   const h = shownAccount().history.find((x) => x.kind === 'trade' && x.ticket === ticket && x.closeTime === closeTime);
   if (!h || h.kind !== 'trade') return;
   for (const p of panes) p.overlay.setHighlight({ openTime: h.openTime, closeTime: h.closeTime });
+  highlightTicket = ticket;
   for (const p of visiblePanes()) p.showTimeRange(h.openTime, h.closeTime);
   if (!panes[0].overlay.showHistory) $('#toggle-history').click();
 }
@@ -1429,6 +1433,7 @@ async function jumpToTrade(ticket: number) {
     // 決済がまだ先なら、今の時刻までを見せる（先の足はまだ無い）
     const closeUtc = t.closeServer === null ? now : Math.min(mt4ToUtc(t.closeServer), now);
     for (const p of panes) p.overlay.setHighlight({ openTime: openUtc, closeTime: closeUtc });
+    highlightTicket = ticket;
     for (const p of visiblePanes()) p.showTimeRange(openUtc, closeUtc);
     return;
   }
@@ -2858,13 +2863,24 @@ function onKey(e: KeyboardEvent) {
     case 'Escape':
       setCrosshair(false);
       for (const p of panes) p.drawings.setTool(null);
-      for (const p of panes) p.overlay.setHighlight(null);
+      clearTradeHighlight();
       ctxMenu.hidden = true;
       return;
     default:
       return;
   }
   e.preventDefault();
+}
+
+// ---------------- 取引の指定（口座履歴・MT4 履歴の行のダブルクリック） ----------------
+
+/** 行のダブルクリックで指定している取引の注文番号（縦線を引いている間）。スクショの名前の先頭に付ける */
+let highlightTicket: number | null = null;
+
+function clearTradeHighlight() {
+  if (highlightTicket === null) return;
+  highlightTicket = null;
+  for (const p of panes) p.overlay.setHighlight(null);
 }
 
 // ---------------- スクショ（📷） ----------------
@@ -2920,15 +2936,18 @@ async function takeShots() {
   const sym = md.symbol.toUpperCase();
   const zone = state.zone === 'jst' ? '日本時間' : 'サーバー時間';
   const files: { name: string; data: string }[] = [];
+  // 行のダブルクリックで取引を指定していれば、その注文番号を名前の先頭に付ける（Finder で注文番号ごとにまとまる）
+  const ticket = highlightTicket;
+  const prefix = ticket === null ? '' : `#${ticket}_`;
   toast('スクショを撮っています…');
   try {
     for (const tf of SHOT_TFS) {
       if (pane.tf !== tf) setTf(tf);
       await settle();
-      const img = withHeader(pane.chart.takeScreenshot(), `${sym}  ${tf}    ${when}（${zone}）    ${currentMeta().name}`);
+      const img = withHeader(pane.chart.takeScreenshot(), `${ticket === null ? '' : `#${ticket}    `}${sym}  ${tf}    ${when}（${zone}）    ${currentMeta().name}`);
       // Finder の名前順で M1 → M5 → M15 → H1 と並ぶように、時間足の前に短い順の番号を付ける
       const order = [...SHOT_TFS].reverse().indexOf(tf) + 1;
-      files.push({ name: `${stamp}_${sym}_${order}_${tf}`, data: img.toDataURL('image/png') });
+      files.push({ name: `${prefix}${stamp}_${sym}_${order}_${tf}`, data: img.toDataURL('image/png') });
     }
   } finally {
     if (pane.tf !== back) setTf(back);
@@ -2938,7 +2957,8 @@ async function takeShots() {
     const res = await fetch('/api/screenshots', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: currentMeta().name, files }) });
     if (!res.ok) throw new Error(String(res.status));
     const { dir } = (await res.json()) as { dir: string };
-    toast(`スクショを ${files.length} 枚保存しました（${dir.replace(/^.*\/fx_practice\//, '')}。📷 を右クリックでフォルダを開く）`);
+    const which = ticket === null ? '注文番号なし' : `#${ticket} として`;
+    toast(`スクショを ${which} ${files.length} 枚保存しました（${dir.replace(/^.*\/fx_practice\//, '')}。📷 を右クリックでフォルダを開く）`);
   } catch {
     // サーバーに届かなければ、ブラウザのダウンロードで保存する
     for (const f of files) {
