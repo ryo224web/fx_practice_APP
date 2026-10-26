@@ -132,6 +132,8 @@ export function lineDash(kind: LineKind | undefined, width: number): number[] {
 
 /** 図形の線の太さ（初期値） */
 export const DEFAULT_LINE_WIDTH = 2;
+/** 図形の種類ごとの線の太さの初期値（フィボは水準の線が多いので細く。2026-10-26） */
+export const defaultLineWidth = (kind: DrawingKind) => (kind === 'fibo' || kind === 'fiboexp' ? 1 : DEFAULT_LINE_WIDTH);
 
 /** 時間足ごとの図形の色（初期値） */
 export const DEFAULT_TF_COLORS: Record<string, string> = {
@@ -247,7 +249,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   /** 図形の色（時間足ごとの色を main.ts で決める） */
   colorOf: (d: Drawing) => string = (d) => (d.tf ? (DEFAULT_TF_COLORS[d.tf] ?? d.color) : d.color);
   /** 図形の種類ごとの線の太さ（「色・太さ」で決める。選んでいるときは 1 太くする） */
-  widthOf: (kind: DrawingKind) => number = () => DEFAULT_LINE_WIDTH;
+  widthOf: (kind: DrawingKind) => number = defaultLineWidth;
   /** 描き直すたびに呼ぶ（選んでいる図形が変わったら、右上の太さ・線の種類の欄を出す・消すため） */
   onRefresh: () => void = () => {};
 

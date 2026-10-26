@@ -1,6 +1,6 @@
 import { type CandlestickData, type Time, type UTCTimestamp } from 'lightweight-charts';
 import { commandIndex, KEY_COMMANDS, keyLabel, keyOf, resolveKeymap } from './ui/keys';
-import { DEFAULT_LINE_WIDTH, DEFAULT_PALETTE, DEFAULT_TF_COLORS, DRAWING_LABELS, FIBO_EXP_LEVELS, FIBO_LEVELS, levelsFromPercents, type Drawing, type DrawingKind } from './chart/drawings';
+import { defaultLineWidth, DEFAULT_PALETTE, DEFAULT_TF_COLORS, DRAWING_LABELS, FIBO_EXP_LEVELS, FIBO_LEVELS, levelsFromPercents, type Drawing, type DrawingKind } from './chart/drawings';
 import { DEFAULT_INDICATORS, normalizeIndicators, type IndicatorConfig } from './chart/indicators';
 import { ChartPane, type PaneHost } from './chart/pane';
 import { type LineEdit, type OrderPreview } from './chart/trades';
@@ -1740,7 +1740,7 @@ function openColorDialog(colors: Record<string, string>, widths: Partial<Record<
     .join('');
   const opts = (v: number) => [1, 2, 3, 4].map((n) => `<option value="${n}" ${n === v ? 'selected' : ''}>${n}</option>`).join('');
   $('#width-table').innerHTML = (Object.keys(DRAWING_LABELS) as DrawingKind[])
-    .map((k) => `<tr><td>${DRAWING_LABELS[k]}</td><td><select data-kind="${k}">${opts(widths[k] ?? DEFAULT_LINE_WIDTH)}</select></td></tr>`)
+    .map((k) => `<tr><td>${DRAWING_LABELS[k]}</td><td><select data-kind="${k}">${opts(widths[k] ?? defaultLineWidth(k))}</select></td></tr>`)
     .join('');
   const dlg = $<HTMLDialogElement>('#color-dialog');
   if (!dlg.open) dlg.showModal();
@@ -2387,7 +2387,7 @@ function createPanes() {
     p.overlay.onEdit = onLineEdit;
     p.drawings.colorOf = (d) => d.custom ?? (d.tf ? (state.tfColors?.[d.tf] ?? DEFAULT_TF_COLORS[d.tf] ?? d.color) : d.color);
     p.drawings.levelsOf = levelsOf;
-    p.drawings.widthOf = (k) => state.lineWidths?.[k] ?? DEFAULT_LINE_WIDTH;
+    p.drawings.widthOf = (k) => state.lineWidths?.[k] ?? defaultLineWidth(k);
     p.drawings.onEditLevels = () => openLevelsDialog();
     p.setRightOffset(state.rightOffset ?? 12);
     return p;
