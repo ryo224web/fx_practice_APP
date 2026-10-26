@@ -1,6 +1,6 @@
 import { type CandlestickData, type Time, type UTCTimestamp } from 'lightweight-charts';
 import { commandIndex, KEY_COMMANDS, keyLabel, keyOf, resolveKeymap } from './ui/keys';
-import { DEFAULT_LINE_WIDTH, DEFAULT_PALETTE, DEFAULT_TF_COLORS, DRAWING_LABELS, FIBO_EXP_LEVELS, FIBO_LEVELS, levelsFromPercents, type DrawingKind } from './chart/drawings';
+import { DEFAULT_LINE_WIDTH, DEFAULT_PALETTE, DEFAULT_TF_COLORS, DRAWING_LABELS, FIBO_EXP_LEVELS, FIBO_LEVELS, levelsFromPercents, type Drawing, type DrawingKind } from './chart/drawings';
 import { DEFAULT_INDICATORS, normalizeIndicators, type IndicatorConfig } from './chart/indicators';
 import { ChartPane, type PaneHost } from './chart/pane';
 import { type LineEdit, type OrderPreview } from './chart/trades';
@@ -235,6 +235,8 @@ async function openSymbol(symbol: string, around: number | null) {
     p.setDigits(md.digits);
     p.drawings.setDrawings(list);
   }
+  // 銘柄が変わったら、図形の取り消しの記録も最初から
+  resetDrawingHistory();
   // 読み込み済みの MT4 履歴に、この銘柄の取引があれば時刻のずれを判定する（まだなら）
   if (state.mt4) await detectMt4ForSymbol();
 }
@@ -2460,6 +2462,7 @@ function setupControls() {
         x.drawings.drawings = p.drawings.drawings;
         x.drawings.refresh();
       }
+      recordDrawingChange();
       save();
     };
   }
@@ -2821,6 +2824,12 @@ function toggleTool(tool: DrawingKind) {
 function onKey(e: KeyboardEvent) {
   const tag = (e.target as HTMLElement).tagName;
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || document.querySelector('dialog[open]')) return;
+  // ⌘Z で図形の操作を元に戻す、⌘⇧Z でやり直す（Finder などと同じ。文字を打っている欄の中では、その欄の取り消し）
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && e.code === 'KeyZ') {
+    e.preventDefault();
+    undoDrawing(e.shiftKey);
+    return;
+  }
   // ⌘C（コピー）などは keyOf が null を返すので邪魔しない
   const k = keyOf(e);
   const cmd = k && keyIndex.get(k);
@@ -2849,6 +2858,45 @@ function onKey(e: KeyboardEvent) {
       return;
   }
   e.preventDefault();
+}
+
+// ---------------- 図形の取り消し（⌘Z）・やり直し（⌘⇧Z） ----------------
+// 図形が変わるたび（描く・消す・動かす・色や太さ・全消去）に、変わる前の図形を覚えておく。今の銘柄の図形だけ。
+// 注文やリプレイの時刻は対象外（そちらは ← で戻して計算し直す）
+
+const UNDO_MAX = 100;
+let undoStack: string[] = [];
+let redoStack: string[] = [];
+/** 今の図形（JSON）。次に変わったとき、これを「戻す先」として覚える */
+let drawingsSnapshot = '[]';
+
+function resetDrawingHistory() {
+  undoStack = [];
+  redoStack = [];
+  drawingsSnapshot = JSON.stringify(state.drawings[md.symbol] ?? []);
+}
+
+function recordDrawingChange() {
+  const now = JSON.stringify(state.drawings[md.symbol] ?? []);
+  if (now === drawingsSnapshot) return;
+  undoStack.push(drawingsSnapshot);
+  if (undoStack.length > UNDO_MAX) undoStack.shift();
+  redoStack = [];
+  drawingsSnapshot = now;
+}
+
+function undoDrawing(redo = false) {
+  const from = redo ? redoStack : undoStack;
+  const to = redo ? undoStack : redoStack;
+  const prev = from.pop();
+  if (prev === undefined) return toast(redo ? 'やり直せる図形の操作はありません' : '元に戻せる図形の操作はありません');
+  to.push(drawingsSnapshot);
+  const list = JSON.parse(prev) as Drawing[];
+  state.drawings[md.symbol] = list;
+  for (const p of panes) p.drawings.setDrawings(list);
+  drawingsSnapshot = prev;
+  toast(redo ? '図形の操作をやり直しました（⌘Z で元に戻す）' : '図形の操作を元に戻しました（⌘⇧Z でやり直す）');
+  save();
 }
 
 // ---------------- 起動 ----------------

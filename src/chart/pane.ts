@@ -191,6 +191,10 @@ export class ChartPane {
       if (b.dataset.s) d.style = b.dataset.s as LineKind;
       if (b.dataset.ray) d.ray = !rayOn(d);
       if (b.dataset.lock) d.locked = !d.locked;
+      if (b.dataset.callout) {
+        d.callout = !d.callout;
+        if (d.callout) this.drawings.ensureTail(d);
+      }
       if (b.dataset.c !== undefined) {
         // 空なら描いた時間足の色に戻す
         if (b.dataset.c) d.custom = b.dataset.c;
@@ -581,7 +585,7 @@ export class ChartPane {
     const w = d ? (d.kind === 'text' ? TEXT_SIZES.indexOf(this.drawings.textSizeOf(d)) + 1 : this.drawings.lineWidthOf(d)) : 0;
     const st = d?.style ?? 'solid';
     const palette = this.host.palette();
-    const key = d ? `${d.id}:${w}:${st}:${rayOn(d)}:${d.custom ?? ''}:${!!d.locked}:${palette.join()}` : '';
+    const key = d ? `${d.id}:${w}:${st}:${rayOn(d)}:${d.custom ?? ''}:${!!d.locked}:${!!d.callout}:${palette.join()}` : '';
     if (key === this.styleBarKey) return;
     this.styleBarKey = key;
     this.styleBar.hidden = !d;
@@ -603,6 +607,9 @@ export class ChartPane {
           ).join('')) +
       (hasRay(d.kind)
         ? `<i></i><button type="button" data-ray="1" class="ray ${rayOn(d) ? 'on' : ''}" title="レイ（右へ延ばす）。押すたびに延ばす・延ばさないを切り替える">R</button>`
+        : '') +
+      (isText
+        ? `<i></i><button type="button" data-callout="1" class="${d.callout ? 'on' : ''}" title="吹き出しにする・ふつうの文字に戻す（吹き出しはしっぽの先をドラッグして、指したい所へ向ける）">💬</button>`
         : '') +
       '<i></i>' +
       palette

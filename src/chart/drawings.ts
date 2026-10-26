@@ -46,10 +46,47 @@ export interface Drawing {
   /** テキストの枠の幅・高さ（px）。左右・上下の辺のつまみで決める。幅を決めると、その幅で折り返す */
   boxW?: number;
   boxH?: number;
+  /** テキストを吹き出しにする（右上の欄の 💬）。しっぽの先は 2 つ目の点（時刻と価格） */
+  callout?: boolean;
 }
 
 /** テキストの枠の線と文字の間（px） */
 const TEXT_PAD = 3;
+/** 吹き出しの塗りの色（初め。欄の色を選ぶとその色）と、吹き出しの縁と文字の間・角の丸み（px） */
+const CALLOUT_FILL = '#f3efe0';
+const CALLOUT_PAD = 8;
+const CALLOUT_RADIUS = 8;
+const textPad = (d: Drawing) => (d.callout ? CALLOUT_PAD : TEXT_PAD);
+
+/** 色が明るいか（吹き出しの文字を黒にするか白にするか決める） */
+function isLight(color: string): boolean {
+  const m = /^#?([0-9a-f]{6})$/i.exec(color);
+  if (!m) return true;
+  const n = parseInt(m[1], 16);
+  return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255 > 0.6;
+}
+
+/**
+ * 吹き出しのしっぽの付け根の 2 点。四角（x0〜x1・y0〜y1）の辺のうち、先（tip）に一番近い辺の上に置く。
+ * 先が四角の中なら null（しっぽを描かない）
+ */
+function calloutTail(x0: number, y0: number, x1: number, y1: number, tip: Px): [Px, Px] | null {
+  const r = CALLOUT_RADIUS;
+  const clamp = (v: number, lo: number, hi: number) => (lo > hi ? (lo + hi) / 2 : Math.max(lo, Math.min(hi, v)));
+  if (tip.y > y1 || tip.y < y0) {
+    const y = tip.y > y1 ? y1 : y0;
+    const hw = Math.min(10, (x1 - x0) / 4);
+    const cx = clamp(tip.x, x0 + r + hw, x1 - r - hw);
+    return [{ x: cx - hw, y }, { x: cx + hw, y }];
+  }
+  if (tip.x > x1 || tip.x < x0) {
+    const x = tip.x > x1 ? x1 : x0;
+    const hw = Math.min(10, (y1 - y0) / 4);
+    const cy = clamp(tip.y, y0 + r + hw, y1 - r - hw);
+    return [{ x, y: cy - hw }, { x, y: cy + hw }];
+  }
+  return null;
+}
 
 /** text を幅 maxW で折り返した行（maxW が無ければ改行だけで分ける）。日本語に合わせて 1 文字ずつ折り返す */
 function wrapText(ctx: CanvasRenderingContext2D, text: string, maxW: number | undefined): string[] {
@@ -445,14 +482,18 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     return d.fontSize ?? textSize(this.lineWidthOf(d));
   }
 
-  /** テキストの 8 つのつまみの位置（0〜3: 左上・右上・右下・左下、4〜7: 上・右・下・左の辺の真ん中） */
-  private textHandles(d: Drawing, a: Px): Px[] {
+  /**
+   * テキストのつまみの位置（0〜3: 左上・右上・右下・左下、4〜7: 上・右・下・左の辺の真ん中。
+   * 吹き出しなら 8: しっぽの先）
+   */
+  private textHandles(d: Drawing, a: Px, tip?: Px | null): Px[] {
     const box = this.textBoxes.get(d.id);
     if (!box) return [];
-    const x0 = a.x - TEXT_PAD;
-    const y0 = a.y - TEXT_PAD;
-    const x1 = a.x + box.w + TEXT_PAD;
-    const y1 = a.y + box.h + TEXT_PAD;
+    const pad = textPad(d);
+    const x0 = a.x - pad;
+    const y0 = a.y - pad;
+    const x1 = a.x + box.w + pad;
+    const y1 = a.y + box.h + pad;
     const mx = (x0 + x1) / 2;
     const my = (y0 + y1) / 2;
     return [
@@ -464,7 +505,20 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       { x: x1, y: my },
       { x: mx, y: y1 },
       { x: x0, y: my },
+      ...(d.callout && tip ? [tip] : []),
     ];
+  }
+
+  /** 吹き出しにしたとき、しっぽの先が無ければ、吹き出しの左下の少し下に置く */
+  ensureTail(d: Drawing) {
+    if (d.points[1] || !this.chart || !this.series) return;
+    const at = this.toPx(d.points[0]);
+    // まだ描いていなければ（打ち終えた直後）、1 行分の大きさとみなす
+    const box = this.textBoxes.get(d.id) ?? { w: 60, h: Math.round(this.textSizeOf(d) * 1.3) };
+    if (!at) return;
+    const l = this.chart.timeScale().coordinateToLogical(at.x + Math.min(30, box.w / 3));
+    const p = this.series.coordinateToPrice(at.y + box.h + CALLOUT_PAD + 45);
+    if (l !== null && p !== null) d.points[1] = { t: this.mapper.toTime(l), p };
   }
 
   /** テキストのつまみを動かす。4 隅は反対の角を止めて拡大・縮小、辺は幅・高さだけ（左・上の辺は左上の点も動く） */
@@ -474,6 +528,15 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       const p = this.series!.coordinateToPrice(y);
       if (l !== null && p !== null) d.points[0] = { t: this.mapper.toTime(l), p };
     };
+    if (handle === 8) {
+      // しっぽの先（マグネットを入れていれば足に吸い付く）
+      const l = this.chart!.timeScale().coordinateToLogical(mouse.x);
+      const p = this.series!.coordinateToPrice(mouse.y);
+      if (l === null || p === null) return;
+      const m = this.snap({ px: mouse, l, p });
+      d.points[1] = { t: this.mapper.toTime(m.l), p: m.p };
+      return;
+    }
     const minW = 20;
     const lh = Math.round(s.size * 1.3);
     if (handle <= 3) {
@@ -523,13 +586,23 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     ta.style.fontSize = `${size}px`;
     // 幅は描いた枠に合わせる（幅を決めていればその幅で折り返す）。高さは中身に合わせて伸ばす
     const box = this.textBoxes.get(d.id);
-    ta.style.width = `${(d.boxW ?? Math.max(180, (box?.w ?? 0) + size)) + TEXT_PAD * 2}px`;
+    ta.style.width = `${(d.boxW ?? Math.max(180, (box?.w ?? 0) + size)) + textPad(d) * 2}px`;
     ta.style.whiteSpace = d.boxW ? 'pre-wrap' : 'pre';
     const fit = () => {
       ta.style.height = 'auto';
       ta.style.height = `${Math.max(ta.scrollHeight, d.boxH ?? 0) + 2}px`;
     };
     ta.style.color = this.colorOf(d);
+    if (d.callout) {
+      // 吹き出しは、描いたときと同じ塗り・文字の色・縁の間で打つ
+      const fill = d.custom ?? CALLOUT_FILL;
+      ta.style.background = fill;
+      ta.style.color = isLight(fill) ? '#111' : '#fff';
+      ta.style.padding = `${CALLOUT_PAD - 1}px`;
+      ta.style.borderRadius = `${CALLOUT_RADIUS}px`;
+      ta.style.left = `${at.x - CALLOUT_PAD}px`;
+      ta.style.top = `${at.y - CALLOUT_PAD}px`;
+    }
     ta.placeholder = '文字を入力（Enter で決定）';
     this.el.append(ta);
     fit();
@@ -545,6 +618,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       this.editingId = null;
       if (ok) d.text = v;
       if (!d.text) this.drawings = this.drawings.filter((x) => x !== d);
+      else if (d.callout) this.ensureTail(d);
       this.selectedId = null;
       this.onChange();
       this.refresh();
@@ -608,7 +682,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       const [a, b] = pts as Px[];
       // テキストの 8 つのつまみ: 0〜3 は 4 隅（左上・右上・右下・左下。拡大・縮小）、4〜7 は辺（上・右・下・左。幅・高さ）
       if (d.id === this.selectedId && d.kind === 'text' && !d.locked) {
-        const hs = this.textHandles(d, a);
+        const hs = this.textHandles(d, a, b);
         for (let h = 0; h < hs.length; h++) if (Math.hypot(px.x - hs[h].x, px.y - hs[h].y) <= HIT) return { id: d.id, handle: h };
       }
       if (d.id === this.selectedId && !onePoint(d.kind)) {
@@ -626,7 +700,14 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         case 'text': {
           // 文字の四角（描いたときに測った大きさ）の中
           const box = this.textBoxes.get(d.id);
-          hit = !!box && px.x >= a.x - TEXT_PAD - 2 && px.x <= a.x + box.w + TEXT_PAD + 2 && px.y >= a.y - TEXT_PAD - 2 && px.y <= a.y + box.h + TEXT_PAD + 2;
+          const pad = textPad(d) + 2;
+          hit = !!box && px.x >= a.x - pad && px.x <= a.x + box.w + pad && px.y >= a.y - pad && px.y <= a.y + box.h + pad;
+          // 吹き出しはしっぽの上でもつかめる
+          if (!hit && box && d.callout && b) {
+            const q = textPad(d);
+            const base = calloutTail(a.x - q, a.y - q, a.x + box.w + q, a.y + box.h + q, b);
+            if (base) hit = distToSegment(px, { x: (base[0].x + base[1].x) / 2, y: (base[0].y + base[1].y) / 2 }, b) <= HIT + 2;
+          }
           break;
         }
         case 'trend':
@@ -728,6 +809,8 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         points: onePoint(this.tool) ? [{ t: this.mapper.toTime(sm.l), p: sm.p }] : [0, 1].map(() => ({ t: this.mapper.toTime(sm.l), p: sm.p })),
         color: COLORS[this.tool],
         tf: this.tf,
+        // テキストは初めから吹き出し（右上の欄の 💬 でふつうの文字にできる）
+        ...(this.tool === 'text' ? { callout: true } : {}),
       };
       this.drawings.push(d);
       this.selectedId = d.id;
@@ -797,7 +880,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     if (Math.abs(dl) > 0 || Math.abs(dp) > 0) drag.moved = true;
     d.points = drag.orig.map((o, k) => {
       // 水平線・垂直線は点が 1 つなので、つかんで動かすときもマグネットで吸い付ける
-      if (drag.handle === -1 && onePoint(d.kind) && this.magnet && sm !== m) return { t: this.mapper.toTime(sm.l), p: sm.p };
+      if (drag.handle === -1 && onePoint(d.kind) && d.kind !== 'text' && this.magnet && sm !== m) return { t: this.mapper.toTime(sm.l), p: sm.p };
       if (drag.handle === -1) return { t: this.mapper.toTime(o.l + dl), p: o.p + dp };
       // 長方形の残りの 2 隅: 2 = (A の時刻, B の価格)、3 = (B の時刻, A の価格)
       if (d.kind === 'rect' && drag.handle >= 2) {
@@ -922,23 +1005,42 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         ctx.textBaseline = 'top';
         const lines = wrapText(ctx, d.text ?? '', d.boxW);
         const lh = Math.round(size * 1.3);
-        let tw = 0;
-        lines.forEach((t, i) => {
-          ctx.fillText(t, a.x, a.y + i * lh);
-          tw = Math.max(tw, ctx.measureText(t).width);
-        });
+        const tw = Math.max(0, ...lines.map((t) => ctx.measureText(t).width));
         // 枠の大きさ: 幅・高さを決めていればそれ（文字が多ければ高さは文字に合わせて伸びる）
         const bw = d.boxW ?? tw;
         const bh = Math.max(d.boxH ?? 0, lines.length * lh);
         this.textBoxes.set(d.id, { w: bw, h: bh });
+        const pad = textPad(d);
+        if (d.callout) {
+          // 吹き出し: 角の丸い四角としっぽを塗り、文字は塗りが明るければ黒・暗ければ白
+          const fill = d.custom ?? CALLOUT_FILL;
+          const [x0, y0, x1, y1] = [a.x - pad, a.y - pad, a.x + bw + pad, a.y + bh + pad];
+          ctx.setLineDash([]);
+          ctx.fillStyle = fill;
+          ctx.beginPath();
+          ctx.roundRect(x0, y0, x1 - x0, y1 - y0, CALLOUT_RADIUS);
+          ctx.fill();
+          const base = b ? calloutTail(x0, y0, x1, y1, b) : null;
+          if (base && b) {
+            ctx.beginPath();
+            ctx.moveTo(base[0].x, base[0].y);
+            ctx.lineTo(b.x, b.y);
+            ctx.lineTo(base[1].x, base[1].y);
+            ctx.closePath();
+            ctx.fill();
+          }
+          ctx.fillStyle = isLight(fill) ? '#111' : '#fff';
+        }
+        lines.forEach((t, i) => ctx.fillText(t, a.x, a.y + i * lh));
         if (sel) {
+          ctx.strokeStyle = d.callout ? '#4493f8' : color;
           ctx.setLineDash([3, 3]);
           ctx.lineWidth = 1;
-          ctx.strokeRect(a.x - TEXT_PAD, a.y - TEXT_PAD, bw + TEXT_PAD * 2, bh + TEXT_PAD * 2);
+          ctx.strokeRect(a.x - pad, a.y - pad, bw + pad * 2, bh + pad * 2);
           ctx.setLineDash([]);
           if (!d.locked) {
             ctx.fillStyle = '#fff';
-            for (const q of this.textHandles(d, a)) {
+            for (const q of this.textHandles(d, a, b)) {
               ctx.fillRect(q.x - 3, q.y - 3, 6, 6);
               ctx.strokeRect(q.x - 3, q.y - 3, 6, 6);
             }
