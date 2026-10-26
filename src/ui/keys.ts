@@ -36,6 +36,7 @@ export const KEY_COMMANDS: KeyCommand[] = [
   { id: 'tool:rect', label: '長方形', group: '描画' },
   { id: 'tool:fibo', label: 'フィボナッチ', group: '描画' },
   { id: 'tool:fiboexp', label: 'フィボナッチ・エクスパンション', group: '描画' },
+  { id: 'tool:text', label: 'テキスト', group: '描画' },
   { id: 'magnet', label: 'マグネットを入れる・切る', group: '描画' },
   { id: 'newOrder', label: '新規注文', group: '注文' },
   { id: 'easyOrder', label: 'EasyOrder を開く・閉じる', group: '注文' },

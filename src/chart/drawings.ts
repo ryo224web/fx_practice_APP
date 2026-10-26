@@ -18,7 +18,7 @@ import type {
 } from 'lightweight-charts';
 import type { TimeMapper } from './mapper';
 
-export type DrawingKind = 'hline' | 'vline' | 'trend' | 'poly' | 'channel' | 'rect' | 'fibo' | 'fiboexp';
+export type DrawingKind = 'hline' | 'vline' | 'trend' | 'poly' | 'channel' | 'rect' | 'fibo' | 'fiboexp' | 'text';
 
 export interface Drawing {
   id: string;
@@ -39,7 +39,41 @@ export interface Drawing {
   custom?: string;
   /** ロック（右上の欄の 🔒）。動かす・大きさを変える・消すができない（選んで太さ・色などを変えるのはできる）。全消去でも残す */
   locked?: boolean;
+  /** テキストの中身（改行も入る）。点は文字の左上 */
+  text?: string;
+  /** テキストの文字の大きさ（px）。4 隅のつまみで拡大・縮小する。無ければ太さ 1〜4 から（TEXT_SIZES） */
+  fontSize?: number;
+  /** テキストの枠の幅・高さ（px）。左右・上下の辺のつまみで決める。幅を決めると、その幅で折り返す */
+  boxW?: number;
+  boxH?: number;
 }
+
+/** テキストの枠の線と文字の間（px） */
+const TEXT_PAD = 3;
+
+/** text を幅 maxW で折り返した行（maxW が無ければ改行だけで分ける）。日本語に合わせて 1 文字ずつ折り返す */
+function wrapText(ctx: CanvasRenderingContext2D, text: string, maxW: number | undefined): string[] {
+  const out: string[] = [];
+  for (const para of text.split('\n')) {
+    if (!maxW) {
+      out.push(para);
+      continue;
+    }
+    let line = '';
+    for (const ch of para) {
+      if (line && ctx.measureText(line + ch).width > maxW) {
+        out.push(line);
+        line = ch;
+      } else line += ch;
+    }
+    out.push(line);
+  }
+  return out;
+}
+
+/** テキストの文字の大きさ（px）。線の太さ 1〜4 をこの大きさにする（右上の欄の丸 4 つで選ぶ） */
+export const TEXT_SIZES = [11, 13, 16, 20];
+const textSize = (width: number) => TEXT_SIZES[Math.max(1, Math.min(4, width)) - 1];
 
 /** 右上の欄に並べる色（初期値。「＋」で足し、右クリックで消す） */
 export const DEFAULT_PALETTE = ['#f85149', '#3fb950', '#4493f8', '#e5a50a', '#a371f7', '#ffffff'];
@@ -84,6 +118,7 @@ export const DRAWING_LABELS: Record<DrawingKind, string> = {
   rect: '長方形',
   fibo: 'フィボナッチ',
   fiboexp: 'フィボナッチ・エクスパンション',
+  text: 'テキスト',
 };
 
 const COLORS: Record<DrawingKind, string> = {
@@ -95,6 +130,7 @@ const COLORS: Record<DrawingKind, string> = {
   rect: '#a371f7',
   fibo: '#e5a50a',
   fiboexp: '#e5a50a',
+  text: '#e6edf3',
 };
 
 /** MT4 の既定と同じ。0 が 2 点目、100 が 1 点目（「水準」で変えられる。これは初期値） */
@@ -128,7 +164,7 @@ interface Px {
 }
 
 function onePoint(kind: DrawingKind) {
-  return kind === 'hline' || kind === 'vline';
+  return kind === 'hline' || kind === 'vline' || kind === 'text';
 }
 
 /** つまみの位置。長方形は 4 隅（2 = A の時刻・B の価格、3 = B の時刻・A の価格）、ほかは点そのもの */
@@ -204,6 +240,8 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     orig: { l: number; p: number }[];
     moved: boolean;
     creating: boolean;
+    /** テキストのつまみをつかんだときの枠（px）と文字の大きさ */
+    text?: { x: number; y: number; w: number; h: number; size: number; boxW?: number; boxH?: number };
   } | null = null;
   /** クリック 2 回で描く途中（1 点目を置いた後） */
   private placing: string | null = null;
@@ -214,11 +252,14 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     private readonly el: HTMLElement,
     private readonly mapper: TimeMapper,
   ) {
-    el.addEventListener('mousedown', (e) => this.onDown(e), true);
+    // テキストを打つ欄の中のクリック・ダブルクリック・右クリックは、欄にそのまま任せる（図形をつかむ処理に回すと、
+    // 既定の動きが止まって、欄の中にカーソルを置けなくなる）
+    const inEditor = (e: Event) => !!(e.target as Element | null)?.closest?.('.draw-text-edit');
+    el.addEventListener('mousedown', (e) => !inEditor(e) && this.onDown(e), true);
     window.addEventListener('mousemove', (e) => this.onMove(e));
     window.addEventListener('mouseup', (e) => this.onUp(e));
-    el.addEventListener('contextmenu', (e) => this.onContext(e), true);
-    el.addEventListener('dblclick', (e) => this.onDouble(e), true);
+    el.addEventListener('contextmenu', (e) => !inEditor(e) && this.onContext(e), true);
+    el.addEventListener('dblclick', (e) => !inEditor(e) && this.onDouble(e), true);
   }
 
   private onDouble(e: MouseEvent) {
@@ -232,6 +273,12 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     if (d && (d.kind === 'fibo' || d.kind === 'fiboexp')) {
       e.stopPropagation();
       this.onEditLevels(d.kind);
+    }
+    // テキストはダブルクリックで打ち直す
+    if (d && d.kind === 'text' && !d.locked) {
+      e.stopPropagation();
+      this.editText(d);
+      return;
     }
     // チャネルはダブルクリックでレイ（右へ延ばす）を切り替える
     if (d && d.kind === 'channel') {
@@ -388,6 +435,137 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     return { px, l, p };
   }
 
+  /** テキストの大きさ（描いたときに測る。つかむ判定に使う） */
+  private textBoxes = new Map<string, { w: number; h: number }>();
+  /** 打ち直しているテキスト */
+  private editingId: string | null = null;
+
+  /** テキストの文字の大きさ（px） */
+  textSizeOf(d: Drawing): number {
+    return d.fontSize ?? textSize(this.lineWidthOf(d));
+  }
+
+  /** テキストの 8 つのつまみの位置（0〜3: 左上・右上・右下・左下、4〜7: 上・右・下・左の辺の真ん中） */
+  private textHandles(d: Drawing, a: Px): Px[] {
+    const box = this.textBoxes.get(d.id);
+    if (!box) return [];
+    const x0 = a.x - TEXT_PAD;
+    const y0 = a.y - TEXT_PAD;
+    const x1 = a.x + box.w + TEXT_PAD;
+    const y1 = a.y + box.h + TEXT_PAD;
+    const mx = (x0 + x1) / 2;
+    const my = (y0 + y1) / 2;
+    return [
+      { x: x0, y: y0 },
+      { x: x1, y: y0 },
+      { x: x1, y: y1 },
+      { x: x0, y: y1 },
+      { x: mx, y: y0 },
+      { x: x1, y: my },
+      { x: mx, y: y1 },
+      { x: x0, y: my },
+    ];
+  }
+
+  /** テキストのつまみを動かす。4 隅は反対の角を止めて拡大・縮小、辺は幅・高さだけ（左・上の辺は左上の点も動く） */
+  private dragTextHandle(d: Drawing, handle: number, s: NonNullable<NonNullable<typeof this.drag>['text']>, mouse: Px) {
+    const toPoint = (x: number, y: number) => {
+      const l = this.chart!.timeScale().coordinateToLogical(x);
+      const p = this.series!.coordinateToPrice(y);
+      if (l !== null && p !== null) d.points[0] = { t: this.mapper.toTime(l), p };
+    };
+    const minW = 20;
+    const lh = Math.round(s.size * 1.3);
+    if (handle <= 3) {
+      // 反対の角（つかんだ角の向かい）は止めたまま
+      const right = handle === 1 || handle === 2;
+      const bottom = handle === 2 || handle === 3;
+      const fx = right ? s.x : s.x + s.w;
+      const fy = bottom ? s.y : s.y + s.h;
+      const k = Math.max(Math.abs(mouse.x - fx) / Math.max(1, s.w), Math.abs(mouse.y - fy) / Math.max(1, s.h));
+      const scale = Math.max(8 / s.size, Math.min(96 / s.size, k));
+      d.fontSize = Math.round(s.size * scale * 10) / 10;
+      if (s.boxW !== undefined) d.boxW = s.boxW * scale;
+      if (s.boxH !== undefined) d.boxH = s.boxH * scale;
+      const w = s.w * scale;
+      const h = s.h * scale;
+      toPoint(right ? fx : fx - w, bottom ? fy : fy - h);
+      return;
+    }
+    if (handle === 5) d.boxW = Math.max(minW, mouse.x - s.x);
+    if (handle === 6) d.boxH = Math.max(lh, mouse.y - s.y);
+    if (handle === 7) {
+      const x = Math.min(mouse.x, s.x + s.w - minW);
+      d.boxW = s.x + s.w - x;
+      toPoint(x, s.y);
+    }
+    if (handle === 4) {
+      const y = Math.min(mouse.y, s.y + s.h - lh);
+      d.boxH = s.y + s.h - y;
+      toPoint(s.x, y);
+    }
+  }
+
+  /**
+   * テキストを打つ欄を、その図形の所に出す。Enter で決まり、Shift+Enter で改行、Esc でやめる
+   * （日本語の変換中の Enter では決めない）。空のまま決めたら図形を消す
+   */
+  editText(d: Drawing) {
+    const at = this.toPx(d.points[0]);
+    if (!at) return;
+    this.editingId = d.id;
+    const size = this.textSizeOf(d);
+    const ta = document.createElement('textarea');
+    ta.className = 'draw-text-edit';
+    ta.value = d.text ?? '';
+    ta.style.left = `${at.x - 3}px`;
+    ta.style.top = `${at.y - 3}px`;
+    ta.style.fontSize = `${size}px`;
+    // 幅は描いた枠に合わせる（幅を決めていればその幅で折り返す）。高さは中身に合わせて伸ばす
+    const box = this.textBoxes.get(d.id);
+    ta.style.width = `${(d.boxW ?? Math.max(180, (box?.w ?? 0) + size)) + TEXT_PAD * 2}px`;
+    ta.style.whiteSpace = d.boxW ? 'pre-wrap' : 'pre';
+    const fit = () => {
+      ta.style.height = 'auto';
+      ta.style.height = `${Math.max(ta.scrollHeight, d.boxH ?? 0) + 2}px`;
+    };
+    ta.style.color = this.colorOf(d);
+    ta.placeholder = '文字を入力（Enter で決定）';
+    this.el.append(ta);
+    fit();
+    this.refresh();
+    ta.focus();
+    ta.select();
+    let finished = false;
+    const done = (ok: boolean) => {
+      if (finished) return;
+      finished = true;
+      const v = ta.value.replace(/\s+$/, '');
+      ta.remove();
+      this.editingId = null;
+      if (ok) d.text = v;
+      if (!d.text) this.drawings = this.drawings.filter((x) => x !== d);
+      this.selectedId = null;
+      this.onChange();
+      this.refresh();
+    };
+    ta.addEventListener('keydown', (e) => {
+      // ショートカット（Space で再生など）に渡さない
+      e.stopPropagation();
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        done(true);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        done(false);
+      }
+    });
+    ta.addEventListener('input', fit);
+    ta.addEventListener('blur', () => done(true));
+    ta.addEventListener('mousedown', (e) => e.stopPropagation());
+  }
+
   /** マグネット（ツールバーの 🧲）。点を置く・動かすとき、近くの足の始値・高値・安値・終値に吸い付ける */
   magnet = false;
 
@@ -428,6 +606,11 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       const pts = d.points.map((pt) => this.toPx(pt));
       if (pts.some((p) => !p)) continue;
       const [a, b] = pts as Px[];
+      // テキストの 8 つのつまみ: 0〜3 は 4 隅（左上・右上・右下・左下。拡大・縮小）、4〜7 は辺（上・右・下・左。幅・高さ）
+      if (d.id === this.selectedId && d.kind === 'text' && !d.locked) {
+        const hs = this.textHandles(d, a);
+        for (let h = 0; h < hs.length; h++) if (Math.hypot(px.x - hs[h].x, px.y - hs[h].y) <= HIT) return { id: d.id, handle: h };
+      }
       if (d.id === this.selectedId && !onePoint(d.kind)) {
         const hs = handlesOf(d.kind, pts as Px[]);
         for (let h = 0; h < hs.length; h++) if (Math.hypot(px.x - hs[h].x, px.y - hs[h].y) <= HIT) return { id: d.id, handle: h };
@@ -440,6 +623,12 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         case 'vline':
           hit = Math.abs(px.x - a.x) <= HIT;
           break;
+        case 'text': {
+          // 文字の四角（描いたときに測った大きさ）の中
+          const box = this.textBoxes.get(d.id);
+          hit = !!box && px.x >= a.x - TEXT_PAD - 2 && px.x <= a.x + box.w + TEXT_PAD + 2 && px.y >= a.y - TEXT_PAD - 2 && px.y <= a.y + box.h + TEXT_PAD + 2;
+          break;
+        }
         case 'trend':
           hit = distToSegment(px, a, rayOn(d) ? rayEnd(a, b, w) : b) <= HIT;
           break;
@@ -557,6 +746,8 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     const d = hit ? this.drawings.find((x) => x.id === hit.id)! : null;
     // ロックした図形は選ぶだけ（動かさない。ドラッグはチャートを動かす）
     if (hit && d && !d.locked) {
+      const at = d.kind === 'text' && hit.handle >= 0 ? this.toPx(d.points[0]) : null;
+      const box = at && this.textBoxes.get(d.id);
       this.drag = {
         id: d.id,
         handle: hit.handle,
@@ -564,6 +755,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         orig: d.points.map((pt) => ({ l: this.mapper.toLogical(pt.t), p: pt.p })),
         moved: false,
         creating: false,
+        ...(at && box ? { text: { x: at.x, y: at.y, w: box.w, h: box.h, size: this.textSizeOf(d), boxW: d.boxW, boxH: d.boxH } } : {}),
       };
       e.stopPropagation();
       e.preventDefault();
@@ -574,6 +766,15 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   private onMove(e: MouseEvent) {
     const id = this.drag?.id ?? this.placing ?? this.polyId;
     if (!id) return;
+    // テキストのつまみは、ローソク足の欄の外（RCI の欄など）まで引っぱっても動かし続ける
+    const td = this.drag?.text && this.drag.handle >= 0 ? this.drawings.find((x) => x.id === id) : null;
+    if (td && this.drag?.text) {
+      const r = this.el.getBoundingClientRect();
+      this.drag.moved = true;
+      this.dragTextHandle(td, this.drag.handle, this.drag.text, { x: e.clientX - r.left, y: e.clientY - r.top });
+      this.refresh();
+      return;
+    }
     const m = this.mouse(e);
     if (!m) return;
     const d = this.drawings.find((x) => x.id === id);
@@ -638,6 +839,13 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       const y = this.series.priceToCoordinate(d.points[0].p);
       const p = y === null ? null : this.series.coordinateToPrice(y + CHANNEL_PREVIEW_DY);
       d.points.push({ t: d.points[0].t, p: p ?? d.points[0].p });
+    }
+    if (d?.kind === 'text') {
+      // 置いたら、その場で文字を打つ
+      this.setTool(null);
+      this.refresh();
+      this.editText(d);
+      return;
     }
     if (d?.kind === 'fiboexp' && d.points.length === 2) {
       // A・B を置いたら、C はマウスに付いてきて、次のクリックで決まる
@@ -706,6 +914,38 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       case 'vline':
         line(a.x, 0, a.x, h);
         break;
+      case 'text': {
+        // 打っている間は、打つ欄の方に出す
+        if (this.editingId === d.id) break;
+        const size = this.textSizeOf(d);
+        ctx.font = `${size}px system-ui, -apple-system, 'Hiragino Sans', sans-serif`;
+        ctx.textBaseline = 'top';
+        const lines = wrapText(ctx, d.text ?? '', d.boxW);
+        const lh = Math.round(size * 1.3);
+        let tw = 0;
+        lines.forEach((t, i) => {
+          ctx.fillText(t, a.x, a.y + i * lh);
+          tw = Math.max(tw, ctx.measureText(t).width);
+        });
+        // 枠の大きさ: 幅・高さを決めていればそれ（文字が多ければ高さは文字に合わせて伸びる）
+        const bw = d.boxW ?? tw;
+        const bh = Math.max(d.boxH ?? 0, lines.length * lh);
+        this.textBoxes.set(d.id, { w: bw, h: bh });
+        if (sel) {
+          ctx.setLineDash([3, 3]);
+          ctx.lineWidth = 1;
+          ctx.strokeRect(a.x - TEXT_PAD, a.y - TEXT_PAD, bw + TEXT_PAD * 2, bh + TEXT_PAD * 2);
+          ctx.setLineDash([]);
+          if (!d.locked) {
+            ctx.fillStyle = '#fff';
+            for (const q of this.textHandles(d, a)) {
+              ctx.fillRect(q.x - 3, q.y - 3, 6, 6);
+              ctx.strokeRect(q.x - 3, q.y - 3, 6, 6);
+            }
+          }
+        }
+        break;
+      }
       case 'trend': {
         const end = rayOn(d) ? rayEnd(a, b, w) : b;
         line(a.x, a.y, end.x, end.y);

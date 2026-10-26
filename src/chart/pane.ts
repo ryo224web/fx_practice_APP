@@ -3,7 +3,7 @@
 
 import { CandlestickSeries, CrosshairMode, createChart, type CandlestickData, type IChartApi, type ISeriesApi, type Time } from 'lightweight-charts';
 import { mergeBars, TIMEFRAMES, type Aggregated, type Bar, type Timeframe } from '../core/candles';
-import { DrawingManager, hasRay, LINE_KINDS, lineDash, rayOn, type LineKind } from './drawings';
+import { DrawingManager, hasRay, LINE_KINDS, lineDash, rayOn, TEXT_SIZES, type LineKind } from './drawings';
 
 const escAttr = (s: string) => s.replace(/[&"<>]/g, (c) => ({ '&': '&amp;', '"': '&quot;', '<': '&lt;', '>': '&gt;' })[c]!);
 import { IndicatorLayer, type IndicatorConfig } from './indicators';
@@ -183,7 +183,11 @@ export class ChartPane {
       const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button');
       const d = this.drawings.selected();
       if (!b || !d) return;
-      if (b.dataset.w) d.width = Number(b.dataset.w);
+      if (b.dataset.w) {
+        d.width = Number(b.dataset.w);
+        // テキストは丸 4 つが文字の大きさの段階（4 隅で変えた大きさより優先）
+        if (d.kind === 'text') d.fontSize = TEXT_SIZES[d.width - 1];
+      }
       if (b.dataset.s) d.style = b.dataset.s as LineKind;
       if (b.dataset.ray) d.ray = !rayOn(d);
       if (b.dataset.lock) d.locked = !d.locked;
@@ -235,6 +239,8 @@ export class ChartPane {
     el.addEventListener(
       'mousedown',
       (e) => {
+        // テキストを打つ欄の中は、欄に任せる
+        if ((e.target as Element | null)?.closest?.('.draw-text-edit')) return;
         if (e.button === 1) {
           e.preventDefault();
           e.stopPropagation();
@@ -571,7 +577,8 @@ export class ChartPane {
 
   private renderStyleBar() {
     const d = this.drawings.selected();
-    const w = d ? this.drawings.lineWidthOf(d) : 0;
+    // テキストは今の文字の大きさがどの段階か（4 隅で変えて段階に無ければ、どれも光らせない）
+    const w = d ? (d.kind === 'text' ? TEXT_SIZES.indexOf(this.drawings.textSizeOf(d)) + 1 : this.drawings.lineWidthOf(d)) : 0;
     const st = d?.style ?? 'solid';
     const palette = this.host.palette();
     const key = d ? `${d.id}:${w}:${st}:${rayOn(d)}:${d.custom ?? ''}:${!!d.locked}:${palette.join()}` : '';
@@ -580,16 +587,20 @@ export class ChartPane {
     this.styleBar.hidden = !d;
     if (!d) return;
     const names: Record<LineKind, string> = { solid: '実線', dotted: '点線', dashed: '破線' };
+    const isText = d.kind === 'text';
     this.styleBar.innerHTML =
       '<b class="grip" title="つかんで欄を動かす">⋮⋮</b>' +
       [1, 2, 3, 4]
-        .map((n) => `<button type="button" data-w="${n}" class="${n === w ? 'on' : ''}" title="線の太さ ${n}"><span style="width:${n * 2 + 3}px;height:${n * 2 + 3}px"></span></button>`)
+        .map((n) => `<button type="button" data-w="${n}" class="${n === w ? 'on' : ''}" title="${isText ? '文字の大きさ' : '線の太さ'} ${n}"><span style="width:${n * 2 + 3}px;height:${n * 2 + 3}px"></span></button>`)
         .join('') +
-      '<i></i>' +
-      LINE_KINDS.map(
-        (k) =>
-          `<button type="button" data-s="${k}" class="${k === st ? 'on' : ''}" title="${names[k]}"><svg width="30" height="10"><line x1="2" y1="5" x2="28" y2="5" stroke="currentColor" stroke-width="2" stroke-dasharray="${lineDash(k, 2).join(' ')}" /></svg></button>`,
-      ).join('') +
+      // テキストには線の種類が無い（丸 4 つは文字の大きさ）
+      (isText
+        ? ''
+        : '<i></i>' +
+          LINE_KINDS.map(
+            (k) =>
+              `<button type="button" data-s="${k}" class="${k === st ? 'on' : ''}" title="${names[k]}"><svg width="30" height="10"><line x1="2" y1="5" x2="28" y2="5" stroke="currentColor" stroke-width="2" stroke-dasharray="${lineDash(k, 2).join(' ')}" /></svg></button>`,
+          ).join('')) +
       (hasRay(d.kind)
         ? `<i></i><button type="button" data-ray="1" class="ray ${rayOn(d) ? 'on' : ''}" title="レイ（右へ延ばす）。押すたびに延ばす・延ばさないを切り替える">R</button>`
         : '') +

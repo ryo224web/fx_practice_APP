@@ -100,7 +100,8 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
     private readonly el: HTMLElement,
     private readonly mapper: TimeMapper,
   ) {
-    el.addEventListener('mousedown', (e) => this.onDown(e), true);
+    // テキストを打つ欄（drawings.ts）の中のクリックは、欄に任せる
+    el.addEventListener('mousedown', (e) => !(e.target as Element | null)?.closest?.('.draw-text-edit') && this.onDown(e), true);
     window.addEventListener('mousemove', (e) => this.onMove(e));
     window.addEventListener('mouseup', (e) => this.onUp(e));
   }
