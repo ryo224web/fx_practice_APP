@@ -2464,6 +2464,7 @@ function setupControls() {
     };
   }
   showTool(null);
+  $('#magnet-btn').addEventListener('click', () => setMagnet(!magnetOn));
   $('#clear-drawings').addEventListener('click', () => {
     if (active.drawings.drawings.length && confirm(`${md.symbol.toUpperCase()} の図形をすべて消しますか？（ロックした図形は残します）`)) active.drawings.clearAll();
   });
@@ -2751,6 +2752,17 @@ async function jump() {
 /** キーボードのショートカット（「ショートカット」の画面で変えられる。src/ui/keys.ts） */
 /** キーボードのショートカット（全部のプロジェクトで共通。src/appSettings.ts） */
 let keymap: Record<string, string[]> | undefined;
+/** マグネット（全部のプロジェクトで共通） */
+let magnetOn = false;
+function setMagnet(on: boolean, persist = true) {
+  magnetOn = on;
+  for (const p of panes) p.drawings.magnet = on;
+  $('#magnet-btn').setAttribute('aria-pressed', String(on));
+  if (persist) {
+    toast(on ? 'マグネット: 入（近くの足の始値・高値・安値・終値に吸い付きます）' : 'マグネット: 切');
+    void saveAppSettings({ magnet: on });
+  }
+}
 /** 図形の色を変えるときに並べる色（全部のプロジェクトで共通） */
 let palette: string[] = DEFAULT_PALETTE;
 /** 図形の太さ・線の種類の欄の場所（全部のプロジェクトで共通） */
@@ -2791,6 +2803,8 @@ function runCommand(id: string) {
       return scrollToNow();
     case 'crosshair':
       return setCrosshair(!crosshairOn);
+    case 'magnet':
+      return setMagnet(!magnetOn);
     case 'newOrder':
       return openOrderDialog();
     case 'easyOrder':
@@ -2849,6 +2863,7 @@ async function start() {
   keyIndex = commandIndex(resolveKeymap(keymap));
   migratePanes();
   createPanes();
+  setMagnet(!!settings.magnet, false);
   manifest = await loadManifest();
   const symbols = manifest ? Object.keys(manifest.symbols).filter((s) => manifest!.symbols[s].months.length) : [];
   if (!manifest || symbols.length === 0) {

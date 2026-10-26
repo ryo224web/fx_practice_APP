@@ -119,6 +119,8 @@ export function fiboExpPrice(a: number, b: number, c: number, level: number): nu
 
 const HIT = 6;
 const HANDLE = 4;
+/** マグネットが吸い付く距離（px） */
+const MAGNET = 15;
 
 interface Px {
   x: number;
@@ -386,6 +388,39 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     return { px, l, p };
   }
 
+  /** マグネット（ツールバーの 🧲）。点を置く・動かすとき、近くの足の始値・高値・安値・終値に吸い付ける */
+  magnet = false;
+
+  /**
+   * マウスの近く（左右・上下とも MAGNET px 以内）にある足の始値・高値・安値・終値のうち、一番近いものに吸い付けた位置。
+   * 吸い付いたら時刻もその足にそろえる。マグネットが切れているか、近くに無ければそのまま。
+   * マウスの真下の 1 本だけを見ると、水平線のように横の位置を気にせず置くときに吸い付かないため、左右の足も見る
+   */
+  private snap(m: { px: Px; l: number; p: number }): { px: Px; l: number; p: number } {
+    if (!this.magnet || !this.series || !this.chart) return m;
+    const spacing = this.chart.timeScale().options().barSpacing;
+    const reach = Math.max(0, Math.ceil(MAGNET / Math.max(1, spacing)));
+    const center = Math.round(m.l);
+    let best: { l: number; p: number; d: number } | null = null;
+    for (let i = center - reach; i <= center + reach; i++) {
+      const bar = this.series.dataByIndex(i) as { open?: number; high?: number; low?: number; close?: number } | null;
+      if (!bar || bar.open === undefined) continue;
+      const dx = Math.abs(i - m.l) * spacing;
+      if (dx > MAGNET + spacing / 2) continue;
+      for (const v of [bar.open, bar.high, bar.low, bar.close]) {
+        if (v === undefined) continue;
+        const y = this.series.priceToCoordinate(v);
+        if (y === null) continue;
+        const dy = Math.abs(y - m.px.y);
+        if (dy > MAGNET) continue;
+        // 縦の近さを優先する（横に少しずれていても、価格が近い方に吸い付く）
+        const d = dy * 2 + dx;
+        if (!best || d < best.d) best = { l: i, p: v, d };
+      }
+    }
+    return best ? { px: m.px, l: best.l, p: best.p } : m;
+  }
+
   private hitDrawing(px: Px): { id: string; handle: number } | null {
     const w = this.chart?.timeScale().width() ?? 0;
     for (let k = this.drawings.length - 1; k >= 0; k--) {
@@ -464,8 +499,10 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       return;
     }
 
+    // 新しい点はマグネットで吸い付ける（もうある図形をつかむときは吸い付けない）
+    const sm = this.snap(m);
     if (this.tool === 'poly') {
-      const pt = { t: this.mapper.toTime(m.l), p: m.p };
+      const pt = { t: this.mapper.toTime(sm.l), p: sm.p };
       const d = this.drawings.find((x) => x.id === this.polyId);
       // 描いている途中のポリラインの、もう引いた線（か点）をクリックしたら終わる（最後の仮の線は除く）
       if (d) {
@@ -499,7 +536,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       const d: Drawing = {
         id: crypto.randomUUID(),
         kind: this.tool,
-        points: onePoint(this.tool) ? [{ t: this.mapper.toTime(m.l), p: m.p }] : [0, 1].map(() => ({ t: this.mapper.toTime(m.l), p: m.p })),
+        points: onePoint(this.tool) ? [{ t: this.mapper.toTime(sm.l), p: sm.p }] : [0, 1].map(() => ({ t: this.mapper.toTime(sm.l), p: sm.p })),
         color: COLORS[this.tool],
         tf: this.tf,
       };
@@ -541,13 +578,15 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     if (!m) return;
     const d = this.drawings.find((x) => x.id === id);
     if (!d) return;
+    // 点を置く・つまみを動かすときはマグネットで吸い付ける（図形をまるごと動かすときは吸い付けない）
+    const sm = this.snap(m);
     if (!this.drag && this.polyId) {
-      d.points[d.points.length - 1] = { t: this.mapper.toTime(m.l), p: m.p };
+      d.points[d.points.length - 1] = { t: this.mapper.toTime(sm.l), p: sm.p };
       this.refresh();
       return;
     }
     if (this.placing) {
-      d.points[d.points.length - 1] = { t: this.mapper.toTime(m.l), p: m.p };
+      d.points[d.points.length - 1] = { t: this.mapper.toTime(sm.l), p: sm.p };
       this.refresh();
       return;
     }
@@ -556,13 +595,15 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     const dp = m.p - drag.start.p;
     if (Math.abs(dl) > 0 || Math.abs(dp) > 0) drag.moved = true;
     d.points = drag.orig.map((o, k) => {
+      // 水平線・垂直線は点が 1 つなので、つかんで動かすときもマグネットで吸い付ける
+      if (drag.handle === -1 && onePoint(d.kind) && this.magnet && sm !== m) return { t: this.mapper.toTime(sm.l), p: sm.p };
       if (drag.handle === -1) return { t: this.mapper.toTime(o.l + dl), p: o.p + dp };
       // 長方形の残りの 2 隅: 2 = (A の時刻, B の価格)、3 = (B の時刻, A の価格)
       if (d.kind === 'rect' && drag.handle >= 2) {
         const timeOf = drag.handle === 2 ? 0 : 1;
-        return { t: this.mapper.toTime(k === timeOf ? m.l : o.l), p: k === timeOf ? o.p : m.p };
+        return { t: this.mapper.toTime(k === timeOf ? sm.l : o.l), p: k === timeOf ? o.p : sm.p };
       }
-      if (k === drag.handle) return { t: this.mapper.toTime(m.l), p: m.p };
+      if (k === drag.handle) return { t: this.mapper.toTime(sm.l), p: sm.p };
       return { t: this.mapper.toTime(o.l), p: o.p };
     });
     this.refresh();
