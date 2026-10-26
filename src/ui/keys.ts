@@ -38,6 +38,7 @@ export const KEY_COMMANDS: KeyCommand[] = [
   { id: 'tool:fiboexp', label: 'フィボナッチ・エクスパンション', group: '描画' },
   { id: 'tool:text', label: 'テキスト', group: '描画' },
   { id: 'magnet', label: 'マグネットを入れる・切る', group: '描画' },
+  { id: 'shots', label: 'スクショ（H1・M15・M5・M1 の 4 枚）', group: 'チャート' },
   { id: 'newOrder', label: '新規注文', group: '注文' },
   { id: 'easyOrder', label: 'EasyOrder を開く・閉じる', group: '注文' },
 ];

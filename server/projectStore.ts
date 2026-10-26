@@ -7,6 +7,7 @@
 //   <dir>/templates/<名前>.fxt.json                定型（チャートの並べ方・インジケーター・色など。プロジェクトに当てる）
 //   <dir>/templates/_settings.json                新しいプロジェクトに使う定型の名前
 //   <dir>/settings.json                           全部のプロジェクトで共通の設定（キーボードのショートカット。/api/settings）
+//   <dir>/screenshots/<プロジェクト名>/<日時>_<銘柄>_<時間足>.png   ツールバーの 📷 で撮ったチャート（/api/screenshots）
 //   <dir>/backups/<ID>/<日時>.fxp.json             上書き・削除する前の控え（10 分に 1 回まで、プロジェクトごとに 30 個。「ファイルから読み込む」で戻せる）
 //
 // 書く前・消す前に、そのファイルの中の ID が本当にそのプロジェクトかを確かめる（Finder や Dropbox がファイルを動かしても、
@@ -21,6 +22,7 @@
 // 保存先は環境変数 FXP_PROJECT_DIR で変えられる。
 
 import { copyFile, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -413,6 +415,29 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
     return best?.keymap;
   }
 
+  // ---- チャートの画像（/api/screenshots）----
+  //   POST /       { folder, files: [{ name, data（data:image/png;base64,…）}] }  保存して { dir } を返す
+  //   POST /open   { folder }  そのフォルダを Finder で開く
+  const shots = path.join(dir, 'screenshots');
+
+  async function handleScreenshots(req: IncomingMessage, res: ServerResponse) {
+    if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+    const url = new URL(req.url ?? '/', 'http://x');
+    const b = (await body(req)) as { folder?: string; files?: { name: string; data: string }[] };
+    const folder = path.join(shots, safeFileName(b.folder || 'その他'));
+    await mkdir(folder, { recursive: true });
+    if (url.pathname.replace(/\/+$/, '') === '/open') {
+      execFile('open', [folder]);
+      return send(res, 200, { dir: folder });
+    }
+    for (const f of b.files ?? []) {
+      const m = /^data:image\/png;base64,(.+)$/.exec(f.data);
+      if (!m) continue;
+      await writeFile(path.join(folder, `${safeFileName(f.name.replace(/\.png$/i, ''))}.png`), Buffer.from(m[1], 'base64'));
+    }
+    return send(res, 200, { dir: folder });
+  }
+
   async function handleSettings(req: IncomingMessage, res: ServerResponse) {
     if (req.method === 'GET') {
       const cur = (await readJson<Record<string, unknown>>(appSettings)) ?? {};
@@ -437,6 +462,9 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
   return {
     name: 'fx-project-store',
     configureServer(server) {
+      server.middlewares.use('/api/screenshots', (req, res) => {
+        handleScreenshots(req, res).catch((e) => send(res, 500, { error: e instanceof Error ? e.message : String(e) }));
+      });
       server.middlewares.use('/api/settings', (req, res) => {
         handleSettings(req, res).catch((e) => send(res, 500, { error: e instanceof Error ? e.message : String(e) }));
       });

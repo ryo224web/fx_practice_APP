@@ -2468,6 +2468,11 @@ function setupControls() {
   }
   showTool(null);
   $('#magnet-btn').addEventListener('click', () => setMagnet(!magnetOn));
+  $('#shots-btn').addEventListener('click', () => void takeShots());
+  $('#shots-btn').addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    void fetch('/api/screenshots/open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: currentMeta().name }) });
+  });
   $('#clear-drawings').addEventListener('click', () => {
     if (active.drawings.drawings.length && confirm(`${md.symbol.toUpperCase()} の図形をすべて消しますか？（ロックした図形は残します）`)) active.drawings.clearAll();
   });
@@ -2808,6 +2813,8 @@ function runCommand(id: string) {
       return setCrosshair(!crosshairOn);
     case 'magnet':
       return setMagnet(!magnetOn);
+    case 'shots':
+      return void takeShots();
     case 'newOrder':
       return openOrderDialog();
     case 'easyOrder':
@@ -2858,6 +2865,90 @@ function onKey(e: KeyboardEvent) {
       return;
   }
   e.preventDefault();
+}
+
+// ---------------- スクショ（📷） ----------------
+// 今のチャートを H1 → M15 → M5 → M1 に切り替えながら 4 枚撮り、元の時間足に戻す。
+// 上に「銘柄・時間足・リプレイの日時」の帯を付けて、保存先の screenshots/<プロジェクト名>/ に PNG で入れる（開発サーバーが書く）
+
+const SHOT_TFS: Timeframe[] = ['H1', 'M15', 'M5', 'M1'];
+let shooting = false;
+
+const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+
+/** 時間足を変えたあと、描き終わる（裏で読み込むインジケーター用の過去データも含めて）まで待つ */
+async function settle() {
+  await nextFrame();
+  for (let i = 0; i < 40 && loadingHistory; i++) await new Promise((r) => setTimeout(r, 100));
+  await nextFrame();
+  await new Promise((r) => setTimeout(r, 150));
+}
+
+/** チャートの画像の上に、銘柄・時間足・日時の帯を足す */
+function withHeader(chart: HTMLCanvasElement, title: string): HTMLCanvasElement {
+  // 画像は画面の倍率（Retina なら 2 倍）で撮れるので、帯の文字も同じ倍率にする
+  const scale = window.devicePixelRatio || 1;
+  const band = Math.round(26 * (scale || 1));
+  const out = document.createElement('canvas');
+  out.width = chart.width;
+  out.height = chart.height + band;
+  const ctx = out.getContext('2d')!;
+  const bg = getComputedStyle(document.body).backgroundColor || '#0d1117';
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.fillStyle = '#e6edf3';
+  ctx.font = `${Math.round(14 * (scale || 1))}px system-ui, -apple-system, 'Hiragino Sans', sans-serif`;
+  ctx.textBaseline = 'middle';
+  ctx.fillText(title, Math.round(10 * (scale || 1)), band / 2);
+  ctx.drawImage(chart, 0, band);
+  return out;
+}
+
+async function takeShots() {
+  if (shooting) return;
+  shooting = true;
+  setPlaying(false);
+  const pane = active;
+  const back = pane.tf;
+  // 選んでいる図形のつまみや右上の欄は写さない
+  for (const p of panes) {
+    p.drawings.selectedId = null;
+    p.drawings.refresh();
+  }
+  const when = formatTime(md.bid[cursor].t + 60_000, state.zone, rule);
+  const stamp = when.replace(/[.:]/g, '').replace(' ', '_');
+  const sym = md.symbol.toUpperCase();
+  const zone = state.zone === 'jst' ? '日本時間' : 'サーバー時間';
+  const files: { name: string; data: string }[] = [];
+  toast('スクショを撮っています…');
+  try {
+    for (const tf of SHOT_TFS) {
+      if (pane.tf !== tf) setTf(tf);
+      await settle();
+      const img = withHeader(pane.chart.takeScreenshot(), `${sym}  ${tf}    ${when}（${zone}）    ${currentMeta().name}`);
+      // Finder の名前順で M1 → M5 → M15 → H1 と並ぶように、時間足の前に短い順の番号を付ける
+      const order = [...SHOT_TFS].reverse().indexOf(tf) + 1;
+      files.push({ name: `${stamp}_${sym}_${order}_${tf}`, data: img.toDataURL('image/png') });
+    }
+  } finally {
+    if (pane.tf !== back) setTf(back);
+    shooting = false;
+  }
+  try {
+    const res = await fetch('/api/screenshots', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: currentMeta().name, files }) });
+    if (!res.ok) throw new Error(String(res.status));
+    const { dir } = (await res.json()) as { dir: string };
+    toast(`スクショを ${files.length} 枚保存しました（${dir.replace(/^.*\/fx_practice\//, '')}。📷 を右クリックでフォルダを開く）`);
+  } catch {
+    // サーバーに届かなければ、ブラウザのダウンロードで保存する
+    for (const f of files) {
+      const a = document.createElement('a');
+      a.href = f.data;
+      a.download = `${f.name}.png`;
+      a.click();
+    }
+    toast('サーバーに届かなかったので、ダウンロードで保存しました');
+  }
 }
 
 // ---------------- 図形の取り消し（⌘Z）・やり直し（⌘⇧Z） ----------------
