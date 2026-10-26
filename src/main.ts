@@ -2716,6 +2716,13 @@ function setupControls() {
   window.addEventListener('beforeunload', () => save(true));
   // 別のアプリに切り替えたときもすぐ書く（閉じる直前の分がファイルに届かないことがあるため）
   document.addEventListener('visibilitychange', () => document.hidden && save(true));
+  // 専用アプリ（scripts/mac/app）が終了する前に呼ぶ。保存がファイルに届くまで待てるように Promise を返す
+  Object.assign(window, {
+    __fxpFlush: async () => {
+      save(true);
+      await flushSave();
+    },
+  });
 }
 
 function showMenu(x: number, y: number, items: [string, () => void][]) {

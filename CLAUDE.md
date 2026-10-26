@@ -132,9 +132,12 @@ R_ExportHistory.mq4 の使い方（**Windows 機（MSI か T580）の MT4**）:
 
 ## 起動（Mac mini）
 
-- `npm run make-app` を 1 回実行すると、`~/Applications` に「FX Practice」と「FX Practice を終了」ができる（Dock に置いて使う）。中身は `scripts/mac/launch.sh` / `stop.sh`
-- 「FX Practice」はサーバーを裏で起動して、Chrome のアプリのウィンドウ（タブ・アドレスバー無し。`open -na "Google Chrome" --args --app=…`）で開く。サーバーが動いていれば開くだけ。もう開いていれば、そのウィンドウを前に出す（同じプロジェクトを 2 つのウィンドウで開くと保存がぶつかるため。初めてのときだけ「Google Chrome を操作」の許可を聞かれる）。Chrome が無ければいつものブラウザで開く。記録は `~/Library/Logs/fx-practice.log`
-- 保存データ（localStorage）はブラウザとアドレスごとに分かれるので、ポートは必ず 5173（`npm run dev` も 5173 に固定）。プロジェクトのフォルダを移したら `npm run make-app` をやり直す
+- `npm run make-app` を 1 回実行すると、`~/Applications` に専用アプリ「FX Practice」と「FX Practice を終了」ができる（Dock に置いて使う。プロジェクトのフォルダを移したら作り直す）。Swift（Command Line Tools）が要る
+- 「FX Practice」（2026-10-26 から。`scripts/mac/app/FXPractice.swift`）: 開くとサーバー（vite、5173 番）を起動し、自分のウィンドウに FP を出す（WebKit = Safari と同じ部品。Chrome より軽い）。サーバーがもう動いていればそれを使う。閉じる・⌘Q で、書きかけの保存（`window.__fxpFlush`）を済ませてから、自分で起動したサーバーだけを止める（前から動いていたサーバーは止めない）。FP の確認・名前の入力・ファイルを選ぶ画面・書き出し（保存先を聞く）は Mac の画面で出す。ウィンドウの大きさと位置を覚える。⌘R で読み直し、右クリック →「要素の詳細を表示」で開発者ツール。アイコンは `scripts/mac/app/icon.swift` で描く。記録は `~/Library/Logs/fx-practice.log`
+  - 動作確認は別の番号と設定で作る（本物のサーバーにつながって同じプロジェクトを 2 つ開かないように）: `FXP_APP_DEST=<作る場所> FXP_PORT=5184 FXP_VITE_ARGS="--config <テスト用の設定>" zsh scripts/mac/make-app.sh`
+- ブラウザでも今までどおり使える（サーバーが動いている間に `http://localhost:5173`。`scripts/mac/launch.sh` は Chrome のアプリのウィンドウで開く）。同じプロジェクトをアプリとブラウザで同時に開くと保存がぶつかるので、どちらか一方で使う。ブラウザの控え（localStorage）はアプリとブラウザで別（プロジェクト本体は Dropbox なので困らない）
+- 「FX Practice を終了」は、ブラウザで使っていたときなどに裏で動いているサーバーを止める（`stop.sh`）
+- 保存データ（localStorage）はアドレスごとに分かれるので、ポートは必ず 5173（`npm run dev` も 5173 に固定）
 
 ## 使っているマシン
 
