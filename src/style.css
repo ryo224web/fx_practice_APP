@@ -976,3 +976,67 @@ th.sortable:hover {
   overflow: hidden;
   outline: none;
 }
+
+/* 簡易メモ（ツールバーの「📝 メモ」）。階層つきの箇条書き */
+.quick-notes {
+  position: fixed;
+  z-index: 50;
+  width: 400px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel, #161b22);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+.quick-notes[hidden] {
+  display: none;
+}
+.quick-notes .qn-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.quick-notes .qn-head .hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+.quick-notes .qn-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.quick-notes .qn-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+}
+.quick-notes .qn-row input:focus {
+  outline: none;
+  border-color: var(--border);
+  background: var(--bg, #0d1117);
+}
+.quick-notes .qn-fold,
+.quick-notes .qn-dot {
+  width: 16px;
+  flex: none;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  text-align: center;
+  font-size: 11px;
+}
+.quick-notes .qn-fold {
+  cursor: pointer;
+}
+.quick-notes .qn-head b {
+  white-space: nowrap;
+}

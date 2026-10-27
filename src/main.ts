@@ -47,6 +47,7 @@ import { analyze, excursionOf, tradesCsv, type Analysis, type TradeRecord } from
 import { renderHistory, renderMt4, renderTrade, type Mt4Row, type TerminalTab } from './ui/terminal';
 import { quickSummary, REPORT_CSS, reportBody, reportHtml } from './ui/report';
 import { loadAppSettings, saveAppSettings } from './appSettings';
+import { setupQuickNotes, type NoteItem } from './ui/quickNotes';
 import './style.css';
 
 // 成績レポートの見た目（書き出すファイルと同じものを画面にも使う）
@@ -2473,6 +2474,14 @@ function setupControls() {
   }
   showTool(null);
   $('#magnet-btn').addEventListener('click', () => setMagnet(!magnetOn));
+  setupQuickNotes(
+    $('#quick-notes-btn'),
+    () => quickNotes,
+    (items) => {
+      quickNotes = items;
+      void saveAppSettings({ quickNotes: items });
+    },
+  );
   $('#shots-btn').addEventListener('click', () => void takeShots());
   $('#shots-btn').addEventListener('contextmenu', (e) => {
     e.preventDefault();
@@ -2765,6 +2774,8 @@ async function jump() {
 /** キーボードのショートカット（「ショートカット」の画面で変えられる。src/ui/keys.ts） */
 /** キーボードのショートカット（全部のプロジェクトで共通。src/appSettings.ts） */
 let keymap: Record<string, string[]> | undefined;
+/** 簡易メモ（ツールバーの「📝 メモ」。全部のプロジェクトで共通） */
+let quickNotes: NoteItem[] | undefined;
 /** マグネット（全部のプロジェクトで共通） */
 let magnetOn = false;
 function setMagnet(on: boolean, persist = true) {
@@ -3018,6 +3029,7 @@ async function start() {
   keymap = settings.keymap ?? state.keymap;
   styleBarPos = settings.styleBarPos ?? null;
   palette = settings.palette ?? DEFAULT_PALETTE;
+  quickNotes = settings.quickNotes;
   if (!settings.keymap && state.keymap) void saveAppSettings({ keymap: state.keymap });
   keyIndex = commandIndex(resolveKeymap(keymap));
   migratePanes();

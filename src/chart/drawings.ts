@@ -48,6 +48,11 @@ export interface Drawing {
   boxH?: number;
   /** テキストを吹き出しにする（右上の欄の 💬）。しっぽの先は 2 つ目の点（時刻と価格） */
   callout?: boolean;
+  /**
+   * 吹き出しの本体（文字の左上）の位置を、しっぽの先からの画面の距離（px）で持つ。時間足を変えても形が変わらない
+   * （本体も時刻と価格で持つと、M1 と H1 で本体としっぽの先の離れ方が何十倍も変わるため。2026-10-27）
+   */
+  offset?: { x: number; y: number };
 }
 
 /** テキストの枠の線と文字の間（px） */
@@ -280,7 +285,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     moved: boolean;
     creating: boolean;
     /** テキストのつまみをつかんだときの枠（px）と文字の大きさ */
-    text?: { x: number; y: number; w: number; h: number; size: number; boxW?: number; boxH?: number };
+    text?: { x: number; y: number; w: number; h: number; size: number; boxW?: number; boxH?: number; mx: number; my: number };
   } | null = null;
   /** クリック 2 回で描く途中（1 点目を置いた後） */
   private placing: string | null = null;
@@ -479,6 +484,43 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   /** 打ち直しているテキスト */
   private editingId: string | null = null;
 
+  /** 吹き出しで、本体の位置をしっぽの先からの距離で持つか */
+  private relative(d: Drawing): boolean {
+    return d.kind === 'text' && !!d.callout && !!d.points[1];
+  }
+
+  /**
+   * テキストの左上の位置（px）。吹き出しはしっぽの先 + 距離。距離をまだ持っていなければ（以前の吹き出し）、
+   * 今の見た目から決めて覚える
+   */
+  textAnchor(d: Drawing): Px | null {
+    if (!this.relative(d)) return this.toPx(d.points[0]);
+    const tip = this.toPx(d.points[1]);
+    if (!tip) return null;
+    if (!d.offset) {
+      const a = this.toPx(d.points[0]);
+      if (!a) return null;
+      d.offset = { x: a.x - tip.x, y: a.y - tip.y };
+    }
+    return { x: tip.x + d.offset.x, y: tip.y + d.offset.y };
+  }
+
+  /** テキストの左上を (x, y) px に置く。吹き出しはしっぽの先からの距離を変える（1 つ目の点も今の時間足に合わせておく） */
+  private setTextAnchor(d: Drawing, x: number, y: number) {
+    if (!this.chart || !this.series) return;
+    const l = this.chart.timeScale().coordinateToLogical(x);
+    const p = this.series.coordinateToPrice(y);
+    if (l !== null && p !== null) d.points[0] = { t: this.mapper.toTime(l), p };
+    const tip = this.relative(d) ? this.toPx(d.points[1]) : null;
+    if (tip) d.offset = { x: x - tip.x, y: y - tip.y };
+  }
+
+  /** 吹き出しをふつうの文字に戻すとき、今の見た目の位置を 1 つ目の点にする */
+  syncTextPoint(d: Drawing) {
+    const a = this.textAnchor(d);
+    if (a) this.setTextAnchor(d, a.x, a.y);
+  }
+
   /** テキストの文字の大きさ（px） */
   textSizeOf(d: Drawing): number {
     return d.fontSize ?? textSize(this.lineWidthOf(d));
@@ -514,22 +556,21 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   /** 吹き出しにしたとき、しっぽの先が無ければ、吹き出しの左下の少し下に置く */
   ensureTail(d: Drawing) {
     if (d.points[1] || !this.chart || !this.series) return;
-    const at = this.toPx(d.points[0]);
+    const at = this.textAnchor(d);
     // まだ描いていなければ（打ち終えた直後）、1 行分の大きさとみなす
     const box = this.textBoxes.get(d.id) ?? { w: 60, h: Math.round(this.textSizeOf(d) * 1.3) };
     if (!at) return;
     const l = this.chart.timeScale().coordinateToLogical(at.x + Math.min(30, box.w / 3));
     const p = this.series.coordinateToPrice(at.y + box.h + CALLOUT_PAD + 45);
     if (l !== null && p !== null) d.points[1] = { t: this.mapper.toTime(l), p };
+    // 本体はしっぽの先からの距離で持つ
+    const tip = this.toPx(d.points[1]);
+    if (tip) d.offset = { x: at.x - tip.x, y: at.y - tip.y };
   }
 
   /** テキストのつまみを動かす。4 隅は反対の角を止めて拡大・縮小、辺は幅・高さだけ（左・上の辺は左上の点も動く） */
   private dragTextHandle(d: Drawing, handle: number, s: NonNullable<NonNullable<typeof this.drag>['text']>, mouse: Px) {
-    const toPoint = (x: number, y: number) => {
-      const l = this.chart!.timeScale().coordinateToLogical(x);
-      const p = this.series!.coordinateToPrice(y);
-      if (l !== null && p !== null) d.points[0] = { t: this.mapper.toTime(l), p };
-    };
+    const toPoint = (x: number, y: number) => this.setTextAnchor(d, x, y);
     if (handle === 8) {
       // しっぽの先（マグネットを入れていれば足に吸い付く）
       const l = this.chart!.timeScale().coordinateToLogical(mouse.x);
@@ -537,6 +578,9 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       if (l === null || p === null) return;
       const m = this.snap({ px: mouse, l, p });
       d.points[1] = { t: this.mapper.toTime(m.l), p: m.p };
+      // 本体は画面の同じ所に残す（しっぽの先からの距離を覚え直す）
+      const tip = this.toPx(d.points[1]);
+      if (tip) d.offset = { x: s.x - tip.x, y: s.y - tip.y };
       return;
     }
     const minW = 20;
@@ -576,7 +620,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
    * （日本語の変換中の Enter では決めない）。空のまま決めたら図形を消す
    */
   editText(d: Drawing) {
-    const at = this.toPx(d.points[0]);
+    const at = this.textAnchor(d);
     if (!at) return;
     this.editingId = d.id;
     const size = this.textSizeOf(d);
@@ -681,7 +725,9 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       const d = this.drawings[k];
       const pts = d.points.map((pt) => this.toPx(pt));
       if (pts.some((p) => !p)) continue;
-      const [a, b] = pts as Px[];
+      const b = pts[1] as Px;
+      // 吹き出しの本体は、しっぽの先からの距離で置く
+      const a = (d.kind === 'text' ? this.textAnchor(d) : null) ?? (pts[0] as Px);
       // テキストの 8 つのつまみ: 0〜3 は 4 隅（左上・右上・右下・左下。拡大・縮小）、4〜7 は辺（上・右・下・左。幅・高さ）
       if (d.id === this.selectedId && d.kind === 'text' && !d.locked) {
         const hs = this.textHandles(d, a, b);
@@ -831,7 +877,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     const d = hit ? this.drawings.find((x) => x.id === hit.id)! : null;
     // ロックした図形は選ぶだけ（動かさない。ドラッグはチャートを動かす）
     if (hit && d && !d.locked) {
-      const at = d.kind === 'text' && hit.handle >= 0 ? this.toPx(d.points[0]) : null;
+      const at = d.kind === 'text' ? this.textAnchor(d) : null;
       const box = at && this.textBoxes.get(d.id);
       this.drag = {
         id: d.id,
@@ -840,7 +886,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         orig: d.points.map((pt) => ({ l: this.mapper.toLogical(pt.t), p: pt.p })),
         moved: false,
         creating: false,
-        ...(at && box ? { text: { x: at.x, y: at.y, w: box.w, h: box.h, size: this.textSizeOf(d), boxW: d.boxW, boxH: d.boxH } } : {}),
+        ...(at && box ? { text: { x: at.x, y: at.y, w: box.w, h: box.h, size: this.textSizeOf(d), boxW: d.boxW, boxH: d.boxH, mx: m.px.x, my: m.px.y } } : {}),
       };
       e.stopPropagation();
       e.preventDefault();
@@ -852,11 +898,15 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     const id = this.drag?.id ?? this.placing ?? this.polyId;
     if (!id) return;
     // テキストのつまみは、ローソク足の欄の外（RCI の欄など）まで引っぱっても動かし続ける
-    const td = this.drag?.text && this.drag.handle >= 0 ? this.drawings.find((x) => x.id === id) : null;
-    if (td && this.drag?.text) {
+    const td = this.drag?.text ? this.drawings.find((x) => x.id === id) : null;
+    if (td && this.drag?.text && (this.drag.handle >= 0 || this.relative(td))) {
       const r = this.el.getBoundingClientRect();
-      this.drag.moved = true;
-      this.dragTextHandle(td, this.drag.handle, this.drag.text, { x: e.clientX - r.left, y: e.clientY - r.top });
+      const mouse = { x: e.clientX - r.left, y: e.clientY - r.top };
+      const s = this.drag.text;
+      if (Math.hypot(mouse.x - s.mx, mouse.y - s.my) > 0) this.drag.moved = true;
+      // 吹き出しの本体をつかんで動かすときは、本体だけ動かす（しっぽの先は指した足のまま）
+      if (this.drag.handle < 0) this.setTextAnchor(td, s.x + mouse.x - s.mx, s.y + mouse.y - s.my);
+      else this.dragTextHandle(td, this.drag.handle, s, mouse);
       this.refresh();
       return;
     }
@@ -983,7 +1033,9 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     const dash = lineDash(d.style, width);
     ctx.setLineDash(dash);
     ctx.font = '11px system-ui, sans-serif';
-    const [a, b] = pts;
+    const b = pts[1];
+    // 吹き出しの本体は、しっぽの先からの距離で置く（時間足を変えても形が変わらない）
+    const a = (d.kind === 'text' ? this.textAnchor(d) : null) ?? pts[0];
     // フィボの水準の数値は、線の右端（価格の目盛りの手前）に、線のすぐ上に書く
     const rightLabel = (text: string, y: number) => ctx.fillText(text, w - ctx.measureText(text).width - 6, y - 3);
     const line = (x1: number, y1: number, x2: number, y2: number) => {

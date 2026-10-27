@@ -192,6 +192,8 @@ export class ChartPane {
       if (b.dataset.ray) d.ray = !rayOn(d);
       if (b.dataset.lock) d.locked = !d.locked;
       if (b.dataset.callout) {
+        // ふつうの文字に戻すときは、今の見た目の位置に置く（吹き出しの本体はしっぽの先からの距離で持っているため）
+        if (d.callout) this.drawings.syncTextPoint(d);
         d.callout = !d.callout;
         if (d.callout) this.drawings.ensureTail(d);
       }
