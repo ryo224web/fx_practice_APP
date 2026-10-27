@@ -877,12 +877,21 @@ function refresh() {
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
-function toast(msg: string) {
+/** 表示をクリックしたときにすること（無ければクリックできない） */
+let toastAction: (() => void) | null = null;
+
+/** 画面の下に短い知らせを出す。onClick を渡すと、クリックできる表示になる（少し長く出す） */
+function toast(msg: string, onClick?: () => void) {
   const el = $('#toast');
   el.textContent = msg;
   el.classList.add('show');
+  toastAction = onClick ?? null;
+  el.classList.toggle('clickable', !!onClick);
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
+  toastTimer = setTimeout(() => {
+    el.classList.remove('show', 'clickable');
+    toastAction = null;
+  }, onClick ? 6000 : 3500);
 }
 
 function speedLabel(n: number) {
@@ -2482,10 +2491,24 @@ function setupControls() {
       void saveAppSettings({ quickNotes: items });
     },
   );
-  $('#shots-btn').addEventListener('click', () => void takeShots());
+  $('#toast').addEventListener('click', () => {
+    const act = toastAction;
+    if (!act) return;
+    $('#toast').classList.remove('show', 'clickable');
+    toastAction = null;
+    act();
+  });
+  // 📷: クリックで撮る、ダブルクリックで撮る時間足の設定、右クリックで保存先のフォルダを開く。
+  // ダブルクリックの 1 回目で撮り始めないよう、クリックは少し待ってから撮る
+  let shotClick: ReturnType<typeof setTimeout> | undefined;
+  $('#shots-btn').addEventListener('click', (e) => {
+    clearTimeout(shotClick);
+    if (e.detail >= 2) return openShotMenu();
+    shotClick = setTimeout(() => void takeShots(), 250);
+  });
   $('#shots-btn').addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    void fetch('/api/screenshots/open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: currentMeta().name }) });
+    openShotFolder();
   });
   $('#clear-drawings').addEventListener('click', () => {
     if (active.drawings.drawings.length && confirm(`${md.symbol.toUpperCase()} の図形をすべて消しますか？（ロックした図形は残します）`)) active.drawings.clearAll();
@@ -2898,7 +2921,57 @@ function clearTradeHighlight() {
 // 今のチャートを H1 → M15 → M5 → M1 に切り替えながら 4 枚撮り、元の時間足に戻す。
 // 上に「銘柄・時間足・リプレイの日時」の帯を付けて、保存先の screenshots/<プロジェクト名>/ に PNG で入れる（開発サーバーが書く）
 
-const SHOT_TFS: Timeframe[] = ['H1', 'M15', 'M5', 'M1'];
+const DEFAULT_SHOT_TFS: Timeframe[] = ['H1', 'M15', 'M5', 'M1'];
+/** 撮る時間足（📷 を右クリックしてチェックで選ぶ。全部のプロジェクトで共通） */
+let shotTfs: Timeframe[] = DEFAULT_SHOT_TFS;
+const TF_ORDER = Object.keys(TIMEFRAMES) as Timeframe[];
+/** 撮る順（長い時間足から） */
+const shotOrder = () => TF_ORDER.filter((tf) => shotTfs.includes(tf)).reverse();
+
+/** 今のプロジェクトのスクショの保存先を Finder で開く */
+function openShotFolder() {
+  void fetch('/api/screenshots/open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: currentMeta().name }) });
+}
+
+/** 📷 のダブルクリック: 撮る時間足のチェックと、保存先のフォルダを開くボタン */
+function openShotMenu() {
+  document.querySelector('.shot-menu')?.remove();
+  const menu = document.createElement('div');
+  menu.className = 'shot-menu';
+  menu.innerHTML =
+    '<div class="sm-head">撮る時間足</div>' +
+    TF_ORDER.map((tf) => `<label><input type="checkbox" value="${tf}" ${shotTfs.includes(tf) ? 'checked' : ''} /> ${tf}</label>`).join('') +
+    '<button type="button" class="sm-open">保存先のフォルダを開く</button>';
+  const r = $('#shots-btn').getBoundingClientRect();
+  menu.style.top = `${r.bottom + 4}px`;
+  menu.style.left = `${Math.max(8, Math.min(window.innerWidth - 180, r.left))}px`;
+  document.body.append(menu);
+  menu.addEventListener('change', () => {
+    const picked = [...menu.querySelectorAll<HTMLInputElement>('input:checked')].map((i) => i.value as Timeframe);
+    // 1 つも無いと撮れないので、最後の 1 つは外せない
+    if (!picked.length) {
+      (menu.querySelector<HTMLInputElement>(`input[value="${shotTfs[0]}"]`) ?? menu.querySelector('input'))!.checked = true;
+      return;
+    }
+    shotTfs = picked;
+    void saveAppSettings({ shotTfs: picked });
+  });
+  menu.querySelector('.sm-open')!.addEventListener('click', () => {
+    openShotFolder();
+    menu.remove();
+  });
+  const close = (e: Event) => {
+    if (e instanceof KeyboardEvent ? e.key === 'Escape' : !menu.contains(e.target as Node)) {
+      menu.remove();
+      document.removeEventListener('mousedown', close, true);
+      document.removeEventListener('keydown', close, true);
+    }
+  };
+  setTimeout(() => {
+    document.addEventListener('mousedown', close, true);
+    document.addEventListener('keydown', close, true);
+  });
+}
 let shooting = false;
 
 const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
@@ -2952,13 +3025,15 @@ async function takeShots() {
   const prefix = ticket === null ? '' : `#${ticket}_`;
   toast('スクショを撮っています…');
   try {
-    for (const tf of SHOT_TFS) {
+    const order = shotOrder();
+    for (const tf of order) {
       if (pane.tf !== tf) setTf(tf);
       await settle();
       const img = withHeader(pane.chart.takeScreenshot(), `${ticket === null ? '' : `#${ticket}    `}${sym}  ${tf}    ${when}（${zone}）    ${currentMeta().name}`);
       // Finder の名前順で M1 → M5 → M15 → H1 と並ぶように、時間足の前に短い順の番号を付ける
-      const order = [...SHOT_TFS].reverse().indexOf(tf) + 1;
-      files.push({ name: `${prefix}${stamp}_${sym}_${order}_${tf}`, data: img.toDataURL('image/png') });
+      // Finder の名前順で短い時間足から並ぶように、短い順の番号を付ける
+      const n = [...order].reverse().indexOf(tf) + 1;
+      files.push({ name: `${prefix}${stamp}_${sym}_${n}_${tf}`, data: img.toDataURL('image/png') });
     }
   } finally {
     if (pane.tf !== back) setTf(back);
@@ -2969,7 +3044,7 @@ async function takeShots() {
     if (!res.ok) throw new Error(String(res.status));
     const { dir } = (await res.json()) as { dir: string };
     const which = ticket === null ? '注文番号なし' : `#${ticket} として`;
-    toast(`スクショを ${which} ${files.length} 枚保存しました（${dir.replace(/^.*\/fx_practice\//, '')}。📷 を右クリックでフォルダを開く）`);
+    toast(`スクショを ${which} ${files.length} 枚保存しました（${dir.replace(/^.*\/fx_practice\//, '')}）── クリックでフォルダを開く`, openShotFolder);
   } catch {
     // サーバーに届かなければ、ブラウザのダウンロードで保存する
     for (const f of files) {
@@ -3029,6 +3104,8 @@ async function start() {
   keymap = settings.keymap ?? state.keymap;
   styleBarPos = settings.styleBarPos ?? null;
   palette = settings.palette ?? DEFAULT_PALETTE;
+  shotTfs = (settings.shotTfs as Timeframe[] | undefined)?.filter((tf) => tf in TIMEFRAMES) ?? DEFAULT_SHOT_TFS;
+  if (!shotTfs.length) shotTfs = DEFAULT_SHOT_TFS;
   quickNotes = settings.quickNotes;
   if (!settings.keymap && state.keymap) void saveAppSettings({ keymap: state.keymap });
   keyIndex = commandIndex(resolveKeymap(keymap));

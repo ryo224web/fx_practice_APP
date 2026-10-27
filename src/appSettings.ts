@@ -7,6 +7,8 @@ import type { NoteItem } from './ui/quickNotes';
 export interface AppSettings {
   /** キーボードのショートカット（働き → キー。無ければ初期値。src/ui/keys.ts） */
   keymap?: Record<string, string[]>;
+  /** スクショ（📷）で撮る時間足 */
+  shotTfs?: string[];
   /** 簡易メモ（ツールバーの「📝 メモ」。階層つきの箇条書き） */
   quickNotes?: NoteItem[];
   /** 図形のマグネット（足の始値・高値・安値・終値に吸い付ける）を入れているか */

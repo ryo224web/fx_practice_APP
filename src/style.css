@@ -1040,3 +1040,43 @@ th.sortable:hover {
 .quick-notes .qn-head b {
   white-space: nowrap;
 }
+
+/* 📷 の右クリック: 撮る時間足を選ぶ */
+.shot-menu {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 190px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel, #161b22);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+.shot-menu .sm-head {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.shot-menu label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.shot-menu .sm-open {
+  margin-top: 6px;
+  white-space: nowrap;
+}
+
+/* クリックできる知らせ（スクショの保存先を開くなど） */
+#toast.clickable {
+  pointer-events: auto;
+  cursor: pointer;
+}
+#toast.clickable:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
