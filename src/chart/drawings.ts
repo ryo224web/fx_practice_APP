@@ -370,6 +370,33 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     return views;
   }
 
+  /** 時間の目盛りに出す札の時刻の書き方（十字線と同じ「2026.10.08 05:00」。表示の時刻帯は main が決める） */
+  timeLabel: (utc: number) => string = (utc) => new Date(utc).toISOString().slice(0, 16).replace('T', ' ');
+
+  /** 時間の目盛りの札: 垂直線はいつも、ほかの図形は選んでいるときだけ点の時刻を出す（価格の目盛りの札と同じ考え） */
+  timeAxisViews(): readonly ISeriesPrimitiveAxisView[] {
+    const views: ISeriesPrimitiveAxisView[] = [];
+    if (!this.chart) return views;
+    const ts = this.chart.timeScale();
+    for (const d of this.drawings) {
+      if (d.kind !== 'vline' && d.id !== this.selectedId) continue;
+      if (d.kind === 'hline' || d.kind === 'text') continue;
+      for (const pt of d.kind === 'vline' ? d.points.slice(0, 1) : d.points) {
+        const x = this.mapper.toX(ts, pt.t);
+        if (x == null) continue;
+        views.push({
+          coordinate: () => x,
+          text: () => this.timeLabel(pt.t),
+          textColor: () => '#000',
+          backColor: () => this.colorOf(d),
+          visible: () => true,
+          tickVisible: () => true,
+        });
+      }
+    }
+    return views;
+  }
+
   // ---- 公開 API ----
   setDrawings(list: Drawing[]) {
     this.drawings = list;

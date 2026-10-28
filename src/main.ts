@@ -2403,6 +2403,7 @@ function createPanes() {
     p.drawings.colorOf = (d) => d.custom ?? (d.tf ? (state.tfColors?.[d.tf] ?? DEFAULT_TF_COLORS[d.tf] ?? d.color) : d.color);
     p.drawings.levelsOf = levelsOf;
     p.drawings.widthOf = (k) => state.lineWidths?.[k] ?? defaultLineWidth(k);
+    p.drawings.timeLabel = (t) => formatTime(t, state.zone, rule);
     p.drawings.onEditLevels = () => openLevelsDialog();
     p.setRightOffset(state.rightOffset ?? 12);
     return p;
