@@ -738,7 +738,7 @@ dialog .error {
   position: fixed;
   z-index: 20;
   min-width: 280px;
-  max-width: 420px;
+  max-width: 720px;
   max-height: 70vh;
   overflow-y: auto;
   padding: 6px 0;
@@ -824,6 +824,40 @@ dialog .error {
 }
 #project-panel [data-project] {
   user-select: none;
+}
+/* 左にフォルダの木、右にお気に入り（★）の列 */
+#project-panel .pj-cols {
+  display: flex;
+  align-items: flex-start;
+}
+#project-panel .pj-main {
+  flex: 1;
+  min-width: 280px;
+  max-width: 420px;
+}
+#project-panel .pj-fav {
+  position: sticky;
+  top: 0;
+  min-width: 180px;
+  max-width: 260px;
+  border-left: 1px solid var(--border);
+}
+#project-panel .pj-star {
+  margin-left: auto;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  visibility: hidden;
+}
+#project-panel .pj-row:hover .pj-star,
+#project-panel .pj-star-on {
+  visibility: visible;
+}
+#project-panel .pj-star-on {
+  color: #e5a50a;
 }
 /* ドラッグして落とす先 */
 #project-panel .pj-over {

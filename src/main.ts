@@ -1879,6 +1879,14 @@ async function reloadInto(fn: () => Promise<unknown>) {
 // プロジェクトはドラッグしてフォルダに落とすと移る（一番上の行に落とすとフォルダの外へ）。
 
 const OPEN_FOLDERS_KEY = 'fx-practice-open-folders';
+/** お気に入り（★）のプロジェクトの ID（全部の Mac で共通。共通の設定の favorites） */
+let favorites: string[] = [];
+
+function toggleFavorite(id: string) {
+  favorites = favorites.includes(id) ? favorites.filter((x) => x !== id) : [...favorites, id];
+  void saveAppSettings({ favorites });
+  renderProjectPanel();
+}
 
 interface FolderNode {
   name: string;
@@ -1949,13 +1957,26 @@ function renderProjectPanel() {
         </div>${isOpen ? html(f) : ''}</li>`;
       })
       .join('')}${n.projects
-      .map((p) => `<li><div class="pj-row${p.id === cur.id ? ' pj-current' : ''}" data-project="${p.id}" draggable="true" title="クリックで開く。ドラッグしてフォルダに落とすと移る">${p.id === cur.id ? '✓ ' : '　'}${esc(p.name)}</div></li>`)
+      .map((p) => `<li><div class="pj-row${p.id === cur.id ? ' pj-current' : ''}" data-project="${p.id}" draggable="true" title="クリックで開く。ドラッグしてフォルダに落とすと移る">${p.id === cur.id ? '✓ ' : '　'}<span class="pj-name">${esc(p.name)}</span>${star(p.id)}</div></li>`)
       .join('')}</ul>`;
   };
-  $('#project-panel').innerHTML = `<div class="pj-head pj-drop" data-folder="" title="ここにプロジェクトを落とすと、フォルダの外に出す">
+  // ★ はいつも出し、☆ はマウスを乗せたときだけ出す
+  const star = (id: string) => {
+    const on = favorites.includes(id);
+    return `<button type="button" class="pj-star${on ? ' pj-star-on' : ''}" data-star="${id}" title="${on ? 'お気に入りから外す' : 'お気に入りにする（右に並べる）'}">${on ? '★' : '☆'}</button>`;
+  };
+  // お気に入りは右の列に、付けた順で並べる（消したプロジェクトは出さない）
+  const byId = new Map(listProjects().map((p) => [p.id, p]));
+  const favs = favorites.map((id) => byId.get(id)).filter((p): p is ProjectMeta => !!p);
+  const favCol = favs.length
+    ? `<div class="pj-fav"><div class="pj-head"><span>★ お気に入り</span></div><ul>${favs
+        .map((p) => `<li><div class="pj-row${p.id === cur.id ? ' pj-current' : ''}" data-project="${p.id}" title="${esc(p.folder ? `${p.folder.split('/').join(' ／ ')} ／ ${p.name}` : p.name)}（クリックで開く）">${p.id === cur.id ? '✓ ' : '　'}<span class="pj-name">${esc(p.name)}</span>${star(p.id)}</div></li>`)
+        .join('')}</ul></div>`
+    : '';
+  $('#project-panel').innerHTML = `<div class="pj-cols"><div class="pj-main"><div class="pj-head pj-drop" data-folder="" title="ここにプロジェクトを落とすと、フォルダの外に出す">
       <span>プロジェクト</span>
       <span class="pj-head-acts"><button type="button" data-act="new" data-folder="" title="新しいプロジェクト（フォルダの外）">＋ 新規</button><button type="button" data-act="mkdir" data-folder="" title="フォルダを作る">📁＋</button></span>
-    </div>${html(projectTree())}`;
+    </div>${html(projectTree())}</div>${favCol}</div>`;
 }
 
 function renderProjectButton() {
@@ -2143,6 +2164,13 @@ function setupProjects() {
   $('#project').addEventListener('click', () => setProjectPanel(!!panel.hidden));
   panel.addEventListener('click', (e) => {
     const t = e.target as HTMLElement;
+    // ★・☆ でお気に入りを付け外しする（開かない）
+    const star = t.closest<HTMLButtonElement>('button[data-star]');
+    if (star) {
+      e.stopPropagation();
+      toggleFavorite(star.dataset.star!);
+      return;
+    }
     // フォルダの行のボタン・一番上のボタン
     const act = t.closest<HTMLButtonElement>('button[data-act]');
     if (act) {
@@ -3121,6 +3149,7 @@ async function start() {
   shotTfs = (settings.shotTfs as Timeframe[] | undefined)?.filter((tf) => tf in TIMEFRAMES) ?? DEFAULT_SHOT_TFS;
   if (!shotTfs.length) shotTfs = DEFAULT_SHOT_TFS;
   quickNotes = settings.quickNotes;
+  favorites = settings.favorites ?? [];
   if (!settings.keymap && state.keymap) void saveAppSettings({ keymap: state.keymap });
   keyIndex = commandIndex(resolveKeymap(keymap));
   migratePanes();
