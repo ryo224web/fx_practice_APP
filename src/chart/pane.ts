@@ -426,6 +426,25 @@ export class ChartPane {
     ts.setVisibleLogicalRange({ from: mid - width / 2, to: mid + width / 2 });
   }
 
+  /**
+   * スクショで取引を写すとき: from〜to（UTC）が画面の 6 割くらいに収まる拡大率にして、真ん中に置く。
+   * 「標準」の幅より太くはしない（長い時間足で取引が数本しか無いときは、標準の幅で前後の流れも写す）。足の幅は 1px まで
+   */
+  fitTimeRange(from: number, to: number) {
+    const ts = this.chart.timeScale();
+    const w = ts.width();
+    if (w <= 0) return;
+    const a = Math.floor(this.mapper.toLogical(from));
+    const b = Math.floor(this.mapper.toLogical(to)) + 1;
+    const bars = Math.min(w, Math.max(w / DEFAULT_BAR_SPACING, (b - a) / 0.6));
+    // 取引が最新の足の近くなら、右端は「最新の足 + 右の余白」まで（真ん中に置くと右が空になるため）
+    const { agg } = this.host.agg(this.tf);
+    const last = lastLE(agg.starts, this.host.cursor()) - this.mapper.offset;
+    const right = Math.min((a + b) / 2 + bars / 2, last + ts.options().rightOffset);
+    ts.setVisibleLogicalRange({ from: right - bars, to: right });
+    this.spacing = w / bars;
+  }
+
   /** 最新の足が右端（右の余白の手前）に来るようにする。動かす途中で止まらないよう、動きは付けない */
   scrollToNow() {
     const ts = this.chart.timeScale();
@@ -455,8 +474,7 @@ export class ChartPane {
    * 足の幅（拡大率）は変えない（描き直した直後は前の時間足の位置のままなので、新しい時間足の足の数を超えていると
    * チャートが範囲を縮めてしまう。その幅を使うと勝手に拡大される）
    */
-  renderAt(time: number | null) {
-    const spacing = this.chart.timeScale().options().barSpacing;
+  renderAt(time: number | null, spacing = this.chart.timeScale().options().barSpacing) {
     this.render(true);
     const { agg, times } = this.host.agg(this.tf);
     const k = lastLE(agg.starts, this.host.cursor());
@@ -479,7 +497,7 @@ export class ChartPane {
   }
 
   /** 今の見え方: 右端の時刻（最新の足を見ていれば null）と足の幅 */
-  private viewState(): { anchor: number | null; spacing: number } {
+  viewState(): { anchor: number | null; spacing: number } {
     if (this.pendingView) return this.pendingView;
     return { anchor: this.isAtNow() ? null : this.anchorTime(), spacing: this.chart.timeScale().options().barSpacing };
   }
@@ -568,7 +586,11 @@ export class ChartPane {
     const a = this.measureFrom!;
     const bars = Math.round(p.logical) - Math.round(a.logical);
     const pips = (p.price - a.price) / this.host.pip();
-    const text = `${bars} 本 / ${pips.toFixed(1)} pips / ${p.price.toFixed(this.host.digits())}`;
+    // 本数の横に、2 つの足の時刻の差（週末の休みも含めた実際の時間）を「1d 2h 5m」で出す
+    const mins = Math.round(Math.abs(this.mapper.toTime(Math.round(p.logical)) - this.mapper.toTime(Math.round(a.logical))) / 60_000);
+    const [dd, hh, mm] = [Math.floor(mins / 1440), Math.floor((mins % 1440) / 60), mins % 60];
+    const span = [dd ? `${dd}d` : '', dd || hh ? `${hh}h` : '', `${mm}m`].filter(Boolean).join(' ');
+    const text = `${bars} 本 (${span}) / ${pips.toFixed(1)} pips / ${p.price.toFixed(this.host.digits())}`;
     const w = this.chart.timeScale().width();
     // 札はマウスの右下。端からはみ出すときは反対側へ
     const tw = text.length * 7 + 12;

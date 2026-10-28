@@ -508,6 +508,8 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
 
   /** テキストの大きさ（描いたときに測る。つかむ判定に使う） */
   private textBoxes = new Map<string, { w: number; h: number }>();
+  /** フィボの水準の数値の四角（描いたときに測る。水準の線ではなく、この数値でつかむ） */
+  private fiboLabels = new Map<string, { x1: number; y1: number; x2: number; y2: number }[]>();
   /** 打ち直しているテキスト */
   private editingId: string | null = null;
 
@@ -746,6 +748,10 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     return best ? { px: m.px, l: best.l, p: best.p } : m;
   }
 
+  private onFiboLabel(id: string, px: Px): boolean {
+    return (this.fiboLabels.get(id) ?? []).some((r) => px.x >= r.x1 - 2 && px.x <= r.x2 + 2 && px.y >= r.y1 - 2 && px.y <= r.y2 + 2);
+  }
+
   private hitDrawing(px: Px): { id: string; handle: number } | null {
     const w = this.chart?.timeScale().width() ?? 0;
     for (let k = this.drawings.length - 1; k >= 0; k--) {
@@ -807,21 +813,14 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
           break;
         }
         case 'fibo': {
-          hit = distToSegment(px, a, b) <= HIT;
-          for (const lv of this.levelsOf('fibo')) {
-            const y = b.y + (a.y - b.y) * lv;
-            if (Math.abs(px.y - y) <= HIT && px.x >= Math.min(a.x, b.x) - HIT && px.x <= w) hit = true;
-          }
+          // A→B の線か、水準の数値でつかむ（水準の線の上ではつかまない。線の近くの足や図形を触れるように）
+          hit = distToSegment(px, a, b) <= HIT || this.onFiboLabel(d.id, px);
           break;
         }
         case 'fiboexp': {
           // 描いている途中（C を置く前に Esc など）は C = B とみなす
           const c = pts[2] ?? b;
-          hit = distToSegment(px, a, b) <= HIT || distToSegment(px, b, c) <= HIT;
-          for (const lv of this.levelsOf('fiboexp')) {
-            const y = c.y + (b.y - a.y) * lv;
-            if (Math.abs(px.y - y) <= HIT && px.x >= c.x - HIT && px.x <= w) hit = true;
-          }
+          hit = distToSegment(px, a, b) <= HIT || distToSegment(px, b, c) <= HIT || this.onFiboLabel(d.id, px);
           break;
         }
       }
@@ -1064,7 +1063,13 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     // 吹き出しの本体は、しっぽの先からの距離で置く（時間足を変えても形が変わらない）
     const a = (d.kind === 'text' ? this.textAnchor(d) : null) ?? pts[0];
     // フィボの水準の数値は、線の右端（価格の目盛りの手前）に、線のすぐ上に書く
-    const rightLabel = (text: string, y: number) => ctx.fillText(text, w - ctx.measureText(text).width - 6, y - 3);
+    const labels: { x1: number; y1: number; x2: number; y2: number }[] = [];
+    if (d.kind === 'fibo' || d.kind === 'fiboexp') this.fiboLabels.set(d.id, labels);
+    const rightLabel = (text: string, y: number) => {
+      const tw = ctx.measureText(text).width;
+      ctx.fillText(text, w - tw - 6, y - 3);
+      labels.push({ x1: w - tw - 6, y1: y - 14, x2: w - 6, y2: y - 1 });
+    };
     const line = (x1: number, y1: number, x2: number, y2: number) => {
       ctx.beginPath();
       ctx.moveTo(x1, y1);

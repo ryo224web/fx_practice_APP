@@ -1425,6 +1425,7 @@ function showHistoryTrade(ticket: number, closeTime: number) {
   if (!h || h.kind !== 'trade') return;
   for (const p of panes) p.overlay.setHighlight({ openTime: h.openTime, closeTime: h.closeTime });
   highlightTicket = ticket;
+  highlightRange = { from: h.openTime, to: h.closeTime };
   for (const p of visiblePanes()) p.showTimeRange(h.openTime, h.closeTime);
   if (!panes[0].overlay.showHistory) $('#toggle-history').click();
 }
@@ -1444,6 +1445,7 @@ async function jumpToTrade(ticket: number) {
     const closeUtc = t.closeServer === null ? now : Math.min(mt4ToUtc(t.closeServer), now);
     for (const p of panes) p.overlay.setHighlight({ openTime: openUtc, closeTime: closeUtc });
     highlightTicket = ticket;
+    highlightRange = { from: openUtc, to: closeUtc };
     for (const p of visiblePanes()) p.showTimeRange(openUtc, closeUtc);
     return;
   }
@@ -2911,10 +2913,13 @@ function onKey(e: KeyboardEvent) {
 
 /** 行のダブルクリックで指定している取引の注文番号（縦線を引いている間）。スクショの名前の先頭に付ける */
 let highlightTicket: number | null = null;
+/** 指定している取引のエントリー〜決済（UTC）。スクショでは時間足ごとに、この期間が収まる拡大率にする */
+let highlightRange: { from: number; to: number } | null = null;
 
 function clearTradeHighlight() {
   if (highlightTicket === null) return;
   highlightTicket = null;
+  highlightRange = null;
   for (const p of panes) p.overlay.setHighlight(null);
 }
 
@@ -3024,11 +3029,18 @@ async function takeShots() {
   // 行のダブルクリックで取引を指定していれば、その注文番号を名前の先頭に付ける（Finder で注文番号ごとにまとまる）
   const ticket = highlightTicket;
   const prefix = ticket === null ? '' : `#${ticket}_`;
+  // 取引を指定していれば、時間足ごとにその取引が収まる拡大率で撮り、終わったら元の見え方に戻す
+  const range = ticket === null ? null : highlightRange;
+  const view = pane.viewState();
   toast('スクショを撮っています…');
   try {
     const order = shotOrder();
     for (const tf of order) {
       if (pane.tf !== tf) setTf(tf);
+      if (range) {
+        await settle();
+        pane.fitTimeRange(range.from, range.to);
+      }
       await settle();
       const img = withHeader(pane.chart.takeScreenshot(), `${ticket === null ? '' : `#${ticket}    `}${sym}  ${tf}    ${when}（${zone}）    ${currentMeta().name}`);
       // Finder の名前順で M1 → M5 → M15 → H1 と並ぶように、時間足の前に短い順の番号を付ける
@@ -3038,6 +3050,7 @@ async function takeShots() {
     }
   } finally {
     if (pane.tf !== back) setTf(back);
+    if (range) pane.renderAt(view.anchor, view.spacing);
     shooting = false;
   }
   try {
