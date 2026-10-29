@@ -71,7 +71,9 @@ function explainedTable(s: Summary, info: ReportInfo): string {
     ]),
     section('pips', [
       row('合計', pips(s.totalPips), cls(s.totalPips), 'high', '値幅の合計（勝ちがプラス）。銘柄が混ざっていると、銘柄ごとの 1 pip の大きさが違う'),
-      row('平均', pips(s.avgPips), cls(s.avgPips), 'high', '1 トレードあたりの値幅'),
+      row('獲得 pips', pips(s.winPips), 'pos', 'high', '勝ちトレードの値幅の合計'),
+      row('損失 pips', pips(s.lossPips), 'neg', 'low', '負けトレードの値幅の合計（小さいほど良い）'),
+      row('期待値（pips・1 回あたり）', pips(s.avgPips), cls(s.avgPips), 'high', '値幅の合計 ÷ トレード数。1 回トレードすると何 pips 増える（減る）か'),
       row('勝ちの平均', pips(s.avgWinPips), 'pos', 'high', '勝ちトレードの平均の値幅'),
       row('負けの平均', pips(s.avgLossPips), 'neg', 'low', '負けトレードの平均の値幅（小さいほど良い）'),
       row('最大の含み益の平均（MFE）', pips(s.avgMfe), '', 'case', '保有中に一番有利だったときの値幅。今の銘柄で価格データがある取引だけ'),
@@ -139,6 +141,7 @@ export function quickSummary(s: Summary, info: ReportInfo): string {
     ${it('純損益', yen(s.net), cls(s.net))}${it('総利益', yen(s.grossProfit), 'pos')}${it('総損失', yen(s.grossLoss), 'neg')}${it('プロフィットファクター', num(s.profitFactor, 2))}
     ${it('平均利益', yen(s.avgWin), 'pos')}${it('平均損失', yen(s.avgLoss), 'neg')}${it('期待値（1 回あたり）', yen(s.expectancy), cls(s.expectancy))}${it('最大ドローダウン', `${yen(s.maxDrawdown)}${info.hasBalance ? `（${pct(s.maxDrawdownPct)}）` : ''}`, 'neg')}
     ${it('最大利益', yen(s.maxWin), 'pos')}${it('最大損失', yen(s.maxLoss), 'neg')}${it('最大連勝', `${s.maxConsecWins}`)}${it('最大連敗', `${s.maxConsecLosses}`)}
+    ${it('獲得 pips', pips(s.winPips), 'pos')}${it('損失 pips', pips(s.lossPips), 'neg')}${it('期待値（pips）', pips(s.avgPips), cls(s.avgPips))}
   </div>`;
 }
 

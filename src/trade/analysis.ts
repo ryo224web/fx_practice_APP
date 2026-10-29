@@ -59,6 +59,11 @@ export interface Summary {
   payoff: number;
   expectancy: number;
   totalPips: number;
+  /** 勝ちトレードの値幅の合計（獲得 pips） */
+  winPips: number;
+  /** 負けトレードの値幅の合計（損失 pips。マイナス） */
+  lossPips: number;
+  /** 1 トレードあたりの値幅（期待値の pips） */
   avgPips: number;
   avgWinPips: number;
   avgLossPips: number;
@@ -151,6 +156,8 @@ function emptySummary(): Summary {
     payoff: NaN,
     expectancy: NaN,
     totalPips: 0,
+    winPips: 0,
+    lossPips: 0,
     avgPips: NaN,
     avgWinPips: NaN,
     avgLossPips: NaN,
@@ -253,6 +260,8 @@ export function summarize(trades: readonly TradeRecord[], initialBalance: number
   s.payoff = s.avgLoss < 0 ? s.avgWin / -s.avgLoss : NaN;
   s.expectancy = s.net / list.length;
   s.totalPips = list.reduce((a, t) => a + t.pips, 0);
+  s.winPips = wins.reduce((a, t) => a + t.pips, 0);
+  s.lossPips = losses.reduce((a, t) => a + t.pips, 0);
   s.avgPips = s.totalPips / list.length;
   s.avgWinPips = avg(wins.map((t) => t.pips));
   s.avgLossPips = avg(losses.map((t) => t.pips));

@@ -37,6 +37,9 @@ describe('成績の分析', () => {
     expect(s.payoff).toBeCloseTo(2500 / 1000);
     expect(s.expectancy).toBe(400);
     expect(s.totalPips).toBe(20);
+    expect(s.winPips).toBe(50);
+    expect(s.lossPips).toBe(-30);
+    expect(s.avgPips).toBe(4);
     expect(s.maxConsecLosses).toBe(2);
     expect(s.avgHold).toBe(30);
   });

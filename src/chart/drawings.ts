@@ -53,6 +53,8 @@ export interface Drawing {
    * （本体も時刻と価格で持つと、M1 と H1 で本体としっぽの先の離れ方が何十倍も変わるため。2026-10-27）
    */
   offset?: { x: number; y: number };
+  /** 描いた日時（UTC ミリ秒。リプレイの時刻ではなく本当の日時）。テキストはマウスを乗せると右下にうっすら出す */
+  created?: number;
 }
 
 /** テキストの枠の線と文字の間（px） */
@@ -301,9 +303,29 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     const inEditor = (e: Event) => !!(e.target as Element | null)?.closest?.('.draw-text-edit');
     el.addEventListener('mousedown', (e) => !inEditor(e) && this.onDown(e), true);
     window.addEventListener('mousemove', (e) => this.onMove(e));
+    // テキストにマウスを乗せている間は、描いた日付を出す
+    el.addEventListener('mousemove', (e) => this.onHover(e));
+    el.addEventListener('mouseleave', () => this.setHover(null));
     window.addEventListener('mouseup', (e) => this.onUp(e));
     el.addEventListener('contextmenu', (e) => !inEditor(e) && this.onContext(e), true);
     el.addEventListener('dblclick', (e) => !inEditor(e) && this.onDouble(e), true);
+  }
+
+  /** マウスを乗せているテキスト（描いた日付を出す） */
+  private hoverId: string | null = null;
+
+  private setHover(id: string | null) {
+    if (id === this.hoverId) return;
+    this.hoverId = id;
+    this.refresh();
+  }
+
+  private onHover(e: MouseEvent) {
+    if (this.drag || this.placing || this.polyId || this.editingId) return this.setHover(null);
+    const r = this.el.getBoundingClientRect();
+    const hit = this.hitDrawing({ x: e.clientX - r.left, y: e.clientY - r.top });
+    const d = hit && this.drawings.find((x) => x.id === hit.id);
+    this.setHover(d && d.kind === 'text' && d.created ? d.id : null);
   }
 
   private onDouble(e: MouseEvent) {
@@ -883,6 +905,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         points: onePoint(this.tool) ? [{ t: this.mapper.toTime(sm.l), p: sm.p }] : [0, 1].map(() => ({ t: this.mapper.toTime(sm.l), p: sm.p })),
         color: COLORS[this.tool],
         tf: this.tf,
+        created: Date.now(),
         // テキストは初めから吹き出し（右上の欄の 💬 でふつうの文字にできる）
         ...(this.tool === 'text' ? { callout: true } : {}),
       };
@@ -1118,6 +1141,19 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
           ctx.fillStyle = isLight(fill) ? '#111' : '#fff';
         }
         lines.forEach((t, i) => ctx.fillText(t, a.x, a.y + i * lh));
+        // マウスを乗せている間は、描いた日付を枠の右下のすぐ外にうっすら出す
+        if (this.hoverId === d.id && d.created) {
+          const c = new Date(d.created);
+          const day = `${c.getFullYear()}.${String(c.getMonth() + 1).padStart(2, '0')}.${String(c.getDate()).padStart(2, '0')}`;
+          ctx.save();
+          ctx.font = '10px system-ui, -apple-system, sans-serif';
+          ctx.fillStyle = '#8b949e';
+          ctx.globalAlpha = 0.8;
+          ctx.textAlign = 'right';
+          ctx.textBaseline = 'top';
+          ctx.fillText(day, a.x + bw + pad, a.y + bh + pad + 3);
+          ctx.restore();
+        }
         if (sel) {
           ctx.strokeStyle = d.callout ? '#4493f8' : color;
           ctx.setLineDash([3, 3]);
