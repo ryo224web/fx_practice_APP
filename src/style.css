@@ -316,6 +316,28 @@ td.sell {
   margin: 4px 0;
 }
 
+#easyorder .eo-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+}
+/* 成行 | 指値・逆指値（押した方に切り替える） */
+#easyorder .eo-seg {
+  display: inline-flex;
+}
+#easyorder .eo-seg button {
+  padding: 2px 10px;
+}
+#easyorder .eo-seg button:first-child {
+  border-radius: 4px 0 0 4px;
+}
+#easyorder .eo-seg button:last-child {
+  border-left: none;
+  border-radius: 0 4px 4px 0;
+}
+
 #easyorder .pair {
   display: flex;
   align-items: center;

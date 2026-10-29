@@ -23,7 +23,7 @@
         <button data-tool="channel" title="チャネル（平行線。3 つ目の四角で幅を変える）">⫽</button>
         <button data-tool="rect" title="長方形">▭</button>
         <button data-tool="text" title="テキスト。置きたい所をクリックして文字を打つ（Enter で決定・Shift+Enter で改行・Esc でやめる。ダブルクリックで打ち直す）">A</button>
-        <button data-tool="fibo" title="フィボナッチ・リトレースメント（F）">Fib</button>
+        <button data-tool="fibo" title="フィボナッチ・リトレースメント（F）">FR</button>
         <button data-tool="fiboexp" title="フィボナッチ・エクスパンション（E。A→B をドラッグし、もう 1 回クリックして C を置く）">FE</button>
         <button id="shots-btn" title="スクショ: 今のチャートを選んだ時間足（初めは H1・M15・M5・M1）で撮って保存する（ダブルクリックで撮る時間足を選ぶ・右クリックで保存先のフォルダを開く）">📷</button>
         <button id="magnet-btn" aria-pressed="false" title="マグネット（M）。点を置く・動かすとき、近くの足の始値・高値・安値・終値に吸い付ける">🧲</button>
@@ -72,7 +72,7 @@
       </div>
       <div id="easyorder" hidden>
         <div class="eo-head" title="ドラッグして動かせます（置いた場所を覚えます）"><b>EasyOrder</b><button id="eo-close" title="閉じる">×</button></div>
-        <label>注文 <select id="eo-mode"><option value="market">成行</option><option value="pending">指値・逆指値</option></select></label>
+        <div class="eo-row">注文 <span id="eo-mode" class="eo-seg" title="クリックで切り替え"><button type="button" data-mode="market">成行</button><button type="button" data-mode="pending">指値・逆指値</button></span></div>
         <label>許容する損失
           <span class="pair"><input id="eo-risk" type="number" step="0.1" min="0" /><select id="eo-unit"><option value="pct">% (残高)</option><option value="jpy">円</option></select></span>
         </label>

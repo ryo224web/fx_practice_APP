@@ -1546,7 +1546,7 @@ function eoRender() {
     const el = $<HTMLInputElement>(id);
     if (document.activeElement !== el) el.value = v === null ? '' : v.toFixed(digits);
   };
-  $<HTMLSelectElement>('#eo-mode').value = e.mode;
+  for (const b of $('#eo-mode').querySelectorAll<HTMLButtonElement>('button')) b.setAttribute('aria-pressed', String(b.dataset.mode === e.mode));
   $<HTMLSelectElement>('#eo-unit').value = e.riskUnit;
   setVal('#eo-risk', e.risk, e.riskUnit === 'pct' ? 1 : 0);
   setVal('#eo-sl', e.sl);
@@ -1637,8 +1637,11 @@ function setupEasyOrder() {
     e().open = false;
     refresh();
   });
-  $('#eo-mode').addEventListener('change', (ev) => {
-    e().mode = (ev.target as HTMLSelectElement).value as EasyOrderState['mode'];
+  // 成行と指値・逆指値は、押した方に切り替える（選ぶ欄を開かずに 1 回のクリックで）
+  $('#eo-mode').addEventListener('click', (ev) => {
+    const mode = (ev.target as HTMLElement).closest<HTMLButtonElement>('button[data-mode]')?.dataset.mode as EasyOrderState['mode'] | undefined;
+    if (!mode || mode === e().mode) return;
+    e().mode = mode;
     // 成行 ↔ 指値・逆指値を切り替えても、S/L・T/P は動かさない（エントリーが無ければ今の価格に置く）
     if (e().mode === 'pending' && e().entry === null) e().entry = roundPrice(md.bid[cursor].c);
     refresh();
