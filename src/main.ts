@@ -2,7 +2,7 @@ import { type CandlestickData, type Time, type UTCTimestamp } from 'lightweight-
 import { commandIndex, KEY_COMMANDS, keyLabel, keyOf, resolveKeymap } from './ui/keys';
 import { defaultLineWidth, DEFAULT_PALETTE, DEFAULT_TF_COLORS, DRAWING_LABELS, FIBO_EXP_LEVELS, FIBO_LEVELS, levelsFromPercents, type Drawing, type DrawingKind } from './chart/drawings';
 import { DEFAULT_INDICATORS, normalizeIndicators, type IndicatorConfig } from './chart/indicators';
-import { ChartPane, type PaneHost } from './chart/pane';
+import { ChartPane, DEFAULT_COUNTDOWN, type CountdownStyle, type PaneHost } from './chart/pane';
 import { type LineEdit, type OrderPreview } from './chart/trades';
 import { aggregateWithIndex, mergeBars, TIMEFRAMES, type Aggregated, type Bar, type Timeframe } from './core/candles';
 import { formatMoney, formatPrice, formatTime, fromLocalInput, toLocalInput } from './core/format';
@@ -574,11 +574,14 @@ function setLive(on: boolean) {
     renderChart(false, true);
     renderQuotes();
   }
+  if (!on) for (const p of panes) p.setCountdown(null);
 }
 
 /** ライブ: 直接届いた今の価格を見る（1 秒ごと） */
 let tickBusy = false;
 async function pollTick() {
+  // 今の足の残り時間は、価格が届かない秒も進める
+  for (const p of visiblePanes()) p.setCountdown(live ? Date.now() : null);
   if (!live || tickBusy || traveling) return;
   tickBusy = true;
   try {
@@ -2478,6 +2481,12 @@ function createPanes() {
       palette = colors;
       void saveAppSettings({ palette: colors });
     },
+    countdownStyle: () => countdownStyle,
+    setCountdownStyle: (st) => {
+      countdownStyle = st ?? DEFAULT_COUNTDOWN;
+      for (const p of panes) p.applyCountdownStyle();
+      void saveAppSettings({ countdown: countdownStyle });
+    },
     styleBarPos: () => styleBarPos,
     setStyleBarPos: (pos) => {
       styleBarPos = pos;
@@ -2923,6 +2932,7 @@ function setMagnet(on: boolean, persist = true) {
 let palette: string[] = DEFAULT_PALETTE;
 /** 図形の太さ・線の種類の欄の場所（全部のプロジェクトで共通） */
 let styleBarPos: { right: number; top: number } | null = null;
+let countdownStyle: CountdownStyle = DEFAULT_COUNTDOWN;
 let keyIndex = commandIndex(resolveKeymap(undefined));
 
 function runCommand(id: string) {
@@ -3223,6 +3233,8 @@ async function start() {
   // キーの設定は全部のプロジェクトで共通。共通の設定がまだ無ければ（以前はプロジェクトごと）、今のプロジェクトの設定を共通にする
   keymap = settings.keymap ?? state.keymap;
   styleBarPos = settings.styleBarPos ?? null;
+  countdownStyle = settings.countdown ?? DEFAULT_COUNTDOWN;
+  for (const p of panes) p.applyCountdownStyle();
   palette = settings.palette ?? DEFAULT_PALETTE;
   shotTfs = (settings.shotTfs as Timeframe[] | undefined)?.filter((tf) => tf in TIMEFRAMES) ?? DEFAULT_SHOT_TFS;
   if (!shotTfs.length) shotTfs = DEFAULT_SHOT_TFS;

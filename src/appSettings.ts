@@ -19,6 +19,8 @@ export interface AppSettings {
   favorites?: string[];
   /** 図形の太さ・線の種類の欄の場所（チャートの右端・上端からの距離。px） */
   styleBarPos?: { right: number; top: number };
+  /** ライブの残り時間の場所（チャートの右端・上端からの距離。px）と文字の大きさ */
+  countdown?: { right: number; top: number; size: number };
 }
 
 const LOCAL_KEY = 'fx-practice-settings';

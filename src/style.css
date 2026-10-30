@@ -223,6 +223,19 @@ td.sell {
   color: var(--muted);
 }
 
+.pane .countdown {
+  position: absolute;
+  z-index: 4;
+  padding: 0.15em 0.5em;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: move;
+  user-select: none;
+}
+
 .pane .legend b {
   color: var(--fg);
   font-weight: 600;

@@ -20,6 +20,14 @@ export interface AggEntry {
 }
 
 /** チャートが使う共通のデータ */
+export interface CountdownStyle {
+  right: number;
+  top: number;
+  size: number;
+}
+
+export const DEFAULT_COUNTDOWN: CountdownStyle = { right: 90, top: 30, size: 16 };
+
 export interface PaneHost {
   agg(tf: Timeframe): AggEntry;
   dataVersion(): number;
@@ -52,6 +60,10 @@ export interface PaneHost {
   styleBarPos(): { right: number; top: number } | null;
   /** 図形の太さ・線の種類の欄を動かした（離したときに 1 回） */
   setStyleBarPos(pos: { right: number; top: number }): void;
+  /** ライブの残り時間の場所（チャートの右端・上端からの距離。px）と文字の大きさ */
+  countdownStyle(): CountdownStyle;
+  /** 動かした・大きさを変えた（null で初めの場所と大きさに戻す） */
+  setCountdownStyle(st: CountdownStyle | null): void;
   /** 図形の色を変えるときに並べる色（全部のプロジェクトで共通） */
   palette(): string[];
   setPalette(colors: string[]): void;
@@ -96,6 +108,8 @@ export class ChartPane {
   readonly drawings: DrawingManager;
   readonly indicators: IndicatorLayer;
   private readonly legend: HTMLElement;
+  /** ライブ: 今の足が終わるまでの残り時間（ドラッグで動かし、ホイールで大きさを変える） */
+  private readonly countdown: HTMLElement;
   /** 図形を選んでいるときに右上に出す、線の太さと種類の欄 */
   private readonly styleBar: HTMLElement;
   private styleBarKey = '';
@@ -124,10 +138,51 @@ export class ChartPane {
     box.className = 'pane-chart';
     this.legend = document.createElement('div');
     this.legend.className = 'legend';
+    this.countdown = document.createElement('div');
+    this.countdown.className = 'countdown';
+    this.countdown.hidden = true;
+    this.countdown.title = 'ドラッグで動かす・ホイールで大きさを変える・ダブルクリックで元に戻す';
     this.shiftHandle = document.createElement('div');
     this.shiftHandle.className = 'shift-handle';
     this.shiftHandle.title = 'ドラッグして右側の余白を変える';
-    el.append(box, this.legend, this.shiftHandle);
+    el.append(box, this.legend, this.shiftHandle, this.countdown);
+    this.applyCountdownStyle();
+    this.countdown.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const r = this.countdown.getBoundingClientRect();
+      const [dx, dy] = [e.clientX - r.right, e.clientY - r.top];
+      const move = (ev: MouseEvent) => {
+        const p = el.getBoundingClientRect();
+        const right = Math.max(0, Math.min(p.width - 40, p.right - (ev.clientX - dx)));
+        const top = Math.max(0, Math.min(p.height - 20, ev.clientY - dy - p.top));
+        this.countdown.style.right = `${right}px`;
+        this.countdown.style.top = `${top}px`;
+      };
+      const up = () => {
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', up);
+        host.setCountdownStyle({ ...host.countdownStyle(), right: parseFloat(this.countdown.style.right), top: parseFloat(this.countdown.style.top) });
+      };
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up);
+    });
+    this.countdown.addEventListener(
+      'wheel',
+      (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const cur = host.countdownStyle();
+        const size = Math.max(10, Math.min(48, cur.size + (e.deltaY < 0 ? 1 : -1)));
+        if (size !== cur.size) host.setCountdownStyle({ ...cur, size });
+      },
+      { passive: false },
+    );
+    this.countdown.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      host.setCountdownStyle(null);
+    });
 
     this.chart = createChart(box, {
       autoSize: true,
@@ -287,6 +342,8 @@ export class ChartPane {
     el.addEventListener(
       'wheel',
       (e) => {
+        // 残り時間の上のホイールは、その大きさを変える（チャートは拡大・縮小しない）
+        if (this.countdown.contains(e.target as Node)) return;
         const vertical = Math.abs(e.deltaY) > Math.abs(e.deltaX);
         if (!e.ctrlKey && !vertical) return;
         e.preventDefault();
@@ -337,6 +394,32 @@ export class ChartPane {
       this.hovering = !!(p.time && d);
       this.renderLegend(this.hovering && d ? d : null);
     });
+  }
+
+  /** 残り時間の場所と大きさ（全部のチャートで共通の設定）を当てる */
+  applyCountdownStyle() {
+    const st = this.host.countdownStyle();
+    this.countdown.style.right = `${st.right}px`;
+    this.countdown.style.top = `${st.top}px`;
+    this.countdown.style.fontSize = `${st.size}px`;
+  }
+
+  /** ライブ: 今の足が終わるまでの残り時間を出す（now は今の時刻。null なら消す） */
+  setCountdown(now: number | null) {
+    const f = now === null ? null : this.host.forming();
+    if (!f) {
+      this.countdown.hidden = true;
+      return;
+    }
+    const rule = this.host.rule();
+    // 値動きが静かで新しい分の価格がまだ来ていなくても、今の時刻の足で数える
+    const start = periodStartUtc(Math.max(f.t, now!), this.tf, rule);
+    // 次の足の始まり（W1・MN・夏時間の変わる日の D1 も、1.5 本分先の足の始まりで求める）
+    const end = periodStartUtc(start + TIMEFRAMES[this.tf] * 90_000, this.tf, rule);
+    const s = Math.max(0, Math.ceil((end - now!) / 1000));
+    const [d, h, m, sec] = [Math.floor(s / 86400), Math.floor(s / 3600) % 24, Math.floor(s / 60) % 60, s % 60];
+    this.countdown.textContent = d ? `残り ${d} 日 ${h} 時間` : h ? `残り ${h} 時間 ${m} 分` : `残り ${m} 分 ${String(sec).padStart(2, '0')} 秒`;
+    this.countdown.hidden = false;
   }
 
   setDigits(digits: number) {
