@@ -23,8 +23,9 @@ import type { TimeMapper } from './mapper';
 const BUY = '#4493f8';
 const SELL = '#f85149';
 const SL = '#f85149';
-const TP = '#3fb950';
-// EasyOrder の線の色
+/** 決済した取引の点線（勝ち） */
+const WIN = '#3fb950';
+// 注文の線の色（エントリー緑・T/P スカイブルー・S/L 赤。EasyOrder・MT4 の保有中と同じ）
 const EO_ENTRY = '#3fb950';
 const EO_TP = '#38bdf8';
 const EO_SL = '#f85149';
@@ -134,14 +135,14 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
     const want: WantedLine[] = [];
     const lot = (n: number) => n.toFixed(2);
     for (const p of view.positions) {
-      want.push({ key: `e${p.ticket}`, ticket: p.ticket, role: 'entry', price: p.openPrice, color: p.side === 'buy' ? BUY : SELL, title: `#${p.ticket} ${p.side} ${lot(p.lots)}`, style: LineStyle.Dashed });
-      if (p.sl !== null) want.push({ key: `s${p.ticket}`, ticket: p.ticket, role: 'sl', price: p.sl, color: SL, title: `#${p.ticket} sl`, style: LineStyle.Dashed });
-      if (p.tp !== null) want.push({ key: `t${p.ticket}`, ticket: p.ticket, role: 'tp', price: p.tp, color: TP, title: `#${p.ticket} tp`, style: LineStyle.Dashed });
+      want.push({ key: `e${p.ticket}`, ticket: p.ticket, role: 'entry', price: p.openPrice, color: EO_ENTRY, title: `#${p.ticket} ${p.side} ${lot(p.lots)}`, style: LineStyle.Dashed });
+      if (p.sl !== null) want.push({ key: `s${p.ticket}`, ticket: p.ticket, role: 'sl', price: p.sl, color: EO_SL, title: `#${p.ticket} sl`, style: LineStyle.Dashed });
+      if (p.tp !== null) want.push({ key: `t${p.ticket}`, ticket: p.ticket, role: 'tp', price: p.tp, color: EO_TP, title: `#${p.ticket} tp`, style: LineStyle.Dashed });
     }
     for (const o of view.orders) {
-      want.push({ key: `o${o.ticket}`, ticket: o.ticket, role: 'pending', price: o.price, color: o.type.startsWith('buy') ? BUY : SELL, title: `#${o.ticket} ${o.type} ${lot(o.lots)}`, style: LineStyle.Dotted });
-      if (o.sl !== null) want.push({ key: `s${o.ticket}`, ticket: o.ticket, role: 'sl', price: o.sl, color: SL, title: `#${o.ticket} sl`, style: LineStyle.Dashed });
-      if (o.tp !== null) want.push({ key: `t${o.ticket}`, ticket: o.ticket, role: 'tp', price: o.tp, color: TP, title: `#${o.ticket} tp`, style: LineStyle.Dashed });
+      want.push({ key: `o${o.ticket}`, ticket: o.ticket, role: 'pending', price: o.price, color: EO_ENTRY, title: `#${o.ticket} ${o.type} ${lot(o.lots)}`, style: LineStyle.Dotted });
+      if (o.sl !== null) want.push({ key: `s${o.ticket}`, ticket: o.ticket, role: 'sl', price: o.sl, color: EO_SL, title: `#${o.ticket} sl`, style: LineStyle.Dashed });
+      if (o.tp !== null) want.push({ key: `t${o.ticket}`, ticket: o.ticket, role: 'tp', price: o.tp, color: EO_TP, title: `#${o.ticket} tp`, style: LineStyle.Dashed });
     }
     const pv = view.preview;
     if (pv) {
@@ -307,7 +308,7 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
             const color = h.side === 'buy' ? BUY : SELL;
             if (a && b) {
               // 建値と決済を結ぶ点線は、勝ちなら緑・負けなら赤
-              ctx.strokeStyle = h.profit > 0 ? TP : SL;
+              ctx.strokeStyle = h.profit > 0 ? WIN : SL;
               ctx.setLineDash([3, 3]);
               ctx.beginPath();
               ctx.moveTo(a.x, a.y);
