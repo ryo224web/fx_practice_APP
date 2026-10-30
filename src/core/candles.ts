@@ -86,6 +86,13 @@ export function aggregateWithIndex(m1: readonly Bar[], tf: Timeframe, rule: Serv
   return { bars, starts };
 }
 
+/** 時刻 t（UTC）を含む足の始まりの時刻（UTC）。aggregateWithIndex と同じ区切り */
+export function periodStartUtc(t: number, tf: Timeframe, rule: ServerTimeRule): number {
+  if (tf === 'M1') return t - (t % MINUTE);
+  const server = utcToServer(t, rule);
+  return periodKey(server, tf).start - (server - t);
+}
+
 export function aggregate(m1: readonly Bar[], tf: Timeframe, rule: ServerTimeRule): Bar[] {
   return aggregateWithIndex(m1, tf, rule).bars;
 }

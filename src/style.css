@@ -1136,3 +1136,16 @@ th.sortable:hover {
   opacity: 1;
   text-decoration: underline;
 }
+
+/* ライブ中は ● を赤くゆっくり点滅させる */
+#live.live-on {
+  background: color-mix(in srgb, #de7a7a 25%, transparent);
+  border-color: #de7a7a;
+  color: #fff;
+  animation: live-blink 2s ease-in-out infinite;
+}
+@keyframes live-blink {
+  50% {
+    border-color: transparent;
+  }
+}

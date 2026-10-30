@@ -106,6 +106,10 @@ let account: Account;
 /** 最後に見えている 1 分足の添字 */
 let cursor = 0;
 let playing = false;
+/** ライブ（最新の足まで進み、新しい足が届くたびに自動で進む）。プロジェクトには保存しない */
+let live = false;
+/** ライブ: MT4 から直接届いた、できかけの 1 分足（チャートに見せるだけ） */
+let liveBar: Bar | null = null;
 let dataVersion = 0;
 const aggCache = new Map<
   Timeframe,
@@ -364,9 +368,10 @@ async function ensureWindow(fromT: number, toT: number, exact = false) {
  * - 進むときは、途中の約定も計算する（価格データは上限ずつ読みながら進むので、何年先でもメモリは増えない）
  * keepView なら、見ている場所と拡大率を変えない（1 本戻るとき。日時への移動などは、移った時刻を右端に出す）
  */
-async function travel(time: number, keepView = false) {
+async function travel(time: number, keepView = false, fromLive = false) {
   if (traveling) return;
   traveling = true;
+  if (!fromLive) setLive(false);
   clearTradeHighlight();
   setPlaying(false);
   try {
@@ -474,6 +479,7 @@ function goTo(target: number, pause = true): boolean {
   // リプレイの時刻が動いたら、行のダブルクリックで指定した取引（縦線）は外す（スクショに古い注文番号が付かないように）
   if (target !== cursor) clearTradeHighlight();
   if (target < cursor) {
+    setLive(false);
     // 戻るときは、手前の区切りから計算し直す（データの読み込みが要ることもあるので非同期）
     const i = Math.max(0, target);
     // 1 本・1 分戻るときは、拡大率も見ている場所もそのまま（進むときと同じ）
@@ -510,6 +516,7 @@ function stepBar(dir: 1 | -1) {
 }
 
 function setPlaying(on: boolean) {
+  if (on) setLive(false);
   playing = on;
   playBtn.textContent = on ? '❚❚' : '▶';
   playBtn.setAttribute('aria-pressed', String(on));
@@ -547,6 +554,66 @@ function setPlaying(on: boolean) {
     renderTerminal(true);
     save(true);
   }
+}
+
+// ---------------- ライブ ----------------
+// 最新の足まで進み、MT4 から新しい 1 分足が届くたびに自動で進む。本物のチャートを見ているように使う。
+// T580 の EA が 1 秒ごとに直接送る価格（/api/mt4/tick）で、できかけの足も毎秒動かす（見せるだけで、約定は終わった足で決める）。
+// 直接届かないときは、開発サーバーが共有フォルダから取り込む足（15 秒ごとに見る）で進む。
+// 約定・決済は知らせるが止まらない。再生・戻る・移動でやめる
+
+function setLive(on: boolean) {
+  if (live === on) return;
+  live = on;
+  const b = $('#live');
+  b.setAttribute('aria-pressed', String(on));
+  b.classList.toggle('live-on', on);
+  if (on) void followLatest(true);
+  else if (liveBar) {
+    liveBar = null;
+    renderChart(false, true);
+    renderQuotes();
+  }
+}
+
+/** ライブ: 直接届いた今の価格を見る（1 秒ごと） */
+let tickBusy = false;
+async function pollTick() {
+  if (!live || tickBusy || traveling) return;
+  tickBusy = true;
+  try {
+    const mdNow = md;
+    const res = await fetch(`/api/mt4/tick?sym=${md.symbol}`, { cache: 'no-store' }).catch(() => null);
+    if (!res?.ok || !res.headers.get('content-type')?.includes('json')) return;
+    const r = (await res.json()) as { tick: { bid: number; bar: Bar | null } | null; latest: number | null };
+    if (!live || md !== mdNow) return;
+    // 新しく終わった足が取り込まれていれば、先に足して進む
+    if (r.latest && r.latest > (manifest?.symbols[md.symbol]?.titan?.to ?? -Infinity)) await pollBars();
+    const last = md.bid[md.bid.length - 1];
+    const bar = r.tick?.bar && last && r.tick.bar.t > last.t ? r.tick.bar : null;
+    if (!bar && !liveBar) return;
+    liveBar = bar;
+    renderChart(false, true);
+    if (bar && cursor === md.bid.length - 1) {
+      const spread = md.ask[cursor].c - md.bid[cursor].c;
+      $('#bid-big').textContent = formatPrice(bar.c, md.digits);
+      $('#ask-big').textContent = formatPrice(bar.c + spread, md.digits);
+    }
+  } finally {
+    tickBusy = false;
+  }
+}
+
+/** 最新の足まで進む（first: ライブを始めたとき。遠い過去にいれば「移動」と同じく読みながら進む） */
+async function followLatest(first = false) {
+  if (!live || traveling || !runner) return;
+  if (md.hasLater) {
+    await travel(Date.now(), false, true);
+    return;
+  }
+  const last = md.bid.length - 1;
+  if (last > cursor) goTo(last);
+  if (first) scrollToNow();
 }
 
 function maybeLoadLater() {
@@ -2395,6 +2462,8 @@ function createPanes() {
     dataVersion: () => dataVersion,
     cursor: () => cursor,
     bid: () => md.bid,
+    forming: () => (live && liveBar && liveBar.t > (md.bid[md.bid.length - 1]?.t ?? Infinity) ? liveBar : null),
+    rule: () => rule,
     toChart,
     symbol: () => md.symbol,
     digits: () => md.digits,
@@ -2597,6 +2666,12 @@ function setupControls() {
   });
 
   playBtn.addEventListener('click', () => setPlaying(!playing));
+  $('#live').addEventListener('click', () => {
+    if (live) return setLive(false);
+    if (!manifest?.symbols[md.symbol]?.titan) toast('この銘柄は MT4 の 1 分足がまだ届いていないので、手元のデータの最後まで進むだけです');
+    setLive(true);
+    void pollBars();
+  });
   $('#fwd-bar').addEventListener('click', (e) => (e.shiftKey ? goTo(cursor + 1) : stepBar(1)));
   $('#back-bar').addEventListener('click', (e) => (e.shiftKey ? goTo(cursor - 1) : stepBar(-1)));
   speedEl.addEventListener('input', () => {
@@ -3222,6 +3297,7 @@ function updateStatus(ms = firstPaintMs) {
   if (barsStatus) {
     tips.push(`MT4 の足の共有フォルダ: ${barsStatus.dir}${barsStatus.found ? '' : '（見つかりません）'}`);
     if (barsStatus.error) tips.push(`取り込みのエラー: ${barsStatus.error}`);
+    if (barsStatus.liveAt && Date.now() - barsStatus.liveAt < 60_000) tips.push('MT4 から 1 秒ごとに価格が直接届いています（ライブ）');
     const off = barsStatus.offset;
     if (off && off.mt4 !== off.app) {
       statusEl.textContent += ' ⚠ サーバー時刻';
@@ -3240,6 +3316,7 @@ interface BarsStatus {
   error: string | null;
   latest: Record<string, number>;
   offset: { mt4: number; app: number; at: number } | null;
+  liveAt?: number | null;
 }
 let barsStatus: BarsStatus | null = null;
 
@@ -3264,6 +3341,8 @@ async function pollBars() {
       dataChanged();
       renderChart(false, true);
       refresh();
+      // ライブなら、届いた足まで進む
+      if (live) void followLatest();
     }
   }
   updateStatus();
@@ -3326,10 +3405,14 @@ start()
   .then(() => {
     void pollBars();
     void pollHistory(true);
+    // 新しい足は 1 分ごと（ライブの間は 15 秒ごと。開発サーバーが取り込む間隔と同じ）に見に行く
+    let tick = 0;
     setInterval(() => {
-      void pollBars();
-      void pollHistory(false);
-    }, 60_000);
+      tick++;
+      if (live || tick % 4 === 0) void pollBars();
+      if (tick % 4 === 0) void pollHistory(false);
+    }, 15_000);
+    setInterval(() => void pollTick(), 1000);
   })
   .catch((e) => {
     console.error(e);

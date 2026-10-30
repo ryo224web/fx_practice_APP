@@ -6,7 +6,7 @@ import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { decodeMonth } from '../src/core/binfmt';
 import { mergeSources } from '../src/data/store';
-import { BarsSync, decodeBars, encodeBars, mergeFiles, parseBarCsv, parseBarFileName, rangeUtc, type RawBar } from '../server/mt4Bars';
+import { BarsSync, decodeBars, encodeBars, mergeFiles, parseBarCsv, parseBarFileName, parseLiveFileName, parseTickBody, rangeUtc, type RawBar } from '../server/mt4Bars';
 
 const H = 3_600_000;
 const M = 60_000;
@@ -174,6 +174,70 @@ describe('共有フォルダからの取り込み（BarsSync）', () => {
     expect(decodeBars(await readFile(path.join(data, 'usdjpy/titan/2026-12.bin')), 3).length).toBe(120);
     const e = JSON.parse(await readFile(path.join(data, 'manifest.json'), 'utf8')).symbols.usdjpy;
     expect(e.titan.months).toEqual(['2026-11', '2026-12']);
+  });
+
+  it('直近 2 時間のファイル（_live.csv）: 月ごとのファイルの後ろに足し、重なる所はこちらの足にする', async () => {
+    expect(parseLiveFileName('USDJPY_live.csv')).toBe('usdjpy');
+    expect(parseLiveFileName('GOLD.a_live.csv')).toBe('xauusd');
+    expect(parseLiveFileName('USDJPY_2026.11.csv')).toBe(null);
+    const shared = await mkdtemp(path.join(os.tmpdir(), 'fxp-bars-'));
+    const data = await mkdtemp(path.join(os.tmpdir(), 'fxp-data-'));
+    dirs.push(shared, data);
+    await mkdir(path.join(shared, 'USDJPY'));
+    // 月ごと: サーバー 11/2 0:00〜 3 時間（毎時の書き出し）。直近: 2:00〜 2 時間（1 時間重なり、1 時間先まで）
+    await writeFile(path.join(shared, 'USDJPY', 'USDJPY_2026.11.csv'), dayCsv(Date.UTC(2026, 10, 2), 180, 153));
+    await writeFile(path.join(shared, 'USDJPY', 'USDJPY_live.csv'), dayCsv(Date.UTC(2026, 10, 2, 2), 120, 160));
+    const sync = new BarsSync(shared, data);
+    await sync.sync();
+    expect(sync.status.error).toBe(null);
+    const nov = decodeBars(await readFile(path.join(data, 'usdjpy/titan/2026-11.bin')), 3);
+    expect(nov.length).toBe(240);
+    expect(nov[119].o).toBe(153 + 119 * 0.001); // 1:59 は月ごとのファイル
+    expect(nov[120].o).toBe(160); // 2:00 からは直近のファイル
+    expect(sync.status.latest.usdjpy).toBe(Date.UTC(2026, 10, 1, 22) + 239 * M);
+
+    // 1 分後: 直近のファイルが 1 本ずれて書き直された（2:01〜4:00）。足が 1 本増え、それより前の足はそのまま
+    await new Promise((r) => setTimeout(r, 20));
+    await writeFile(path.join(shared, 'USDJPY', 'USDJPY_live.csv'), dayCsv(Date.UTC(2026, 10, 2, 2, 1), 120, 160.001));
+    await sync.sync();
+    const nov2 = decodeBars(await readFile(path.join(data, 'usdjpy/titan/2026-11.bin')), 3);
+    expect(nov2.length).toBe(241);
+    expect(nov2[120].o).toBe(160);
+    expect(sync.status.latest.usdjpy).toBe(Date.UTC(2026, 10, 1, 22) + 240 * M);
+  });
+
+  it('直接届いた価格: 今の価格とできかけの足を覚え、終わった足を取り込む。昨日までの月のファイル・今日のファイルはその後の足を消さない', async () => {
+    const sec = (t: number) => Math.round(t / 1000);
+    // サーバー 11/2 3:00 と 3:01 は終わった足、3:02 はできかけ
+    const t0 = Date.UTC(2026, 10, 2, 3);
+    const body = (o: number) =>
+      [`Q,USDJPY.a,${sec(t0 + 2 * M + 30_000)},153.502,153.510`, ...[0, 1, 2].map((i) => `B,USDJPY.a,${sec(t0 + i * M)},${o + i},${o + i + 0.1},${o + i - 0.1},${o + i}`), 'B,NOSUCH,1,1,1,1,1', ''].join('\r\n');
+    const got = parseTickBody(body(153), 5);
+    const u = got.get('usdjpy')!;
+    expect([...got.keys()]).toEqual(['usdjpy']);
+    expect(u.bid).toBe(153.502);
+    expect(u.time).toBe(Date.UTC(2026, 10, 2, 1, 2, 30)); // サーバー時刻 − 2 時間（11 月は NY の冬時間）
+    expect(u.bar?.t).toBe(Date.UTC(2026, 10, 2, 1, 2));
+    expect(u.done.map((b) => b.o)).toEqual([153, 154]);
+
+    const shared = await mkdtemp(path.join(os.tmpdir(), 'fxp-bars-'));
+    const data = await mkdtemp(path.join(os.tmpdir(), 'fxp-data-'));
+    dirs.push(shared, data);
+    await mkdir(path.join(shared, 'USDJPY'));
+    const sync = new BarsSync(shared, data);
+    await sync.receive(body(153));
+    expect(sync.ticks.get('usdjpy')?.bid).toBe(153.502);
+    expect(sync.status.latest.usdjpy).toBe(Date.UTC(2026, 10, 2, 1, 1));
+    // 昨日までの月のファイル（11/1 だけ）と、今日の 0:00〜3:00 のファイル（3:00 までの 3 時間）が後から届いても、3:00・3:01 の足は残る
+    await writeFile(path.join(shared, 'USDJPY', 'USDJPY_2026.11.csv'), dayCsv(Date.UTC(2026, 10, 1), 60, 150));
+    await writeFile(path.join(shared, 'USDJPY', 'USDJPY_2026.11.02.csv'), dayCsv(Date.UTC(2026, 10, 2), 180, 152));
+    await sync.sync();
+    const nov = decodeBars(await readFile(path.join(data, 'usdjpy/titan/2026-11.bin')), 3);
+    // 11/1 0:00〜1:00（サーバー時刻）は UTC では 10/31 なので 10 月のファイル
+    expect(decodeBars(await readFile(path.join(data, 'usdjpy/titan/2026-10.bin')), 3).length).toBe(60);
+    expect(nov.length).toBe(180 + 2);
+    expect(nov.at(-1)?.o).toBe(154);
+    expect(sync.status.latest.usdjpy).toBe(Date.UTC(2026, 10, 2, 1, 1));
   });
 
   it('共有フォルダが無くても止まらない', async () => {

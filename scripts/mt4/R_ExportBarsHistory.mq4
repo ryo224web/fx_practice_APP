@@ -1,7 +1,8 @@
 //+------------------------------------------------------------------+
 //| R_ExportBarsHistory.mq4  (Expert Advisor)                         |
-//| Every hour, writes M1 bars of several symbols (up to the end of  |
-//| the last finished hour) to monthly CSV files for FX Practice.    |
+//| Writes M1 bars of several symbols to CSV files for FX Practice   |
+//| (monthly files once a day, today's file every hour), and sends   |
+//| the current prices to FX Practice on the Mac every second.       |
 //| FX Practice (on the Mac) watches the folder and imports them.    |
 //|                                                                    |
 //| Kept as UTF-8 in git; npm run deploy-mt4 copies it to the MT4     |
@@ -14,15 +15,26 @@
 //| 3. Attach the EA to any one chart. AutoTrading is NOT needed      |
 //|    (this EA never trades).                                         |
 //|                                                                    |
-//| Output (a folder per symbol, a file per server month, server time):|
-//|   fxp_bars\USDJPY\USDJPY_2026.10.csv                               |
+//| Output (a folder per symbol, server time):                         |
+//|   fxp_bars\USDJPY\USDJPY_2026.10.csv     a server month            |
+//|   fxp_bars\USDJPY\USDJPY_2026.10.30.csv  today (until it is in     |
+//|                                           the month file)          |
 //|     time,open,high,low,close,volume                               |
 //|     2026.10.01 00:00,151.234,151.240,151.230,151.236,15           |
 //|   fxp_bars\_status.csv   server time, GMT, offset, last bar ...   |
-//| Every hour this month is rewritten (only the finished hours);     |
-//| last month is rewritten once a day. Older months are never        |
+//| Once a day this month and last month are rewritten up to the end  |
+//| of yesterday; every hour only today's file is rewritten (small,   |
+//| so Dropbox has little to sync). Day files older than 2 days are   |
+//| deleted (they are in the month file). Older months are never      |
 //| touched, so they stay even after MT4 no longer has those bars.    |
 //| Files are written to a temp name first and then renamed.          |
+//|                                                                    |
+//| Every second it sends the current prices and the last M1 bars to |
+//| LiveUrl (FX Practice on the Mac, not through Dropbox). Allow the  |
+//| URL once: Tools -> Options -> Expert Advisors -> "Allow WebRequest |
+//| for listed URL" -> add http://<the Mac>.                           |
+//| While sending fails, every minute it writes the last LiveMinutes  |
+//| finished M1 bars to fxp_bars\USDJPY\USDJPY_live.csv instead.      |
 //|                                                                    |
 //| Also writes the account history (closed trades and open positions)|
 //| to MQL4\Files\fx_practice_history.csv (same format as           |
@@ -32,25 +44,38 @@
 //| set it to "All History" once (right click -> All History).        |
 //+------------------------------------------------------------------+
 #property strict
-#property version     "1.03"
+#property version     "1.07"
 #property copyright   "R（FX Practice 用の自作ツール）"
 #property description "FX Practice 用に、チャート（1 分足）を書き出す EA です。注文は一切出しません。"
-#property description "1 時間ごと（サーバー時刻の正時を過ぎたら）、終わった 1 時間までの 1 分足を"
-#property description "MQL4\\Files\\fxp_bars\\銘柄\\銘柄_年.月.csv に書きます（時刻はサーバー時刻）。"
-#property description "毎時書き直すのは今月だけ、先月は 1 日 1 回。それより前の月のファイルはそのまま残します。"
+#property description "1 分足を MQL4\\Files\\fxp_bars\\銘柄\\ に書きます（時刻はサーバー時刻）。月ごとのファイル（銘柄_年.月.csv）は"
+#property description "1 日 1 回（昨日まで）、今日のファイル（銘柄_年.月.日.csv）は 1 時間ごと。古い月のファイルはそのまま残します。"
 #property description "このフォルダは Dropbox にあるので、Mac の FX Practice が自動で取り込みます。"
+#property description "1 秒ごとに今の価格を Mac の FX Practice へ直接送ります（ライブ用。LiveUrl を「WebRequest を許可する URL」に入れる）。"
 #property description "取引履歴も、起動したときと取引を建てた・決済したときに MQL4\\Files\\fx_practice_history.csv に書きます（口座履歴タブを「全履歴」にしておく）。"
 
 input string Symbols       = "USDJPY,EURUSD,GBPUSD,AUDUSD,USDCHF,USDCAD,NZDUSD,EURJPY,GBPJPY,XAUUSD,BTCUSD,JPN225"; // Symbols (comma separated)
 input string Suffix        = "";         // Symbol suffix (empty for TitanFX)
 input int    InitialMonths = 12;         // Also write this many past months (if missing)
-input int    CheckEveryMin = 5;          // Check for a new hour / new trades every N minutes
+input int    CheckEveryMin = 1;          // Check for a new hour / new trades every N minutes
+input string LiveUrl       = "http://192.168.40.227/fxp/tick"; // Send the prices every second to FX Practice on the Mac (empty = off)
+input int    LiveMinutes   = 120;        // While sending fails, write the last N finished M1 bars to <symbol>_live.csv every minute (0 = off)
 input string Folder        = "fxp_bars"; // Output folder (in MQL4\Files)
 input string HistoryFile   = "fx_practice_history.csv"; // Account history file (in MQL4\Files). Empty = do not write
 
 string   syms[];
 datetime exportedUntil = 0; // end of the last hour written (server time). 0 = not yet
 string   historySig = "";    // number of closed / open trades when the history was last written
+datetime liveUntil = 0;     // end of the last minute written to the _live.csv files (server time)
+datetime monthsDay = 0;     // the day the month files were last written (server time)
+bool     sendOk = false;    // the last send to LiveUrl worked
+string   sentBody = "";     // the last body sent (nothing is sent while the prices do not change)
+uint     startedAt = 0;     // GetTickCount when the EA started
+int      sendCount = 0;     // sends and their time in this minute (printed for the first 5 minutes)
+uint     sendMs = 0;
+uint     sendMaxMs = 0;
+uint     retryAt = 0;       // after a failed send, try again at this GetTickCount
+uint     minuteAt = 0;      // GetTickCount of the last check (new hour, new trades)
+bool     urlWarned = false;
 
 int OnInit()
 {
@@ -69,9 +94,21 @@ int OnInit()
       syms[k] = s + Suffix;
       SymbolSelect(syms[k], true); // show it in Market Watch so MT4 keeps its history
    }
-   EventSetTimer(MathMax(1, CheckEveryMin) * 60);
+   liveUntil = 0;
+   monthsDay = 0;
+   sendOk = false;
+   sentBody = "";
+   retryAt = 0;
+   startedAt = GetTickCount();
+   sendCount = 0;
+   sendMs = 0;
+   sendMaxMs = 0;
+   if(LiveUrl != "") EventSetMillisecondTimer(1000);
+   else EventSetTimer(60);
    ExportAll();
+   ExportLive();
    ExportHistory();
+   minuteAt = GetTickCount();
    return INIT_SUCCEEDED;
 }
 
@@ -82,8 +119,91 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
+   SendLive();
+   if(GetTickCount() - minuteAt < (uint)MathMax(1, CheckEveryMin) * 60000 - 2000) return;
+   minuteAt = GetTickCount();
+   if(sendCount > 0 && GetTickCount() - startedAt < 6 * 60000)
+      Print("R_ExportBarsHistory: sent ", sendCount, " times in the last minute (", sendMs / sendCount, " ms on average, ", sendMaxMs, " ms at most)");
+   sendCount = 0;
+   sendMs = 0;
+   sendMaxMs = 0;
    if(Cutoff() != exportedUntil) ExportAll();
+   ExportLive();
    if(HistorySig() != historySig) ExportHistory();
+}
+
+// ---------------- prices every second, straight to the Mac (not through Dropbox) ----------------
+// Body (text, one line each, times are server time in seconds):
+//   Q,<symbol>,<server time>,<bid>,<ask>
+//   B,<symbol>,<bar time>,<open>,<high>,<low>,<close>   the last 3 M1 bars, the last one is still forming
+// Nothing is sent while the prices do not change (e.g. on weekends).
+// (TimeCurrent is not used for this: inside the EA it does not move every second.)
+void SendLive()
+{
+   if(LiveUrl == "") return;
+   if(!sendOk && retryAt != 0 && GetTickCount() < retryAt) return;
+   RefreshRates();
+   string body = "";
+   for(int i = 0; i < ArraySize(syms); i++)
+   {
+      string sym = syms[i];
+      int digits = (int)MarketInfo(sym, MODE_DIGITS);
+      if(digits <= 0) digits = 5;
+      double bid = MarketInfo(sym, MODE_BID);
+      if(bid <= 0) continue;
+      body += "Q," + sym + "," + IntegerToString((long)MarketInfo(sym, MODE_TIME)) + "," +
+              DoubleToString(bid, digits) + "," + DoubleToString(MarketInfo(sym, MODE_ASK), digits) + "\n";
+      MqlRates r[];
+      ArraySetAsSeries(r, false);
+      int n = CopyRates(sym, PERIOD_M1, 0, 3, r);
+      for(int j = 0; j < n; j++)
+         body += "B," + sym + "," + IntegerToString((long)r[j].time) + "," + DoubleToString(r[j].open, digits) + "," +
+                 DoubleToString(r[j].high, digits) + "," + DoubleToString(r[j].low, digits) + "," + DoubleToString(r[j].close, digits) + "\n";
+   }
+   if(body == "" || (body == sentBody && sendOk)) return;
+   char data[];
+   char result[];
+   string headers;
+   StringToCharArray(body, data, 0, StringLen(body));
+   ResetLastError();
+   uint t0 = GetTickCount();
+   int code = WebRequest("POST", LiveUrl, "Content-Type: text/plain\r\n", 500, data, result, headers);
+   uint ms = GetTickCount() - t0;
+   bool ok = code == 200;
+   if(ok)
+   {
+      sendCount++;
+      sendMs += ms;
+      if(ms > sendMaxMs) sendMaxMs = ms;
+   }
+   if(!ok)
+   {
+      int err = GetLastError();
+      if(err == 4060 && !urlWarned)
+      {
+         Print("R_ExportBarsHistory: add ", LiveUrl, " to Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL");
+         urlWarned = true;
+      }
+      else if(sendOk) Print("R_ExportBarsHistory: cannot send to ", LiveUrl, " (", code, ", error ", err, "), will try again every 30 s");
+      retryAt = GetTickCount() + 30000;
+   }
+   else if(!sendOk) Print("R_ExportBarsHistory: sending prices to ", LiveUrl);
+   sendOk = ok;
+   sentBody = body;
+}
+
+// While the prices cannot be sent: every minute, the last LiveMinutes finished M1 bars of each symbol to <symbol>_live.csv.
+// Nothing is written while the minute has not changed (e.g. on weekends, when TimeCurrent stops).
+void ExportLive()
+{
+   if(LiveMinutes <= 0 || sendOk) return;
+   datetime now = TimeCurrent();
+   datetime to = now - now % 60;   // the start of the current minute: bars before it are finished
+   if(to == liveUntil) return;
+   bool ok = true;
+   for(int i = 0; i < ArraySize(syms); i++)
+      if(WriteRange(syms[i], to - LiveMinutes * 60, to, syms[i] + "_live.csv", false) < 0) ok = false;
+   if(ok) liveUntil = to;
 }
 
 void OnTick() {}
@@ -106,7 +226,8 @@ datetime MonthStart(int year, int month)
 }
 
 // Writes the bars of [from, to) to file. Returns the number of bars written,
-// 0 when MT4 has no M1 data for that period, -1 when the file could not be written.
+// 0 when MT4 has no M1 data for that period, -1 when the file could not be written,
+// -2 while MT4 is still downloading that history (try again later).
 // (error 4066 = history is being downloaded, 4073 = MT4 has no history there)
 int WriteRange(string sym, datetime from, datetime to, string file, bool verbose)
 {
@@ -116,7 +237,13 @@ int WriteRange(string sym, datetime from, datetime to, string file, bool verbose
    int n = CopyRates(sym, PERIOD_M1, from, to - 1, rates);
    if(n <= 0)
    {
-      if(verbose) Print("R_ExportBarsHistory: no M1 data for ", sym, " ", TimeToString(from, TIME_DATE), " yet (error ", GetLastError(), "), will try again");
+      int err = GetLastError();
+      if(err == 4066)
+      {
+         if(verbose) Print("R_ExportBarsHistory: M1 data for ", sym, " ", TimeToString(from, TIME_DATE), " is being downloaded, will try again");
+         return -2;
+      }
+      if(verbose) Print("R_ExportBarsHistory: no M1 data for ", sym, " ", TimeToString(from, TIME_DATE), " in MT4 (error ", err, ")");
       return 0;
    }
    int digits = (int)MarketInfo(sym, MODE_DIGITS);
@@ -159,9 +286,10 @@ int WriteRange(string sym, datetime from, datetime to, string file, bool verbose
    return written;
 }
 
-// Writes bars before cutoff. Last month only when withLastMonth (once a day).
+// Writes bars before cutoff (the start of today) to the month files: this month and last month
+// only when withMonths (once a day), older months only when their file is missing.
 // Returns true when everything that should be written was written.
-bool ExportSymbol(string sym, datetime cutoff, bool withLastMonth)
+bool ExportMonths(string sym, datetime cutoff, bool withMonths)
 {
    bool ok = true;
    string months = "";   // months written this time
@@ -178,10 +306,10 @@ bool ExportSymbol(string sym, datetime cutoff, bool withLastMonth)
       datetime from = MonthStart(yy, mm);
       int ny = mm == 12 ? yy + 1 : yy;
       int nm = mm == 12 ? 1 : mm + 1;
-      datetime to = (datetime)MathMin(MonthStart(ny, nm), cutoff); // finished hours only
-      if(to <= from) continue;                            // first hour of the month: nothing finished yet
+      datetime to = (datetime)MathMin(MonthStart(ny, nm), cutoff); // finished days only
+      if(to <= from) continue;                            // first day of the month: nothing finished yet
       string file = sym + "_" + IntegerToString(yy) + "." + Two(mm) + ".csv";
-      if(k == 1 && !withLastMonth) continue;
+      if(k <= 1 && !withMonths) continue;
       if(k >= 2 && FileIsExist(Folder + "\\" + sym + "\\" + file)) continue;
       int n = WriteRange(sym, from, to, file, k <= 1);
       if(n > 0)
@@ -189,7 +317,10 @@ bool ExportSymbol(string sym, datetime cutoff, bool withLastMonth)
          months = IntegerToString(yy) + "." + Two(mm) + (months == "" ? "" : " ") + months;
          bars += n;
       }
-      else if(k <= 1) ok = false;   // this month / last month: try again at the next check
+      // this month / last month: try again at the next check only when MT4 was still downloading or the file
+      // could not be written (when MT4 simply does not have that month, trying every minute only rewrites
+      // the other files again and again)
+      else if(k <= 1 && n < 0) ok = false;
       else if(n == 0) missing++;
    }
    if(months != "")
@@ -198,16 +329,36 @@ bool ExportSymbol(string sym, datetime cutoff, bool withLastMonth)
    return ok;
 }
 
+string DayFile(string sym, datetime day)
+{
+   return sym + "_" + IntegerToString(TimeYear(day)) + "." + Two(TimeMonth(day)) + "." + Two(TimeDay(day)) + ".csv";
+}
+
 void ExportAll()
 {
    datetime cutoff = Cutoff();
-   // last month is rewritten once a day (and on the first run)
-   bool withLastMonth = exportedUntil == 0 || DayOf(exportedUntil) != DayOf(cutoff);
+   datetime today = DayOf(cutoff);
+   // the month files once a day (up to the end of yesterday), and on the first run
+   bool withMonths = monthsDay != today;
    bool ok = true;
+   bool monthsOk = true;
    for(int i = 0; i < ArraySize(syms); i++)
-      if(!ExportSymbol(syms[i], cutoff, withLastMonth)) ok = false;
+   {
+      string sym = syms[i];
+      if(!ExportMonths(sym, today, withMonths)) monthsOk = false;
+      // today's file: the finished hours of today (nothing in the first hour of the day)
+      if(cutoff > today && WriteRange(sym, today, cutoff, DayFile(sym, today), false) < 0) ok = false;
+      // yesterday's file is kept one more day; older ones are already in the month file
+      if(withMonths && monthsOk)
+         for(int d = 2; d <= 10; d++)
+         {
+            string old = Folder + "\\" + sym + "\\" + DayFile(sym, today - d * 86400);
+            if(FileIsExist(old)) FileDelete(old);
+         }
+   }
    // when MT4 was still downloading history, try again at the next check
-   if(ok) exportedUntil = cutoff;
+   if(monthsOk) monthsDay = today;
+   if(ok && monthsOk) exportedUntil = cutoff;
 
    // Status: lets FX Practice check the server time zone (offset = server - GMT, in seconds)
    datetime now = TimeCurrent();

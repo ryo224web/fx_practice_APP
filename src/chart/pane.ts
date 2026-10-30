@@ -2,11 +2,12 @@
 // 時間足とインジケーターはチャートごと。リプレイの時刻・注文・図形はすべてのチャートで共通。
 
 import { CandlestickSeries, CrosshairMode, createChart, type CandlestickData, type IChartApi, type ISeriesApi, type Time } from 'lightweight-charts';
-import { mergeBars, TIMEFRAMES, type Aggregated, type Bar, type Timeframe } from '../core/candles';
+import { mergeBars, periodStartUtc, TIMEFRAMES, type Aggregated, type Bar, type Timeframe } from '../core/candles';
 import { DrawingManager, hasRay, LINE_KINDS, lineDash, rayOn, TEXT_SIZES, type LineKind } from './drawings';
 
 const escAttr = (s: string) => s.replace(/[&"<>]/g, (c) => ({ '&': '&amp;', '"': '&quot;', '<': '&lt;', '>': '&gt;' })[c]!);
 import { IndicatorLayer, type IndicatorConfig } from './indicators';
+import type { ServerTimeRule } from '../core/time';
 import { TimeMapper } from './mapper';
 import { TradeOverlay } from './trades';
 
@@ -25,6 +26,9 @@ export interface PaneHost {
   /** 最後に見えている 1 分足の添字 */
   cursor(): number;
   bid(): readonly Bar[];
+  /** ライブ: MT4 から直接届いた、できかけの 1 分足（最後の足より後。無ければ null）。チャートに見せるだけで、約定には使わない */
+  forming(): Bar | null;
+  rule(): ServerTimeRule;
   toChart(b: Bar): CandlestickData;
   symbol(): string;
   digits(): number;
@@ -97,7 +101,9 @@ export class ChartPane {
   private styleBarKey = '';
   /** MT4 の「チャートの右端をずらす」三角のつまみ */
   private readonly shiftHandle: HTMLElement;
-  private shown = { tf: '' as Timeframe | '', k: -1, version: -1, start: -1 };
+  /** 最後に描いた今の足（凡例に出す） */
+  private lastBar: Bar | null = null;
+  private shown = { tf: '' as Timeframe | '', k: -1, version: -1, start: -1, extraT: null as number | null, cursor: -1 };
   /** 左端まで動かして足した、古い足の本数 */
   private extraBars = 0;
   /**
@@ -351,11 +357,27 @@ export class ChartPane {
     this.mapper.size = TIMEFRAMES[this.tf] * 60_000;
     this.drawings.tf = this.tf;
     const k = lastLE(agg.starts, cursor);
-    const partial = this.host.toChart(mergeBars(this.host.bid(), agg.starts[k], cursor, agg.bars[k].t));
+    const cur = mergeBars(this.host.bid(), agg.starts[k], cursor, agg.bars[k].t);
+    // ライブのできかけの足: 今の足と同じ区切りなら今の足に含め、次の区切りなら 1 本足す
+    const f = cursor === this.host.bid().length - 1 ? this.host.forming() : null;
+    let extra: CandlestickData | null = null;
+    if (f) {
+      const t = periodStartUtc(f.t, this.tf, this.host.rule());
+      if (t === cur.t) {
+        cur.h = Math.max(cur.h, f.h);
+        cur.l = Math.min(cur.l, f.l);
+        cur.c = f.c;
+      } else if (t > cur.t) extra = this.host.toChart({ ...f, t });
+    }
+    const partial = this.host.toChart(cur);
+    this.lastBar = extra ? f : cur;
+    const extraT = extra ? (extra.time as number) : null;
     if (this.shown.tf !== this.tf || this.shown.version !== version) this.extraBars = 0;
     // 渡すのは今の足から古い方へ CHART_MAX_BARS 本（＋左へ動かして足した分）まで。再生中は始まりを動かさない
     let start = Math.max(0, k - CHART_MAX_BARS - this.extraBars);
-    const same = !reset && this.shown.tf === this.tf && this.shown.version === version && k >= this.shown.k;
+    // 足した 1 本があるときは、その前の足を update で変えられない（部品は最後の足しか変えられない）ので、足や今の時刻が変わったら渡し直す
+    const same =
+      !reset && this.shown.tf === this.tf && this.shown.version === version && k >= this.shown.k && this.shown.extraT === extraT && (extraT === null || (k === this.shown.k && cursor === this.shown.cursor));
     if (same && this.shown.start >= 0 && start > this.shown.start) start = this.shown.start;
     this.mapper.offset = start;
     if (!same || start !== this.shown.start) {
@@ -363,13 +385,15 @@ export class ChartPane {
       const list: CandlestickData[] = [];
       for (let j = start; j < k; j++) list.push(bar(j));
       list.push(partial);
+      if (extra) list.push(extra);
       this.series.setData(list);
       if (keep) this.restoreView(before, k - start);
-    } else {
+    } else if (extra) this.series.update(extra);
+    else {
       for (let j = this.shown.k; j < k; j++) this.series.update(bar(j));
       this.series.update(partial);
     }
-    this.shown = { tf: this.tf, k, version, start };
+    this.shown = { tf: this.tf, k, version, start, extraT, cursor };
     this.indicators.render({ key: `${this.tf}:${version}`, closes, times: chartTimes, k, partialClose: partial.close, offset: start });
     this.drawings.refresh();
     if (!this.hovering) this.renderLegend(null);
@@ -378,13 +402,9 @@ export class ChartPane {
   private renderLegend(bar: { open: number; high: number; low: number; close: number } | null) {
     if (this.el.hidden) return;
     let b = bar;
-    if (!b) {
-      const { agg } = this.host.agg(this.tf);
-      const cursor = this.host.cursor();
-      const k = lastLE(agg.starts, cursor);
-      const m = mergeBars(this.host.bid(), agg.starts[k], cursor, agg.bars[k].t);
-      b = { open: m.o, high: m.h, low: m.l, close: m.c };
-    }
+    // 今の足（ライブのできかけの足も含めて、最後に描いたもの）
+    if (!b && this.lastBar) b = { open: this.lastBar.o, high: this.lastBar.h, low: this.lastBar.l, close: this.lastBar.c };
+    if (!b) return;
     const f = (p: number) => p.toFixed(this.host.digits());
     this.legend.innerHTML = `<b>${this.host.symbol().toUpperCase()},${this.tf}</b>　${f(b.open)} ${f(b.high)} ${f(b.low)} <b>${f(b.close)}</b>`;
   }
