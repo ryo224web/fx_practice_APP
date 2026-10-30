@@ -508,7 +508,16 @@ export function startTickReceiver(sync: BarsSync, port = Number(process.env.FXP_
       void sync.receive(Buffer.concat(chunks).toString('utf8')).catch((e) => (sync.status.error = e instanceof Error ? e.message : String(e)));
     });
   });
-  srv.on('error', (e) => console.warn(`[fxp] 価格を受け取る ${port} 番を開けませんでした: ${e.message}`));
+  // 開発サーバーが自分で起動し直したとき（server/ のファイルを変えたときなど）は、前の受け口が閉じる前にここへ来るので、
+  // 番号が使われていたら 3 秒おきに開き直す（2026-10-30 に、起動し直しのあと受け口が無くなり、ライブが止まった）
+  let tries = 0;
+  srv.on('error', (e: NodeJS.ErrnoException) => {
+    if (e.code === 'EADDRINUSE' && tries++ < 100) {
+      setTimeout(() => srv.listen(port, '0.0.0.0'), 3000).unref();
+      return;
+    }
+    console.warn(`[fxp] 価格を受け取る ${port} 番を開けませんでした: ${e.message}`);
+  });
   srv.listen(port, '0.0.0.0');
   srv.unref();
   return srv;
