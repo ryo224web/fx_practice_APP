@@ -864,7 +864,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     };
     ctx.setLineDash([]);
     // 行のダブルクリックで指定した取引は、もっと薄く（取引の間の足がよく見えるように）
-    const base = trade ? 0.06 : 0.1;
+    const base = trade ? 0.09 : 0.1;
     zone(RR_PROFIT, base, x0, x1, a.y, b.y);
     zone(RR_LOSS, base, x0, x1, a.y, c.y);
     // 結果: 始まりの足の次の足から、終わりの足まで（チャートにある足 = 今の時刻まで）
