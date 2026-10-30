@@ -392,6 +392,18 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     return views;
   }
 
+  /**
+   * 十字線が最後の足より右（まだ足の無い未来）にあるときの時刻（UTC）。ライブラリの十字線は足の無い所では時刻を出さないので、
+   * 時間の目盛りに代わりに出す（何時間後かの見当をつけるため。時間足の長さで延ばした時刻）
+   */
+  futureCrosshair: number | null = null;
+
+  setFutureCrosshair(t: number | null) {
+    if (t === this.futureCrosshair) return;
+    this.futureCrosshair = t;
+    this.requestUpdate();
+  }
+
   /** 時間の目盛りに出す札の時刻の書き方（十字線と同じ「2026.10.08 05:00」。表示の時刻帯は main が決める） */
   timeLabel: (utc: number) => string = (utc) => new Date(utc).toISOString().slice(0, 16).replace('T', ' ');
 
@@ -416,6 +428,17 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         });
       }
     }
+    const fc = this.futureCrosshair;
+    const fx = fc === null ? null : this.mapper.toX(ts, fc);
+    if (fc !== null && fx != null)
+      views.push({
+        coordinate: () => fx,
+        text: () => this.timeLabel(fc),
+        textColor: () => '#fff',
+        backColor: () => '#4c525e',
+        visible: () => true,
+        tickVisible: () => true,
+      });
     return views;
   }
 

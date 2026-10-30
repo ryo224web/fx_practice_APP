@@ -132,6 +132,17 @@ export function mergeFiles(existing: readonly RawBar[], files: { range: [number,
   return out.filter((b, i) => i + 1 >= out.length || out[i + 1].t !== b.t);
 }
 
+/** 1 分ずつ続いている足ごとに分ける（時刻順の足） */
+export function runsOf(bars: readonly RawBar[]): RawBar[][] {
+  const out: RawBar[][] = [];
+  for (const b of bars) {
+    const run = out[out.length - 1];
+    if (run && b.t - run[run.length - 1].t === 60_000) run.push(b);
+    else out.push([b]);
+  }
+  return out;
+}
+
 /** 直接届いた今の価格（銘柄ごと。時刻は UTC） */
 export interface LiveTick {
   /** Mac が受け取った時刻 */
@@ -268,19 +279,22 @@ export class BarsSync {
       const last = tick.done.at(-1);
       // 今日の足をまとめて送ってきたとき（EA が送り始めた直後）は、取り込み済みの時刻まででも入れ直す（抜けていた足を埋める）
       if (!last || (last.t <= (this.directUntil.get(symbol) ?? -Infinity) && tick.done.length <= 2)) continue;
-      fresh.push([symbol, { range: [tick.done[0].t, last.t + 60_000], bars: tick.done }]);
+      // 範囲は続いている足ごとに分ける（今日の足をまとめて送ってきたとき、MT4 がまだ取ってきていない分の足を、取り込み済みの足から消さないように）
+      for (const run of runsOf(tick.done)) fresh.push([symbol, { range: [run[0].t, run[run.length - 1].t + 60_000], bars: run }]);
     }
     if (!fresh.length) return;
     await this.serial(async () => {
       const manifest = await this.readManifest();
-      for (const [symbol, d] of fresh) {
-        await this.importSymbol(symbol, [d], manifest);
-        this.directUntil.set(symbol, d.range[1] - 60_000);
+      const bySymbol = new Map<string, { range: [number, number]; bars: RawBar[] }[]>();
+      for (const [symbol, d] of fresh) bySymbol.set(symbol, [...(bySymbol.get(symbol) ?? []), d]);
+      for (const [symbol, list] of bySymbol) {
+        await this.importSymbol(symbol, list, manifest);
+        this.directUntil.set(symbol, Math.max(...list.map((d) => d.range[1] - 60_000)));
       }
       await this.writeManifest(manifest);
     });
     // 終わった足を足したことも知らせる（FP がすぐ読み込む）
-    for (const [symbol] of fresh) for (const l of this.listeners) l(symbol);
+    for (const symbol of new Set(fresh.map(([s]) => s))) for (const l of this.listeners) l(symbol);
   }
 
   async sync(): Promise<void> {

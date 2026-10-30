@@ -44,7 +44,7 @@
 //| set it to "All History" once (right click -> All History).        |
 //+------------------------------------------------------------------+
 #property strict
-#property version     "1.09"
+#property version     "1.11"
 #property copyright   "R（FX Practice 用の自作ツール）"
 #property description "FX Practice 用に、チャート（1 分足）を書き出す EA です。注文は一切出しません。"
 #property description "1 分足を MQL4\\Files\\fxp_bars\\銘柄\\ に書きます（時刻はサーバー時刻）。月ごとのファイル（銘柄_年.月.csv）は"
@@ -56,7 +56,7 @@
 input string Symbols       = "USDJPY,EURUSD,GBPUSD,AUDUSD,USDCHF,USDCAD,NZDUSD,EURJPY,GBPJPY,XAUUSD,BTCUSD,JPN225"; // Symbols (comma separated)
 input string Suffix        = "";         // Symbol suffix (empty for TitanFX)
 input int    InitialMonths = 12;         // Also write this many past months (if missing)
-input int    CheckEveryMin = 1;          // Check for a new hour / new trades every N minutes
+input int    CheckEveryMin = 1;          // Check for a new hour every N minutes
 input string LiveUrl       = "http://192.168.40.227/fxp/tick"; // Send the prices to FX Practice on the Mac (empty = off)
 input int    SendEveryMs   = 250;        // Send the prices every N milliseconds (only when they changed)
 input int    LiveMinutes   = 120;        // While sending fails, write the last N finished M1 bars to <symbol>_live.csv every minute (0 = off)
@@ -123,6 +123,8 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    SendLive();
+   // Rewrite the history as soon as a trade opens or closes or its S/L / T/P moves (cheap: only the open positions are read)
+   if(HistorySig() != historySig) ExportHistory();
    if(GetTickCount() - minuteAt < (uint)MathMax(1, CheckEveryMin) * 60000 - 2000) return;
    minuteAt = GetTickCount();
    if(sendCount > 0 && GetTickCount() - startedAt < 6 * 60000)
@@ -132,7 +134,6 @@ void OnTimer()
    sendMaxMs = 0;
    if(Cutoff() != exportedUntil) ExportAll();
    ExportLive();
-   if(HistorySig() != historySig) ExportHistory();
 }
 
 // ---------------- prices every SendEveryMs, straight to the Mac (not through Dropbox) ----------------
@@ -151,7 +152,12 @@ void SendLive()
    RefreshRates();
    bool catchUp = catchUpUntil != 0 && GetTickCount() < catchUpUntil && GetTickCount() - catchUpAt >= 60000;
    datetime today = DayOf(TimeCurrent());
+   // The text is written straight into data (today's bars are about 1 MB: adding them to a string one line
+   // at a time would copy the whole string every time). body keeps the small text of a normal send, to
+   // skip sending when nothing changed.
    string body = "";
+   char data[];
+   int pos = 0;
    for(int i = 0; i < ArraySize(syms); i++)
    {
       string sym = syms[i];
@@ -159,20 +165,25 @@ void SendLive()
       if(digits <= 0) digits = 5;
       double bid = MarketInfo(sym, MODE_BID);
       if(bid <= 0) continue;
-      body += "Q," + sym + "," + IntegerToString((long)MarketInfo(sym, MODE_TIME)) + "," +
-              DoubleToString(bid, digits) + "," + DoubleToString(MarketInfo(sym, MODE_ASK), digits) + "\n";
+      string q = "Q," + sym + "," + IntegerToString((long)MarketInfo(sym, MODE_TIME)) + "," +
+                 DoubleToString(bid, digits) + "," + DoubleToString(MarketInfo(sym, MODE_ASK), digits) + "\n";
+      body += q;
+      AddText(data, pos, q);
       MqlRates r[];
       ArraySetAsSeries(r, false);
       int n = catchUp ? CopyRates(sym, PERIOD_M1, today, TimeCurrent(), r) : CopyRates(sym, PERIOD_M1, 0, 3, r);
       for(int j = 0; j < n; j++)
-         body += "B," + sym + "," + IntegerToString((long)r[j].time) + "," + DoubleToString(r[j].open, digits) + "," +
-                 DoubleToString(r[j].high, digits) + "," + DoubleToString(r[j].low, digits) + "," + DoubleToString(r[j].close, digits) + "\n";
+      {
+         string b = "B," + sym + "," + IntegerToString((long)r[j].time) + "," + DoubleToString(r[j].open, digits) + "," +
+                    DoubleToString(r[j].high, digits) + "," + DoubleToString(r[j].low, digits) + "," + DoubleToString(r[j].close, digits) + "\n";
+         if(!catchUp) body += b;
+         AddText(data, pos, b);
+      }
    }
-   if(body == "" || (body == sentBody && sendOk && !catchUp)) return;
-   char data[];
+   if(pos == 0 || (body == sentBody && sendOk && !catchUp)) return;
+   ArrayResize(data, pos);
    char result[];
    string headers;
-   StringToCharArray(body, data, 0, StringLen(body));
    ResetLastError();
    uint t0 = GetTickCount();
    int code = WebRequest("POST", LiveUrl, "Content-Type: text/plain\r\n", catchUp ? 5000 : 500, data, result, headers);
@@ -203,7 +214,16 @@ void SendLive()
    }
    if(ok && catchUp) catchUpAt = GetTickCount();
    sendOk = ok;
-   sentBody = body;
+   sentBody = catchUp ? "" : body;
+}
+
+// Appends s to buf at pos (the array grows by 1 MB at a time)
+void AddText(char &buf[], int &pos, const string s)
+{
+   int n = StringLen(s);
+   if(pos + n > ArraySize(buf)) ArrayResize(buf, pos + n, 1 << 20);
+   StringToCharArray(s, buf, pos, n);
+   pos += n;
 }
 
 // While the prices cannot be sent: every minute, the last LiveMinutes finished M1 bars of each symbol to <symbol>_live.csv.
@@ -395,6 +415,17 @@ void ExportAll()
 // the S/L and T/P of a position are written as they were when it closed.)
 string HistorySig()
 {
+   // Also changes when the S/L or T/P of a position is moved or it is partly closed
+   // (with the numbers only, a moved S/L never reached FX Practice)
+   string sig = HistoryCounts();
+   for(int i = 0; i < OrdersTotal(); i++)
+      if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         sig += "|" + IntegerToString(OrderTicket()) + ":" + DoubleToString(OrderStopLoss(), 5) + ":" + DoubleToString(OrderTakeProfit(), 5) + ":" + DoubleToString(OrderLots(), 2);
+   return sig;
+}
+
+string HistoryCounts()
+{
    return IntegerToString(OrdersHistoryTotal()) + "/" + IntegerToString(OrdersTotal());
 }
 
@@ -459,6 +490,6 @@ void ExportHistory()
       Print("R_ExportBarsHistory: cannot rename ", tmp, " error ", GetLastError());
       return;
    }
-   if(sig != historySig) Print("R_ExportBarsHistory: wrote ", HistoryFile, " (", sig, " closed/open)");
+   if(sig != historySig) Print("R_ExportBarsHistory: wrote ", HistoryFile, " (", HistoryCounts(), " closed/open)");
    historySig = sig;
 }

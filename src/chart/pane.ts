@@ -393,6 +393,10 @@ export class ChartPane {
       const d = p.seriesData.get(this.series) as CandlestickData | undefined;
       this.hovering = !!(p.time && d);
       this.renderLegend(this.hovering && d ? d : null);
+      // 足の無い所（最後の足より右）では、時間足の長さで延ばした時刻を時間の目盛りに出す
+      // （リプレイ中は今の時刻より先の足もデータにはあるが、チャートに渡しているのは今の足まで）
+      const future = this.host.crosshairOn() && !p.time && p.logical !== undefined && p.logical > this.shown.k - this.shown.start;
+      this.drawings.setFutureCrosshair(future ? this.mapper.toTime(Math.round(p.logical!)) : null);
     });
   }
 
@@ -772,6 +776,7 @@ export class ChartPane {
 
   setCrosshair(on: boolean) {
     this.chart.applyOptions({ crosshair: { mode: on ? CrosshairMode.Normal : CrosshairMode.Hidden } });
+    if (!on) this.drawings.setFutureCrosshair(null);
   }
 
   setActive(on: boolean) {

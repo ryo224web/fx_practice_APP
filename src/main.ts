@@ -110,6 +110,8 @@ let playing = false;
 let live = false;
 /** ライブ: MT4 から直接届いた、できかけの 1 分足（チャートに見せるだけ） */
 let liveBar: Bar | null = null;
+/** liveBar の銘柄（銘柄を切り替えた直後に、前の銘柄の足を出さないように） */
+let liveBarSym = '';
 let dataVersion = 0;
 const aggCache = new Map<
   Timeframe,
@@ -474,11 +476,14 @@ function notifyFills(events: FillEvent[]) {
 }
 
 // ---------------- 時間を進める・戻す ----------------
-/** target 番目の 1 分足まで動く。約定で止まったら true。pause=false なら途中の約定で止まらない（日時への移動など） */
-function goTo(target: number, pause = true): boolean {
+/**
+ * target 番目の 1 分足まで動く。約定で止まったら true。pause=false なら途中の約定で止まらない（日時への移動など）。
+ * fromLive: ライブで新しい足が届いて進むとき（見ている過去の取引・縦線はそのまま。外すと 1 分ごとに今の時刻へ戻されてしまう）
+ */
+function goTo(target: number, pause = true, fromLive = false): boolean {
   if (traveling || !runner) return false;
   // リプレイの時刻が動いたら、行のダブルクリックで指定した取引（縦線）は外す（スクショに古い注文番号が付かないように）
-  if (target !== cursor) clearTradeHighlight();
+  if (target !== cursor && !fromLive) clearTradeHighlight();
   if (target < cursor) {
     setLive(false);
     // 戻るときは、手前の区切りから計算し直す（データの読み込みが要ることもあるので非同期）
@@ -600,7 +605,10 @@ function openLiveStream() {
   closeLiveStream();
   liveStreamSym = md.symbol;
   const es = new EventSource(`/api/mt4/stream?sym=${md.symbol}`);
+  const sym = md.symbol;
   es.onmessage = (e) => {
+    // 銘柄を切り替えた後に届いた前の銘柄の分は使わない
+    if (sym !== md.symbol) return;
     liveStreamAt = Date.now();
     void applyLive(JSON.parse(e.data) as LiveMsg);
   };
@@ -624,9 +632,11 @@ async function pollTick() {
   if (tickBusy || traveling || Date.now() - liveStreamAt < 3000) return;
   tickBusy = true;
   try {
-    const res = await fetch(`/api/mt4/tick?sym=${md.symbol}`, { cache: 'no-store' }).catch(() => null);
+    const sym = md.symbol;
+    const res = await fetch(`/api/mt4/tick?sym=${sym}`, { cache: 'no-store' }).catch(() => null);
     if (!res?.ok || !res.headers.get('content-type')?.includes('json')) return;
-    await applyLive((await res.json()) as LiveMsg);
+    const r = (await res.json()) as LiveMsg;
+    if (sym === md.symbol) await applyLive(r);
   } finally {
     tickBusy = false;
   }
@@ -648,6 +658,7 @@ async function applyLive(r: LiveMsg) {
   const bar = r.tick?.bar && last && r.tick.bar.t > last.t ? r.tick.bar : null;
   if (!bar && !liveBar) return;
   liveBar = bar;
+  liveBarSym = md.symbol;
   if (liveFrame) return;
   liveFrame = requestAnimationFrame(() => {
     liveFrame = 0;
@@ -670,7 +681,7 @@ async function followLatest(first = false) {
     return;
   }
   const last = md.bid.length - 1;
-  if (last > cursor) goTo(last);
+  if (last > cursor) goTo(last, true, !first);
   if (first) scrollToNow();
 }
 
@@ -2644,7 +2655,7 @@ function createPanes() {
     dataVersion: () => dataVersion,
     cursor: () => (peek ? peek.bid.length - 1 : cursor),
     bid: () => peek?.bid ?? md.bid,
-    forming: () => (!peek && live && liveBar && liveBar.t > (md.bid[md.bid.length - 1]?.t ?? Infinity) ? liveBar : null),
+    forming: () => (!peek && live && liveBar && liveBarSym === md.symbol && liveBar.t > (md.bid[md.bid.length - 1]?.t ?? Infinity) ? liveBar : null),
     rule: () => rule,
     toChart,
     symbol: () => md.symbol,
@@ -3504,7 +3515,7 @@ function updateStatus(ms = firstPaintMs) {
   if (barsStatus) {
     tips.push(`MT4 の足の共有フォルダ: ${barsStatus.dir}${barsStatus.found ? '' : '（見つかりません）'}`);
     if (barsStatus.error) tips.push(`取り込みのエラー: ${barsStatus.error}`);
-    if (barsStatus.liveAt && Date.now() - barsStatus.liveAt < 60_000) tips.push('MT4 から 1 秒ごとに価格が直接届いています（ライブ）');
+    if (barsStatus.liveAt && Date.now() - barsStatus.liveAt < 60_000) tips.push('MT4 から価格が直接届いています（ライブ）');
     const off = barsStatus.offset;
     if (off && off.mt4 !== off.app) {
       statusEl.textContent += ' ⚠ サーバー時刻';
@@ -3617,7 +3628,8 @@ start()
     setInterval(() => {
       tick++;
       if (live || tick % 4 === 0) void pollBars();
-      if (tick % 4 === 0) void pollHistory(false);
+      // MT4 の取引履歴も、ライブの間は 15 秒ごと（S/L・T/P を動かしたのが早く届くように）
+      if (live || tick % 4 === 0) void pollHistory(false);
     }, 15_000);
     setInterval(() => void pollTick(), 1000);
   })

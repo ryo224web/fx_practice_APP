@@ -246,6 +246,13 @@ describe('共有フォルダからの取り込み（BarsSync）', () => {
     const nov2 = decodeBars(await readFile(path.join(data, 'usdjpy/titan/2026-11.bin')), 3);
     expect(nov2.length).toBe(182);
     expect(nov2.every((b) => b.o === 155)).toBe(true);
+
+    // MT4 がまだ取ってきていない分（1:00〜2:00）が抜けたまとめ送りでも、取り込み済みのその間の足は消さない
+    const holey = [`Q,USDJPY,${sec(t0 + 2 * M)},153.5,153.51`, ...Array.from({ length: 183 }, (_, i) => i).filter((i) => i < 60 || i >= 120).map((i) => `B,USDJPY,${sec(day + i * M)},156,156.1,155.9,156`)].join('\n');
+    await sync.receive(holey);
+    const nov3 = decodeBars(await readFile(path.join(data, 'usdjpy/titan/2026-11.bin')), 3);
+    expect(nov3.length).toBe(182);
+    expect(nov3.filter((b) => b.o === 155).length).toBe(60);
   });
 
   it('共有フォルダが無くても止まらない', async () => {
