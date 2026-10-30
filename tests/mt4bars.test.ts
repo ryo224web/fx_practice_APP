@@ -238,6 +238,14 @@ describe('共有フォルダからの取り込み（BarsSync）', () => {
     expect(nov.length).toBe(180 + 2);
     expect(nov.at(-1)?.o).toBe(154);
     expect(sync.status.latest.usdjpy).toBe(Date.UTC(2026, 10, 2, 1, 1));
+
+    // EA が送り始めた直後は今日の足をまとめて送る: 取り込み済みの時刻まででも入れ直し、抜けていた足（ここでは 0:00〜3:00 を 155 で）を埋める
+    const day = Date.UTC(2026, 10, 2);
+    const catchUp = [`Q,USDJPY,${sec(t0 + 2 * M)},153.5,153.51`, ...Array.from({ length: 183 }, (_, i) => `B,USDJPY,${sec(day + i * M)},155,155.1,154.9,155`)].join('\n');
+    await sync.receive(catchUp);
+    const nov2 = decodeBars(await readFile(path.join(data, 'usdjpy/titan/2026-11.bin')), 3);
+    expect(nov2.length).toBe(182);
+    expect(nov2.every((b) => b.o === 155)).toBe(true);
   });
 
   it('共有フォルダが無くても止まらない', async () => {

@@ -266,7 +266,8 @@ export class BarsSync {
       this.ticks.set(symbol, tick);
       for (const l of this.listeners) l(symbol);
       const last = tick.done.at(-1);
-      if (!last || last.t <= (this.directUntil.get(symbol) ?? -Infinity)) continue;
+      // 今日の足をまとめて送ってきたとき（EA が送り始めた直後）は、取り込み済みの時刻まででも入れ直す（抜けていた足を埋める）
+      if (!last || (last.t <= (this.directUntil.get(symbol) ?? -Infinity) && tick.done.length <= 2)) continue;
       fresh.push([symbol, { range: [tick.done[0].t, last.t + 60_000], bars: tick.done }]);
     }
     if (!fresh.length) return;
@@ -499,7 +500,7 @@ export function startTickReceiver(sync: BarsSync, port = Number(process.env.FXP_
     let size = 0;
     req.on('data', (c: Buffer) => {
       size += c.length;
-      if (size > 256 * 1024) req.destroy();
+      if (size > 8 * 1024 * 1024) req.destroy();
       else chunks.push(c);
     });
     req.on('end', () => {

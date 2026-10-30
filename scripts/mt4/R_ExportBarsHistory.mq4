@@ -44,7 +44,7 @@
 //| set it to "All History" once (right click -> All History).        |
 //+------------------------------------------------------------------+
 #property strict
-#property version     "1.08"
+#property version     "1.09"
 #property copyright   "R（FX Practice 用の自作ツール）"
 #property description "FX Practice 用に、チャート（1 分足）を書き出す EA です。注文は一切出しません。"
 #property description "1 分足を MQL4\\Files\\fxp_bars\\銘柄\\ に書きます（時刻はサーバー時刻）。月ごとのファイル（銘柄_年.月.csv）は"
@@ -74,6 +74,8 @@ uint     startedAt = 0;     // GetTickCount when the EA started
 int      sendCount = 0;     // sends and their time in this minute (printed for the first 5 minutes)
 uint     sendMs = 0;
 uint     sendMaxMs = 0;
+uint     catchUpUntil = 0;  // for 10 minutes after sending starts (again), today's bars are also sent once a minute
+uint     catchUpAt = 0;     // GetTickCount of the last catch-up send
 uint     retryAt = 0;       // after a failed send, try again at this GetTickCount
 uint     minuteAt = 0;      // GetTickCount of the last check (new hour, new trades)
 bool     urlWarned = false;
@@ -137,6 +139,9 @@ void OnTimer()
 // Body (text, one line each, times are server time in seconds):
 //   Q,<symbol>,<server time>,<bid>,<ask>
 //   B,<symbol>,<bar time>,<open>,<high>,<low>,<close>   the last 3 M1 bars, the last one is still forming
+// For 10 minutes after sending starts (when the EA starts, or the Mac answers again), once a minute all of
+// today's bars are sent instead of the last 3, so that the bars from while T580 / MT4 / the Mac was off reach
+// the Mac at once (MT4 downloads them from the broker a little after it starts, so this is repeated).
 // Nothing is sent while the prices do not change (e.g. on weekends).
 // (TimeCurrent is not used for this: inside the EA it does not move every second.)
 void SendLive()
@@ -144,6 +149,8 @@ void SendLive()
    if(LiveUrl == "") return;
    if(!sendOk && retryAt != 0 && GetTickCount() < retryAt) return;
    RefreshRates();
+   bool catchUp = catchUpUntil != 0 && GetTickCount() < catchUpUntil && GetTickCount() - catchUpAt >= 60000;
+   datetime today = DayOf(TimeCurrent());
    string body = "";
    for(int i = 0; i < ArraySize(syms); i++)
    {
@@ -156,19 +163,19 @@ void SendLive()
               DoubleToString(bid, digits) + "," + DoubleToString(MarketInfo(sym, MODE_ASK), digits) + "\n";
       MqlRates r[];
       ArraySetAsSeries(r, false);
-      int n = CopyRates(sym, PERIOD_M1, 0, 3, r);
+      int n = catchUp ? CopyRates(sym, PERIOD_M1, today, TimeCurrent(), r) : CopyRates(sym, PERIOD_M1, 0, 3, r);
       for(int j = 0; j < n; j++)
          body += "B," + sym + "," + IntegerToString((long)r[j].time) + "," + DoubleToString(r[j].open, digits) + "," +
                  DoubleToString(r[j].high, digits) + "," + DoubleToString(r[j].low, digits) + "," + DoubleToString(r[j].close, digits) + "\n";
    }
-   if(body == "" || (body == sentBody && sendOk)) return;
+   if(body == "" || (body == sentBody && sendOk && !catchUp)) return;
    char data[];
    char result[];
    string headers;
    StringToCharArray(body, data, 0, StringLen(body));
    ResetLastError();
    uint t0 = GetTickCount();
-   int code = WebRequest("POST", LiveUrl, "Content-Type: text/plain\r\n", 500, data, result, headers);
+   int code = WebRequest("POST", LiveUrl, "Content-Type: text/plain\r\n", catchUp ? 5000 : 500, data, result, headers);
    uint ms = GetTickCount() - t0;
    bool ok = code == 200;
    if(ok)
@@ -188,7 +195,13 @@ void SendLive()
       else if(sendOk) Print("R_ExportBarsHistory: cannot send to ", LiveUrl, " (", code, ", error ", err, "), will try again every 30 s");
       retryAt = GetTickCount() + 30000;
    }
-   else if(!sendOk) Print("R_ExportBarsHistory: sending prices to ", LiveUrl);
+   else if(!sendOk)
+   {
+      Print("R_ExportBarsHistory: sending prices to ", LiveUrl);
+      catchUpUntil = GetTickCount() + 10 * 60000;
+      catchUpAt = 0;   // today's bars at the next send
+   }
+   if(ok && catchUp) catchUpAt = GetTickCount();
    sendOk = ok;
    sentBody = body;
 }
