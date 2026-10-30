@@ -260,7 +260,8 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
     return {
       draw: (target) => {
         const v = this.view;
-        if (!v || !this.chart || !this.series || !this.showHistory) return;
+        // 取引の指定の縦線は、矢印（決済した取引の印）を隠していても引く
+        if (!v || !this.chart || !this.series) return;
         const ts = this.chart.timeScale();
         const pt = (t: number, p: number) => {
           const x = this.mapper.toX(ts, t);
@@ -291,6 +292,7 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
             }
             ctx.restore();
           }
+          if (!this.showHistory) return;
           const arrow = (x: number, y: number, up: boolean, color: string) => {
             ctx.fillStyle = color;
             ctx.beginPath();

@@ -519,7 +519,17 @@ export class ChartPane {
    * from〜to（UTC）が真ん中に来るように表示を動かす。拡大率はそのまま
    * （取引の期間が画面に収まらないときだけ、収まるまで縮小する）
    */
+  /** 時刻 from（UTC）の足までチャートに渡す（渡しているのは今の足から CHART_MAX_BARS 本までなので、それより前の取引を見せるとき） */
+  private includeTime(from: number) {
+    const { times } = this.host.agg(this.tf);
+    const i = Math.max(0, lastLE(times, from) - 200);
+    if (i >= this.mapper.offset) return;
+    this.extraBars += this.mapper.offset - i;
+    this.render(true, true);
+  }
+
   showTimeRange(from: number, to: number) {
+    this.includeTime(from);
     const ts = this.chart.timeScale();
     const a = this.mapper.toLogical(from);
     const b = this.mapper.toLogical(to);
@@ -534,6 +544,7 @@ export class ChartPane {
    * 「標準」の幅より太くはしない（長い時間足で取引が数本しか無いときは、標準の幅で前後の流れも写す）。足の幅は 1px まで
    */
   fitTimeRange(from: number, to: number) {
+    this.includeTime(from);
     const ts = this.chart.timeScale();
     const w = ts.width();
     if (w <= 0) return;

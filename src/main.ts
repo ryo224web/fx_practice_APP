@@ -278,7 +278,7 @@ function dataChanged() {
 function getAgg(tf: Timeframe) {
   let c = aggCache.get(tf);
   if (!c || c.version !== dataVersion) {
-    const agg = withHistory(aggregateWithIndex(md.bid, tf, rule), tf);
+    const agg = peek ? aggregateWithIndex(peek.bid, tf, rule) : withHistory(aggregateWithIndex(md.bid, tf, rule), tf);
     // チャート用の形（CandlestickData）は描く分だけその都度作る（全部の足の分を持つとメモリを食うため）
     c = {
       agg,
@@ -447,6 +447,7 @@ function record(action: Action) {
 }
 
 function act(a: NewAction): boolean {
+  exitPeek();
   if (mt4Mode()) {
     toast('この検証の口座は MT4 の取引です（自分では注文できません。練習するときは別のプロジェクトで「新しい検証」を始めてください）');
     return false;
@@ -508,6 +509,7 @@ function goTo(target: number, pause = true): boolean {
 
 /** 今の時間足で 1 本進む（作りかけの足なら、その足の終わりまで） */
 function stepBar(dir: 1 | -1) {
+  exitPeek();
   const { agg } = getAgg(active.tf);
   const k = lastLE(agg.starts, cursor);
   const endOf = (j: number) => (j + 1 < agg.starts.length ? agg.starts[j + 1] - 1 : md.bid.length - 1);
@@ -516,7 +518,10 @@ function stepBar(dir: 1 | -1) {
 }
 
 function setPlaying(on: boolean) {
-  if (on) setLive(false);
+  if (on) {
+    setLive(false);
+    exitPeek();
+  }
   playing = on;
   playBtn.textContent = on ? '❚❚' : '▶';
   playBtn.setAttribute('aria-pressed', String(on));
@@ -564,6 +569,7 @@ function setPlaying(on: boolean) {
 
 function setLive(on: boolean) {
   if (live === on) return;
+  if (on) exitPeek();
   live = on;
   const b = $('#live');
   b.setAttribute('aria-pressed', String(on));
@@ -1535,17 +1541,143 @@ async function loadMt4File(file: File) {
   save(true);
 }
 
+// ---- 過去の取引を見る（読み込んでいる範囲より前の取引） ----
+// 価格データは今の時刻の辺りだけを持つ（MAX_MONTHS）。それより前の取引を行のダブルクリックで選んだときは、
+// その取引の辺りの月の 1 分足だけを別に読み込んでチャートに見せる（リプレイの時刻・口座・注文はそのまま）。
+// Esc・再生・1 本進む/戻る・注文・ライブ・移動で、元の見え方に戻る
+
+let peek: { bid: Bar[]; lo: number; hi: number; ticket: number; views: Map<ChartPane, { anchor: number | null; spacing: number }> } | null = null;
+let peekLoading = false;
+/** 過去の取引を見るために読んだ月の 1 分足（使った順に 8 か月まで。同じ辺りの取引を続けて見るときや、行にマウスを乗せて先に読んだ分を使う） */
+const peekCache = new Map<string, Promise<Bar[]>>();
+const PEEK_CACHE_MONTHS = 8;
+/** 過去の取引を見る操作の番号（読み込み中に別の取引を選んだら、前の結果は使わない） */
+let peekSeq = 0;
+
+function peekMonth(month: string): Promise<Bar[]> {
+  const key = `${md.symbol}:${month}`;
+  let p = peekCache.get(key);
+  if (p) peekCache.delete(key);
+  else p = loadMonths(md.symbol, [month], md.digits).then((r) => r.bid);
+  peekCache.set(key, p);
+  p.catch(() => peekCache.delete(key));
+  while (peekCache.size > PEEK_CACHE_MONTHS) peekCache.delete(peekCache.keys().next().value!);
+  return p;
+}
+
+/**
+ * 見せるのは取引の 5 日前〜10 日後の足だけ（月ごと全部渡すと、M1 で 6 万本にもなり、RCI などの計算で 1 秒以上かかった）。
+ * 左端まで動かすと前を足す
+ */
+const PEEK_BEFORE = 5 * 86_400_000;
+const PEEK_AFTER = 10 * 86_400_000;
+
+/** 取引 from〜to（UTC）を見るときに読む月（リプレイの時刻の月まで） */
+function peekRange(from: number, to: number): [number, number] {
+  const lo = md.monthIndexOf(from - PEEK_BEFORE);
+  const hi = Math.min(md.monthIndexOf(to + PEEK_AFTER), md.monthIndexOf(md.bid[cursor].t));
+  return [lo, Math.max(lo, hi)];
+}
+
+async function peekMonths(lo: number, hi: number): Promise<Bar[]> {
+  const parts = await Promise.all(md.months.slice(lo, hi + 1).map(peekMonth));
+  // リプレイの時刻より先の足は見せない
+  const now = md.bid[cursor].t;
+  return parts.flat().filter((b) => b.t <= now);
+}
+
+/** 行にマウスを乗せたとき: 読み込んでいる範囲より前の取引なら、その辺りの月を先に読んでおく（ダブルクリックしたらすぐ出せるように） */
+function prefetchTrade(from: number, to: number) {
+  if (!md.bid.length || from >= md.bid[0].t) return;
+  const [lo, hi] = peekRange(from, to);
+  for (const m of md.months.slice(lo, hi + 1)) void peekMonth(m);
+}
+
+/** from〜to（UTC）の取引を、その辺りの 1 分足で見せる */
+async function enterPeek(ticket: number, from: number, to: number) {
+  const seq = ++peekSeq;
+  const [lo, hi] = peekRange(from, to);
+  const banner = $('#peek-banner');
+  banner.querySelector('span')!.textContent = `#${ticket} を読み込み中…`;
+  banner.hidden = false;
+  const bid = (await peekMonths(lo, hi)).filter((b) => b.t >= from - PEEK_BEFORE && b.t <= to + PEEK_AFTER);
+  if (seq !== peekSeq) return false;
+  if (!bid.length) {
+    banner.hidden = !peek;
+    return false;
+  }
+  const views = peek?.views ?? new Map(visiblePanes().map((p) => [p, p.viewState()]));
+  peek = { bid, lo, hi, ticket, views };
+  dataChanged();
+  renderChart(true);
+  banner.querySelector('span')!.textContent = `#${ticket} を表示中（${formatTime(from, state.zone, rule).slice(0, 10)}）。リプレイの時刻はそのまま`;
+  banner.hidden = false;
+  return true;
+}
+
+/** 見ている過去の取引から、元の見え方（リプレイの時刻）に戻る */
+function exitPeek() {
+  // 読み込み中の分も使わない
+  peekSeq++;
+  if (!peek) {
+    $('#peek-banner').hidden = true;
+    return;
+  }
+  const views = peek.views;
+  peek = null;
+  $('#peek-banner').hidden = true;
+  dataChanged();
+  renderChart(true);
+  for (const p of visiblePanes()) {
+    const v = views.get(p);
+    if (v) p.renderAt(v.anchor, v.spacing);
+  }
+}
+
+/** 過去の取引を見ている間に左端まで動かした: 前の 10 日を足す */
+async function peekEarlier() {
+  if (!peek || peekLoading || !peek.bid.length) return;
+  peekLoading = true;
+  try {
+    const now = peek;
+    const first = now.bid[0].t;
+    const from = first - 2 * PEEK_AFTER;
+    const lo = md.monthIndexOf(from);
+    const bid = (await peekMonths(lo, md.monthIndexOf(first))).filter((b) => b.t >= from && b.t < first);
+    if (peek !== now || !bid.length) return;
+    peek.bid = [...bid, ...now.bid];
+    peek.lo = lo;
+    dataChanged();
+    renderChart(true, true);
+  } finally {
+    peekLoading = false;
+  }
+}
+
+/** 取引の辺りを見せる。読み込んでいる範囲より前なら、その辺りだけを読み込んで見せる */
+async function showTradeRange(ticket: number, from: number, to: number) {
+  if (peek && from >= peek.bid[0].t && to <= peek.bid[peek.bid.length - 1].t) {
+    // 今見ている過去の範囲の中の取引なら、読み直さずに動かすだけ
+    peek.ticket = ticket;
+    $('#peek-banner span').textContent = `#${ticket} を表示中（${formatTime(from, state.zone, rule).slice(0, 10)}）。リプレイの時刻はそのまま`;
+  } else if (md.bid.length && from < md.bid[0].t) {
+    if (!(await enterPeek(ticket, from, to))) return;
+  } else exitPeek();
+  // 縦線は見せる場所が決まってから引く（読み込み中に別の行を選んだときに、前の取引の線が残らないように）
+  for (const p of panes) p.overlay.setHighlight({ openTime: from, closeTime: to });
+  highlightTicket = ticket;
+  highlightRange = { from, to };
+  for (const p of visiblePanes()) p.showTimeRange(from, to);
+}
+
 /**
  * 口座履歴の取引が見えるようにチャートを動かす（リプレイの時刻は動かさない。
  * 戻すと後の取引が取り消されてしまうため）
  */
-function showHistoryTrade(ticket: number, closeTime: number) {
+async function showHistoryTrade(ticket: number, closeTime: number) {
   const h = shownAccount().history.find((x) => x.kind === 'trade' && x.ticket === ticket && x.closeTime === closeTime);
   if (!h || h.kind !== 'trade') return;
-  for (const p of panes) p.overlay.setHighlight({ openTime: h.openTime, closeTime: h.closeTime });
-  highlightTicket = ticket;
-  highlightRange = { from: h.openTime, to: h.closeTime };
-  for (const p of visiblePanes()) p.showTimeRange(h.openTime, h.closeTime);
+  await showTradeRange(ticket, h.openTime, h.closeTime);
   if (!panes[0].overlay.showHistory) $('#toggle-history').click();
 }
 
@@ -1562,10 +1694,7 @@ async function jumpToTrade(ticket: number) {
   if (openUtc < now + 60_000) {
     // 決済がまだ先なら、今の時刻までを見せる（先の足はまだ無い）
     const closeUtc = t.closeServer === null ? now : Math.min(mt4ToUtc(t.closeServer), now);
-    for (const p of panes) p.overlay.setHighlight({ openTime: openUtc, closeTime: closeUtc });
-    highlightTicket = ticket;
-    highlightRange = { from: openUtc, to: closeUtc };
-    for (const p of visiblePanes()) p.showTimeRange(openUtc, closeUtc);
+    await showTradeRange(ticket, openUtc, closeUtc);
     return;
   }
   await travel(Math.floor(openUtc / 60_000) * 60_000 - 60_000);
@@ -2436,6 +2565,7 @@ async function changeSymbol(symbol: string) {
     return;
   }
   setPlaying(false);
+  clearTradeHighlight();
   // 今の口座を出発点にして、新しい銘柄で続ける
   test().baseline = { time: state.cursor, balance: account.balance, history: account.history.slice(), nextTicket: account.nextTicket };
   test().actions = [];
@@ -2512,15 +2642,15 @@ function createPanes() {
   const host: PaneHost = {
     agg: getAgg,
     dataVersion: () => dataVersion,
-    cursor: () => cursor,
-    bid: () => md.bid,
-    forming: () => (live && liveBar && liveBar.t > (md.bid[md.bid.length - 1]?.t ?? Infinity) ? liveBar : null),
+    cursor: () => (peek ? peek.bid.length - 1 : cursor),
+    bid: () => peek?.bid ?? md.bid,
+    forming: () => (!peek && live && liveBar && liveBar.t > (md.bid[md.bid.length - 1]?.t ?? Infinity) ? liveBar : null),
     rule: () => rule,
     toChart,
     symbol: () => md.symbol,
     digits: () => md.digits,
     activate: setActivePane,
-    nearLeftEdge: loadEarlier,
+    nearLeftEdge: (p) => (peek ? void peekEarlier() : loadEarlier(p)),
     lead: (p) => (leader = p),
     toggleCrosshair: () => setCrosshair(!crosshairOn),
     crosshairOn: () => crosshairOn,
@@ -2724,6 +2854,7 @@ function setupControls() {
   });
 
   playBtn.addEventListener('click', () => setPlaying(!playing));
+  $('#peek-exit').addEventListener('click', () => clearTradeHighlight());
   $('#live').addEventListener('click', () => {
     if (live) return setLive(false);
     if (!manifest?.symbols[md.symbol]?.titan) toast('この銘柄は MT4 の 1 分足がまだ届いていないので、手元のデータの最後まで進むだけです');
@@ -2751,11 +2882,25 @@ function setupControls() {
       save();
     }),
   );
+  // 読み込んでいる範囲より前の取引の行にマウスを乗せたら、その辺りを先に読んでおく
+  termBody.addEventListener('mouseover', (e) => {
+    const row = (e.target as HTMLElement).closest<HTMLElement>('tr[data-ticket]');
+    if (!row || row.dataset.prefetched) return;
+    row.dataset.prefetched = '1';
+    const ticket = Number(row.dataset.ticket);
+    if (row.dataset.kind === 'history') {
+      const h = shownAccount().history.find((x) => x.kind === 'trade' && x.ticket === ticket && x.closeTime === Number(row.dataset.close));
+      if (h?.kind === 'trade') prefetchTrade(h.openTime, h.closeTime);
+    } else if (row.dataset.kind === 'mt4') {
+      const t = mt4Trades().find((x) => x.ticket === ticket);
+      if (t) prefetchTrade(mt4ToUtc(t.openServer), t.closeServer === null ? mt4ToUtc(t.openServer) : mt4ToUtc(t.closeServer));
+    }
+  });
   termBody.addEventListener('dblclick', (e) => {
     const row = (e.target as HTMLElement).closest<HTMLElement>('tr[data-ticket]');
     if (!row) return;
     if (row.dataset.kind === 'mt4') jumpToTrade(Number(row.dataset.ticket));
-    else if (row.dataset.kind === 'history') showHistoryTrade(Number(row.dataset.ticket), Number(row.dataset.close));
+    else if (row.dataset.kind === 'history') void showHistoryTrade(Number(row.dataset.ticket), Number(row.dataset.close));
     else openModifyDialog(Number(row.dataset.ticket));
   });
   termBody.addEventListener('click', (e) => {
@@ -3082,6 +3227,7 @@ let highlightTicket: number | null = null;
 let highlightRange: { from: number; to: number } | null = null;
 
 function clearTradeHighlight() {
+  exitPeek();
   if (highlightTicket === null) return;
   highlightTicket = null;
   highlightRange = null;

@@ -152,6 +152,32 @@ td.sell {
   min-height: 120px;
 }
 
+/* 読み込んでいる範囲より前の取引を見ている間の帯 */
+#peek-banner {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px 4px 12px;
+  border-radius: 6px;
+  background: rgba(210, 153, 34, 0.9);
+  color: #111;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+#peek-banner[hidden] {
+  display: none;
+}
+
+#peek-banner button {
+  font-weight: 600;
+}
+
 #charts {
   position: absolute;
   inset: 0;
