@@ -237,6 +237,8 @@ export class BarsSync {
   private chain: Promise<unknown> = Promise.resolve();
   /** 銘柄 → 直接届いた今の価格 */
   readonly ticks = new Map<string, LiveTick>();
+  /** 価格が届いた・終わった足を取り込んだときに呼ぶ（/api/mt4/stream で FP へ流す） */
+  readonly listeners = new Set<(symbol: string) => void>();
   /** 銘柄 → 直接届いた終わった足のうち、取り込んだ最後の時刻 */
   private directUntil = new Map<string, number>();
   status: BarsStatus;
@@ -262,6 +264,7 @@ export class BarsSync {
     const fresh: [string, { range: [number, number]; bars: RawBar[] }][] = [];
     for (const [symbol, tick] of got) {
       this.ticks.set(symbol, tick);
+      for (const l of this.listeners) l(symbol);
       const last = tick.done.at(-1);
       if (!last || last.t <= (this.directUntil.get(symbol) ?? -Infinity)) continue;
       fresh.push([symbol, { range: [tick.done[0].t, last.t + 60_000], bars: tick.done }]);
@@ -275,6 +278,8 @@ export class BarsSync {
       }
       await this.writeManifest(manifest);
     });
+    // 終わった足を足したことも知らせる（FP がすぐ読み込む）
+    for (const [symbol] of fresh) for (const l of this.listeners) l(symbol);
   }
 
   async sync(): Promise<void> {
@@ -434,12 +439,28 @@ export function mt4Bars(dir = process.env.FXP_BARS_DIR ?? DEFAULT_BARS_DIR, data
         receiver?.close();
       });
       // ライブ: 直接届いた今の価格（?sym=usdjpy）。10 秒より古ければ届いていないとみなす
+      const liveJson = (sym: string) => {
+        const tick = sync.ticks.get(sym);
+        return JSON.stringify({ tick: tick && Date.now() - tick.at < 10_000 ? { ...tick, done: undefined } : null, latest: sync.status.latest[sym] ?? null });
+      };
       server.middlewares.use('/api/mt4/tick', (req, res) => {
         res.setHeader('Content-Type', 'application/json');
         res.setHeader('Cache-Control', 'no-store');
+        res.end(liveJson(new URL(req.url ?? '', 'http://x').searchParams.get('sym') ?? ''));
+      });
+      // 同じものを、届いた瞬間に流し続ける（Server-Sent Events。FP はライブの間だけつなぐ）
+      server.middlewares.use('/api/mt4/stream', (req, res) => {
         const sym = new URL(req.url ?? '', 'http://x').searchParams.get('sym') ?? '';
-        const tick = sync.ticks.get(sym);
-        res.end(JSON.stringify({ tick: tick && Date.now() - tick.at < 10_000 ? { ...tick, done: undefined } : null, latest: sync.status.latest[sym] ?? null }));
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
+        const send = (s: string) => s === sym && res.write(`data: ${liveJson(sym)}\n\n`);
+        send(sym);
+        sync.listeners.add(send);
+        // つながっているかを確かめるため、15 秒ごとに空の行を送る
+        const ping = setInterval(() => res.write(': ping\n\n'), 15_000);
+        req.on('close', () => {
+          clearInterval(ping);
+          sync.listeners.delete(send);
+        });
       });
       server.middlewares.use('/api/bars/status', (_req, res) => {
         res.setHeader('Content-Type', 'application/json');

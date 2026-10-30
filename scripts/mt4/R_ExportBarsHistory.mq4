@@ -2,7 +2,7 @@
 //| R_ExportBarsHistory.mq4  (Expert Advisor)                         |
 //| Writes M1 bars of several symbols to CSV files for FX Practice   |
 //| (monthly files once a day, today's file every hour), and sends   |
-//| the current prices to FX Practice on the Mac every second.       |
+//| the current prices to FX Practice on the Mac every 0.25 s.        |
 //| FX Practice (on the Mac) watches the folder and imports them.    |
 //|                                                                    |
 //| Kept as UTF-8 in git; npm run deploy-mt4 copies it to the MT4     |
@@ -29,7 +29,7 @@
 //| touched, so they stay even after MT4 no longer has those bars.    |
 //| Files are written to a temp name first and then renamed.          |
 //|                                                                    |
-//| Every second it sends the current prices and the last M1 bars to |
+//| Every SendEveryMs (0.25 s) it sends the prices and last M1 bars to|
 //| LiveUrl (FX Practice on the Mac, not through Dropbox). Allow the  |
 //| URL once: Tools -> Options -> Expert Advisors -> "Allow WebRequest |
 //| for listed URL" -> add http://<the Mac>.                           |
@@ -44,20 +44,21 @@
 //| set it to "All History" once (right click -> All History).        |
 //+------------------------------------------------------------------+
 #property strict
-#property version     "1.07"
+#property version     "1.08"
 #property copyright   "R（FX Practice 用の自作ツール）"
 #property description "FX Practice 用に、チャート（1 分足）を書き出す EA です。注文は一切出しません。"
 #property description "1 分足を MQL4\\Files\\fxp_bars\\銘柄\\ に書きます（時刻はサーバー時刻）。月ごとのファイル（銘柄_年.月.csv）は"
 #property description "1 日 1 回（昨日まで）、今日のファイル（銘柄_年.月.日.csv）は 1 時間ごと。古い月のファイルはそのまま残します。"
 #property description "このフォルダは Dropbox にあるので、Mac の FX Practice が自動で取り込みます。"
-#property description "1 秒ごとに今の価格を Mac の FX Practice へ直接送ります（ライブ用。LiveUrl を「WebRequest を許可する URL」に入れる）。"
+#property description "0.25 秒ごと（SendEveryMs）に今の価格を Mac の FX Practice へ直接送ります（ライブ用。LiveUrl を「WebRequest を許可する URL」に入れる）。"
 #property description "取引履歴も、起動したときと取引を建てた・決済したときに MQL4\\Files\\fx_practice_history.csv に書きます（口座履歴タブを「全履歴」にしておく）。"
 
 input string Symbols       = "USDJPY,EURUSD,GBPUSD,AUDUSD,USDCHF,USDCAD,NZDUSD,EURJPY,GBPJPY,XAUUSD,BTCUSD,JPN225"; // Symbols (comma separated)
 input string Suffix        = "";         // Symbol suffix (empty for TitanFX)
 input int    InitialMonths = 12;         // Also write this many past months (if missing)
 input int    CheckEveryMin = 1;          // Check for a new hour / new trades every N minutes
-input string LiveUrl       = "http://192.168.40.227/fxp/tick"; // Send the prices every second to FX Practice on the Mac (empty = off)
+input string LiveUrl       = "http://192.168.40.227/fxp/tick"; // Send the prices to FX Practice on the Mac (empty = off)
+input int    SendEveryMs   = 250;        // Send the prices every N milliseconds (only when they changed)
 input int    LiveMinutes   = 120;        // While sending fails, write the last N finished M1 bars to <symbol>_live.csv every minute (0 = off)
 input string Folder        = "fxp_bars"; // Output folder (in MQL4\Files)
 input string HistoryFile   = "fx_practice_history.csv"; // Account history file (in MQL4\Files). Empty = do not write
@@ -103,7 +104,7 @@ int OnInit()
    sendCount = 0;
    sendMs = 0;
    sendMaxMs = 0;
-   if(LiveUrl != "") EventSetMillisecondTimer(1000);
+   if(LiveUrl != "") EventSetMillisecondTimer(MathMax(100, SendEveryMs));
    else EventSetTimer(60);
    ExportAll();
    ExportLive();
@@ -132,7 +133,7 @@ void OnTimer()
    if(HistorySig() != historySig) ExportHistory();
 }
 
-// ---------------- prices every second, straight to the Mac (not through Dropbox) ----------------
+// ---------------- prices every SendEveryMs, straight to the Mac (not through Dropbox) ----------------
 // Body (text, one line each, times are server time in seconds):
 //   Q,<symbol>,<server time>,<bid>,<ask>
 //   B,<symbol>,<bar time>,<open>,<high>,<low>,<close>   the last 3 M1 bars, the last one is still forming

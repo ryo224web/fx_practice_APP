@@ -574,37 +574,86 @@ function setLive(on: boolean) {
     renderChart(false, true);
     renderQuotes();
   }
-  if (!on) for (const p of panes) p.setCountdown(null);
+  if (!on) {
+    for (const p of panes) p.setCountdown(null);
+    closeLiveStream();
+  } else openLiveStream();
 }
 
 /** ライブ: 直接届いた今の価格を見る（1 秒ごと） */
+type LiveMsg = { tick: { bid: number; bar: Bar | null } | null; latest: number | null };
+
+/** ライブ: 開発サーバーから価格を流してもらう接続（ライブの間だけ。価格が届いた瞬間に来る） */
+let liveStream: EventSource | null = null;
+let liveStreamSym = '';
+/** 最後に流れてきた時刻（途切れていれば 1 秒ごとに見に行く形に戻す） */
+let liveStreamAt = 0;
+
+function openLiveStream() {
+  if (liveStream && liveStreamSym === md.symbol) return;
+  closeLiveStream();
+  liveStreamSym = md.symbol;
+  const es = new EventSource(`/api/mt4/stream?sym=${md.symbol}`);
+  es.onmessage = (e) => {
+    liveStreamAt = Date.now();
+    void applyLive(JSON.parse(e.data) as LiveMsg);
+  };
+  // 切れたらブラウザが自分でつなぎ直す（サーバーを起動し直したときなど）
+  liveStream = es;
+}
+
+function closeLiveStream() {
+  liveStream?.close();
+  liveStream = null;
+  liveStreamAt = 0;
+}
+
+/** 1 秒ごと: 残り時間を進め、流してもらう接続を保つ。途切れていれば見に行く */
 let tickBusy = false;
 async function pollTick() {
   // 今の足の残り時間は、価格が届かない秒も進める
   for (const p of visiblePanes()) p.setCountdown(live ? Date.now() : null);
-  if (!live || tickBusy || traveling) return;
+  if (!live) return closeLiveStream();
+  openLiveStream();
+  if (tickBusy || traveling || Date.now() - liveStreamAt < 3000) return;
   tickBusy = true;
   try {
-    const mdNow = md;
     const res = await fetch(`/api/mt4/tick?sym=${md.symbol}`, { cache: 'no-store' }).catch(() => null);
     if (!res?.ok || !res.headers.get('content-type')?.includes('json')) return;
-    const r = (await res.json()) as { tick: { bid: number; bar: Bar | null } | null; latest: number | null };
-    if (!live || md !== mdNow) return;
-    // 新しく終わった足が取り込まれていれば、先に足して進む
-    if (r.latest && r.latest > (manifest?.symbols[md.symbol]?.titan?.to ?? -Infinity)) await pollBars();
-    const last = md.bid[md.bid.length - 1];
-    const bar = r.tick?.bar && last && r.tick.bar.t > last.t ? r.tick.bar : null;
-    if (!bar && !liveBar) return;
-    liveBar = bar;
-    renderChart(false, true);
-    if (bar && cursor === md.bid.length - 1) {
-      const spread = md.ask[cursor].c - md.bid[cursor].c;
-      $('#bid-big').textContent = formatPrice(bar.c, md.digits);
-      $('#ask-big').textContent = formatPrice(bar.c + spread, md.digits);
-    }
+    await applyLive((await res.json()) as LiveMsg);
   } finally {
     tickBusy = false;
   }
+}
+
+/** 届いた今の価格をチャートに出す（描くのは 1 コマに 1 回まで） */
+let liveFrame = 0;
+let barsBusy = false;
+async function applyLive(r: LiveMsg) {
+  if (!live || traveling) return;
+  const mdNow = md;
+  // 新しく終わった足が取り込まれていれば、先に足して進む
+  if (r.latest && r.latest > (manifest?.symbols[md.symbol]?.titan?.to ?? -Infinity) && !barsBusy) {
+    barsBusy = true;
+    await pollBars().finally(() => (barsBusy = false));
+  }
+  if (!live || md !== mdNow) return;
+  const last = md.bid[md.bid.length - 1];
+  const bar = r.tick?.bar && last && r.tick.bar.t > last.t ? r.tick.bar : null;
+  if (!bar && !liveBar) return;
+  liveBar = bar;
+  if (liveFrame) return;
+  liveFrame = requestAnimationFrame(() => {
+    liveFrame = 0;
+    if (!live) return;
+    renderChart(false, true);
+    const b = liveBar;
+    if (b && cursor === md.bid.length - 1) {
+      const spread = md.ask[cursor].c - md.bid[cursor].c;
+      $('#bid-big').textContent = formatPrice(b.c, md.digits);
+      $('#ask-big').textContent = formatPrice(b.c + spread, md.digits);
+    }
+  });
 }
 
 /** 最新の足まで進む（first: ライブを始めたとき。遠い過去にいれば「移動」と同じく読みながら進む） */
