@@ -1665,8 +1665,19 @@ async function peekEarlier() {
   }
 }
 
-/** 取引の辺りを見せる。読み込んでいる範囲より前なら、その辺りだけを読み込んで見せる */
-async function showTradeRange(ticket: number, from: number, to: number) {
+/** 行のダブルクリックで指定した取引を、リスクリワードの形でも見せるか（共通の設定の tradeRR） */
+let tradeRR = true;
+type TradeRR = { side: 'buy' | 'sell'; entry: number; sl: number | null; tp: number | null; closePrice: number | null };
+/** 今指定している取引のリスクリワード（スイッチを入れ直したときに出し直す） */
+let shownTradeRR: (TradeRR & { open: number; close: number }) | null = null;
+
+function applyTradeRR() {
+  const t = tradeRR ? shownTradeRR : null;
+  for (const p of panes) p.drawings.setTradeBox(t);
+}
+
+/** 取引の辺りを見せる。読み込んでいる範囲より前なら、その辺りだけを読み込んで見せる。rr があれば建値・S/L・T/P も出す */
+async function showTradeRange(ticket: number, from: number, to: number, rr?: TradeRR) {
   if (peek && from >= peek.bid[0].t && to <= peek.bid[peek.bid.length - 1].t) {
     // 今見ている過去の範囲の中の取引なら、読み直さずに動かすだけ
     peek.ticket = ticket;
@@ -1678,6 +1689,9 @@ async function showTradeRange(ticket: number, from: number, to: number) {
   for (const p of panes) p.overlay.setHighlight({ openTime: from, closeTime: to });
   highlightTicket = ticket;
   highlightRange = { from, to };
+  // S/L・T/P が 0 の記録は「無し」
+  shownTradeRR = rr ? { ...rr, sl: rr.sl || null, tp: rr.tp || null, open: from, close: to } : null;
+  applyTradeRR();
   for (const p of visiblePanes()) p.showTimeRange(from, to);
 }
 
@@ -1688,7 +1702,7 @@ async function showTradeRange(ticket: number, from: number, to: number) {
 async function showHistoryTrade(ticket: number, closeTime: number) {
   const h = shownAccount().history.find((x) => x.kind === 'trade' && x.ticket === ticket && x.closeTime === closeTime);
   if (!h || h.kind !== 'trade') return;
-  await showTradeRange(ticket, h.openTime, h.closeTime);
+  await showTradeRange(ticket, h.openTime, h.closeTime, { side: h.side, entry: h.openPrice, sl: h.sl, tp: h.tp, closePrice: h.closePrice });
   if (!panes[0].overlay.showHistory) $('#toggle-history').click();
 }
 
@@ -1705,7 +1719,9 @@ async function jumpToTrade(ticket: number) {
   if (openUtc < now + 60_000) {
     // 決済がまだ先なら、今の時刻までを見せる（先の足はまだ無い）
     const closeUtc = t.closeServer === null ? now : Math.min(mt4ToUtc(t.closeServer), now);
-    await showTradeRange(ticket, openUtc, closeUtc);
+    // 決済がまだ先なら、決済は出さない（保有中と同じ）
+    const closed = t.closeServer !== null && mt4ToUtc(t.closeServer) <= now;
+    await showTradeRange(ticket, openUtc, closeUtc, { side: t.side, entry: t.openPrice, sl: t.sl, tp: t.tp, closePrice: closed ? t.closePrice : null });
     return;
   }
   await travel(Math.floor(openUtc / 60_000) * 60_000 - 60_000);
@@ -2866,6 +2882,11 @@ function setupControls() {
 
   playBtn.addEventListener('click', () => setPlaying(!playing));
   $('#peek-exit').addEventListener('click', () => clearTradeHighlight());
+  $<HTMLInputElement>('#trade-rr').addEventListener('change', (e) => {
+    tradeRR = (e.target as HTMLInputElement).checked;
+    applyTradeRR();
+    void saveAppSettings({ tradeRR });
+  });
   $('#live').addEventListener('click', () => {
     if (live) return setLive(false);
     if (!manifest?.symbols[md.symbol]?.titan) toast('この銘柄は MT4 の 1 分足がまだ届いていないので、手元のデータの最後まで進むだけです');
@@ -3240,6 +3261,8 @@ let highlightRange: { from: number; to: number } | null = null;
 function clearTradeHighlight() {
   exitPeek();
   if (highlightTicket === null) return;
+  shownTradeRR = null;
+  applyTradeRR();
   highlightTicket = null;
   highlightRange = null;
   for (const p of panes) p.overlay.setHighlight(null);
@@ -3440,6 +3463,8 @@ async function start() {
   keymap = settings.keymap ?? state.keymap;
   styleBarPos = settings.styleBarPos ?? null;
   countdownStyle = settings.countdown ?? DEFAULT_COUNTDOWN;
+  tradeRR = settings.tradeRR ?? true;
+  $<HTMLInputElement>('#trade-rr').checked = tradeRR;
   for (const p of panes) p.applyCountdownStyle();
   palette = settings.palette ?? DEFAULT_PALETTE;
   shotTfs = (settings.shotTfs as Timeframe[] | undefined)?.filter((tf) => tf in TIMEFRAMES) ?? DEFAULT_SHOT_TFS;

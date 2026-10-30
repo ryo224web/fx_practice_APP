@@ -37,6 +37,8 @@ export const KEY_COMMANDS: KeyCommand[] = [
   { id: 'tool:fibo', label: 'フィボナッチ', group: '描画' },
   { id: 'tool:fiboexp', label: 'フィボナッチ・エクスパンション', group: '描画' },
   { id: 'tool:text', label: 'テキスト', group: '描画' },
+  { id: 'tool:rrbuy', label: 'リスクリワード（買い）', group: '描画' },
+  { id: 'tool:rrsell', label: 'リスクリワード（売り）', group: '描画' },
   { id: 'magnet', label: 'マグネットを入れる・切る', group: '描画' },
   { id: 'shots', label: 'スクショ（H1・M15・M5・M1 の 4 枚）', group: 'チャート' },
   { id: 'newOrder', label: '新規注文', group: '注文' },

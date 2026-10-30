@@ -153,6 +153,17 @@ td.sell {
 }
 
 /* 読み込んでいる範囲より前の取引を見ている間の帯 */
+#trade-rr-opt {
+  margin-left: auto;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
 #peek-banner {
   position: absolute;
   top: 6px;

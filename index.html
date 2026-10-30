@@ -25,6 +25,8 @@
         <button data-tool="text" title="テキスト。置きたい所をクリックして文字を打つ（Enter で決定・Shift+Enter で改行・Esc でやめる。ダブルクリックで打ち直す）">A</button>
         <button data-tool="fibo" title="フィボナッチ・リトレースメント（F）">FR</button>
         <button data-tool="fiboexp" title="フィボナッチ・エクスパンション（E。A→B をドラッグし、もう 1 回クリックして C を置く）">FE</button>
+        <button data-tool="rrbuy" title="リスクリワード（買い）。エントリーしたい所をクリックして置き、つまみで利確・損切・終わりを動かす">RR買</button>
+        <button data-tool="rrsell" title="リスクリワード（売り）。エントリーしたい所をクリックして置き、つまみで利確・損切・終わりを動かす">RR売</button>
         <button id="shots-btn" title="スクショ: 今のチャートを選んだ時間足（初めは H1・M15・M5・M1）で撮って保存する（ダブルクリックで撮る時間足を選ぶ・右クリックで保存先のフォルダを開く）">📷</button>
         <button id="magnet-btn" aria-pressed="false" title="マグネット（M）。点を置く・動かすとき、近くの足の始値・高値・安値・終値に吸い付ける">🧲</button>
         <button id="fibo-levels-btn" title="フィボナッチ・エクスパンションの水準を足す・消す・変える（図形のダブルクリックでも開く）">水準</button>
@@ -111,6 +113,7 @@
         <button data-tab="stats">成績</button>
         <button data-tab="mt4">MT4 履歴</button>
         <button data-tab="memo" title="このプロジェクトのメモ（何を検証しているか・気づいたことなど）">メモ</button>
+        <label id="trade-rr-opt" title="口座履歴・MT4 履歴の行をダブルクリックしたとき、その取引の建値・S/L・T/P をリスクリワードの形でチャートに出す"><input type="checkbox" id="trade-rr" checked /> 取引に RR</label>
       </nav>
     </section>
 

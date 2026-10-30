@@ -443,6 +443,7 @@ export class ChartPane {
     this.mapper.times = times;
     this.mapper.size = TIMEFRAMES[this.tf] * 60_000;
     this.drawings.tf = this.tf;
+    this.drawings.pip = this.host.pip();
     const k = lastLE(agg.starts, cursor);
     const cur = mergeBars(this.host.bid(), agg.starts[k], cursor, agg.bars[k].t);
     // ライブのできかけの足: 今の足と同じ区切りなら今の足に含め、次の区切りなら 1 本足す

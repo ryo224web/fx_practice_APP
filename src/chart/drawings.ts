@@ -18,12 +18,14 @@ import type {
 } from 'lightweight-charts';
 import type { TimeMapper } from './mapper';
 
-export type DrawingKind = 'hline' | 'vline' | 'trend' | 'poly' | 'channel' | 'rect' | 'fibo' | 'fiboexp' | 'text';
+export type DrawingKind = 'hline' | 'vline' | 'trend' | 'poly' | 'channel' | 'rect' | 'fibo' | 'fiboexp' | 'text' | 'rrbuy' | 'rrsell';
 
 export interface Drawing {
   id: string;
   kind: DrawingKind;
-  /** 時刻（UTC ミリ秒）と価格。水平線・垂直線は 1 点、チャネルは 3 点（3 点目は平行線の位置）、エクスパンションは 3 点（A・B・C）、ポリラインは 2 点以上、ほかは 2 点 */
+  /**
+   * 時刻（UTC ミリ秒）と価格。リスクリワード（買い・売り）は 3 点: [0] エントリー（始まりの時刻と価格）、[1] 利確（終わりの時刻と価格）、[2] 損切（価格。時刻は [0] と同じ）。
+   * 水平線・垂直線は 1 点、チャネルは 3 点（3 点目は平行線の位置）、エクスパンションは 3 点（A・B・C）、ポリラインは 2 点以上、ほかは 2 点 */
   points: { t: number; p: number }[];
   /** 描いた時間足以外のとき（以前の保存）の色 */
   color: string;
@@ -165,6 +167,8 @@ export const DRAWING_LABELS: Record<DrawingKind, string> = {
   fibo: 'フィボナッチ',
   fiboexp: 'フィボナッチ・エクスパンション',
   text: 'テキスト',
+  rrbuy: 'リスクリワード（買い）',
+  rrsell: 'リスクリワード（売り）',
 };
 
 const COLORS: Record<DrawingKind, string> = {
@@ -177,7 +181,18 @@ const COLORS: Record<DrawingKind, string> = {
   fibo: '#e5a50a',
   fiboexp: '#e5a50a',
   text: '#e6edf3',
+  rrbuy: '#9aa4b2',
+  rrsell: '#9aa4b2',
 };
+
+/** リスクリワードの図形か */
+export const isRR = (kind: DrawingKind) => kind === 'rrbuy' || kind === 'rrsell';
+/** リスクリワードの利益側・損失側の塗りと文字の札の色（TradingView のロング・ショートポジションに近い色） */
+const RR_PROFIT = '38, 166, 154';
+const RR_LOSS = '239, 83, 80';
+/** 置いたときの、エントリーから損切までの高さ（px。利確はその 2 倍）と、横の長さ（足の本数） */
+const RR_PLACE_RISK_PX = 40;
+const RR_PLACE_BARS = 40;
 
 /** MT4 の既定と同じ。0 が 2 点目、100 が 1 点目（「水準」で変えられる。これは初期値） */
 export const FIBO_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 1, 1.618];
@@ -209,12 +224,28 @@ interface Px {
   y: number;
 }
 
+/** 行のダブルクリックで指定した取引のリスクリワード（DrawingManager.tradeBox） */
+interface TradeBox {
+  d: Drawing;
+  hasTp: boolean;
+  hasSl: boolean;
+  /** 実際の決済（時刻 UTC・価格）。保有中なら無い */
+  close?: { t: number; p: number };
+}
+
 function onePoint(kind: DrawingKind) {
   return kind === 'hline' || kind === 'vline' || kind === 'text';
 }
 
-/** つまみの位置。長方形は 4 隅（2 = A の時刻・B の価格、3 = B の時刻・A の価格）、ほかは点そのもの */
+/**
+ * つまみの位置。長方形は 4 隅（2 = A の時刻・B の価格、3 = B の時刻・A の価格）。
+ * リスクリワードは 0 = エントリー（左端）、1 = 利確、2 = 損切（どちらも左端）、3 = 終わり（右端。エントリーの高さ）。ほかは点そのもの
+ */
 function handlesOf(kind: DrawingKind, pts: Px[]): Px[] {
+  if (isRR(kind) && pts.length >= 3) {
+    const [a, b, c] = pts;
+    return [a, { x: a.x, y: b.y }, { x: a.x, y: c.y }, { x: b.x, y: a.y }];
+  }
   if (kind !== 'rect' || pts.length < 2) return pts;
   const [a, b] = pts;
   return [a, b, { x: a.x, y: b.y }, { x: b.x, y: a.y }];
@@ -305,7 +336,10 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     window.addEventListener('mousemove', (e) => this.onMove(e));
     // テキストにマウスを乗せている間は、描いた日付を出す
     el.addEventListener('mousemove', (e) => this.onHover(e));
-    el.addEventListener('mouseleave', () => this.setHover(null));
+    el.addEventListener('mouseleave', () => {
+      this.setHover(null);
+      this.setTradeHover(false);
+    });
     window.addEventListener('mouseup', (e) => this.onUp(e));
     el.addEventListener('contextmenu', (e) => !inEditor(e) && this.onContext(e), true);
     el.addEventListener('dblclick', (e) => !inEditor(e) && this.onDouble(e), true);
@@ -320,9 +354,30 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     this.refresh();
   }
 
+  /** 指定した取引のリスクリワードの上にマウスがあるか（札はそのときだけ出す。いつも出すと足に重なる） */
+  private tradeHover = false;
+
+  private setTradeHover(on: boolean) {
+    if (on === this.tradeHover) return;
+    this.tradeHover = on;
+    this.requestUpdate();
+  }
+
   private onHover(e: MouseEvent) {
-    if (this.drag || this.placing || this.polyId || this.editingId) return this.setHover(null);
     const r = this.el.getBoundingClientRect();
+    const tb = this.tradeBox;
+    if (tb) {
+      const pts = tb.d.points.map((pt) => this.toPx(pt));
+      const mx = e.clientX - r.left;
+      const my = e.clientY - r.top;
+      if (pts.every((p) => p)) {
+        const [a, b, c] = pts as Px[];
+        const x0 = Math.min(a.x, b.x);
+        const x1 = Math.max(a.x, b.x, x0 + 40);
+        this.setTradeHover(mx >= x0 - HIT && mx <= x1 + HIT && my >= Math.min(a.y, b.y, c.y) - HIT && my <= Math.max(a.y, b.y, c.y) + HIT);
+      }
+    }
+    if (this.drag || this.placing || this.polyId || this.editingId) return this.setHover(null);
     const hit = this.hitDrawing({ x: e.clientX - r.left, y: e.clientY - r.top });
     const d = hit && this.drawings.find((x) => x.id === hit.id);
     this.setHover(d && d.kind === 'text' && d.created ? d.id : null);
@@ -415,7 +470,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     for (const d of this.drawings) {
       if (d.kind !== 'vline' && d.id !== this.selectedId) continue;
       if (d.kind === 'hline' || d.kind === 'text') continue;
-      for (const pt of d.kind === 'vline' ? d.points.slice(0, 1) : d.points) {
+      for (const pt of d.kind === 'vline' || isRR(d.kind) ? d.points.slice(0, isRR(d.kind) ? 2 : 1) : d.points) {
         const x = this.mapper.toX(ts, pt.t);
         if (x == null) continue;
         views.push({
@@ -760,6 +815,202 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     ta.addEventListener('mousedown', (e) => e.stopPropagation());
   }
 
+  /**
+   * 口座履歴・MT4 履歴の行のダブルクリックで指定した取引を、リスクリワードの形で見せる（記録の建値・S/L・T/P と、実際の決済）。
+   * 図形とは別（保存しない・つかめない）。S/L・T/P が無い取引は、その側を塗らない
+   */
+  tradeBox: TradeBox | null = null;
+
+  setTradeBox(t: { side: 'buy' | 'sell'; entry: number; sl: number | null; tp: number | null; open: number; close: number; closePrice: number | null } | null) {
+    this.tradeBox = t && {
+      d: {
+        id: 'trade-box',
+        kind: t.side === 'buy' ? 'rrbuy' : 'rrsell',
+        points: [
+          { t: t.open, p: t.entry },
+          { t: Math.max(t.close, t.open), p: t.tp ?? t.entry },
+          { t: t.open, p: t.sl ?? t.entry },
+        ],
+        color: COLORS.rrbuy,
+      },
+      hasTp: t.tp !== null,
+      hasSl: t.sl !== null,
+      close: t.closePrice === null ? undefined : { t: t.close, p: t.closePrice },
+    };
+    this.requestUpdate();
+  }
+
+  /** 1 pip の値幅（リスクリワードの pips に使う。チャートが銘柄ごとに決める） */
+  pip = 0.01;
+
+  /**
+   * リスクリワード（TradingView のロング・ショートポジションと同じ考え）。エントリーから利確までを緑、損切までを赤で塗り、
+   * 利確・損切の価格と pips、リスクリワード比を札で出す。始まりの足より後の足が利確か損切に届いていれば、届いた所まで濃く塗って結果を出す
+   * （同じ足で両方に届いたら、約定と同じく陽線は安値が先・陰線は高値が先とみなす）。まだ届いていなければ、最後の足での損益を出す
+   */
+  private drawRR(ctx: CanvasRenderingContext2D, d: Drawing, pts: Px[], sel: boolean, h: number, trade?: TradeBox) {
+    if (!this.series || !this.chart) return;
+    const [a, b, c] = pts;
+    const buy = d.kind === 'rrbuy';
+    const [entry, tp, sl] = [d.points[0].p, d.points[1].p, d.points[2].p];
+    const hasTp = trade?.hasTp ?? true;
+    const hasSl = trade?.hasSl ?? true;
+    const x0 = Math.min(a.x, b.x);
+    // 同じ足のうちに決済した取引も、札が読めるだけの幅にする
+    const x1 = Math.max(a.x, b.x, x0 + (trade ? 40 : 0));
+    const zone = (rgb: string, alpha: number, xa: number, xb: number, ya: number, yb: number) => {
+      ctx.fillStyle = `rgba(${rgb}, ${alpha})`;
+      ctx.fillRect(xa, Math.min(ya, yb), xb - xa, Math.abs(yb - ya));
+    };
+    ctx.setLineDash([]);
+    // 行のダブルクリックで指定した取引は、もっと薄く（取引の間の足がよく見えるように）
+    const base = trade ? 0.06 : 0.1;
+    zone(RR_PROFIT, base, x0, x1, a.y, b.y);
+    zone(RR_LOSS, base, x0, x1, a.y, c.y);
+    // 結果: 始まりの足の次の足から、終わりの足まで（チャートにある足 = 今の時刻まで）
+    const i0 = Math.floor(this.mapper.toLogical(d.points[0].t)) + 1;
+    const i1 = Math.floor(this.mapper.toLogical(Math.max(d.points[0].t, d.points[1].t)));
+    let result: { win: boolean; i: number } | null = null;
+    let lastClose: number | null = null;
+    let lastI = i0 - 1;
+    // 実際の取引は、記録の決済をそのまま結果にする（足から計算しない。手で決済した取引もあるため）
+    for (let i = trade?.close ? i1 + 1 : i0; i <= i1; i++) {
+      const bar = this.series.dataByIndex(i) as { open?: number; high?: number; low?: number; close?: number } | null;
+      if (!bar || bar.high === undefined || bar.low === undefined || bar.open === undefined || bar.close === undefined) break;
+      const hitTp = buy ? bar.high >= tp : bar.low <= tp;
+      const hitSl = buy ? bar.low <= sl : bar.high >= sl;
+      lastClose = bar.close;
+      lastI = i;
+      if (hitTp && hitSl) {
+        // 陽線は安値が先（買いなら損切が先）、陰線は高値が先
+        const lowFirst = bar.close >= bar.open;
+        result = { win: buy ? !lowFirst : lowFirst, i };
+        break;
+      }
+      if (hitTp || hitSl) {
+        result = { win: hitTp, i };
+        break;
+      }
+    }
+    const ts = this.chart.timeScale();
+    const xOf = (i: number) => ts.logicalToCoordinate(i as never) ?? x1;
+    const closed = trade?.close;
+    const closeY = closed ? this.series.priceToCoordinate(closed.p) : null;
+    const closePips = closed ? (buy ? closed.p - entry : entry - closed.p) / this.pip : 0;
+    if (closed && closeY !== null) {
+      // 実際の決済: 建値から決済へ点線を引く（濃く塗ると、損切で終わった取引は四角がまるごと赤くなり足が見えにくい）
+      const xc = this.mapper.toX(ts, closed.t) ?? x1;
+      ctx.strokeStyle = `rgb(${closePips >= 0 ? RR_PROFIT : RR_LOSS})`;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(xc, closeY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else if (result) {
+      // 届いた足まで濃く塗り、エントリーから届いた所へ点線を引く
+      const xr = Math.min(x1, xOf(result.i));
+      if (result.win) zone(RR_PROFIT, 0.2, x0, xr, a.y, b.y);
+      else zone(RR_LOSS, 0.2, x0, xr, a.y, c.y);
+      ctx.strokeStyle = `rgb(${result.win ? RR_PROFIT : RR_LOSS})`;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(xr, result.win ? b.y : c.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else if (lastClose !== null) {
+      const yc = this.series.priceToCoordinate(lastClose);
+      if (yc !== null) {
+        const up = buy ? lastClose >= entry : lastClose <= entry;
+        zone(up ? RR_PROFIT : RR_LOSS, 0.2, x0, Math.min(x1, xOf(lastI)), a.y, yc);
+      }
+    }
+    // エントリーの線と枠
+    ctx.lineWidth = sel ? 2 : 1;
+    ctx.strokeStyle = '#9aa4b2';
+    ctx.beginPath();
+    ctx.moveTo(x0, a.y);
+    ctx.lineTo(x1, a.y);
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    for (const [rgb, y, on] of [
+      [RR_PROFIT, b.y, hasTp],
+      [RR_LOSS, c.y, hasSl],
+    ] as const) {
+      if (!on) continue;
+      ctx.strokeStyle = `rgba(${rgb}, 0.6)`;
+      ctx.beginPath();
+      ctx.moveTo(x0, y);
+      ctx.lineTo(x1, y);
+      ctx.stroke();
+    }
+    // 札
+    const pips = (v: number) => (v / this.pip).toFixed(1);
+    const reward = Math.abs(tp - entry);
+    const risk = Math.abs(entry - sl);
+    const rr = risk > 0 ? reward / risk : 0;
+    ctx.font = '600 11px system-ui, sans-serif';
+    // 札は右端（足に重ならないように。四角の右端の内側に右をそろえる）
+    const tag = (text: string, x: number, y: number, bg: string) => {
+      const tw = ctx.measureText(text).width;
+      const bw = tw + 12;
+      const bx = Math.max(2, x - bw - 4);
+      ctx.fillStyle = bg;
+      ctx.beginPath();
+      ctx.roundRect(bx, y - 9, bw, 18, 3);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, bx + 6, y);
+    };
+    const fmt = (p: number) => p.toFixed(this.digits);
+    if (trade) {
+      // 指定した取引の札は、四角の上にマウスを乗せたときだけ
+      if (!this.tradeHover) return;
+      // 指定した取引: 札は四角の外（利確の線の外側・損切の線の外側）に、左端をそろえて出す。取引の間の足は利確と損切の間にあるので、
+      // その外は空いている（中や右端に出すと足に重なった）。建値と結果の札は利確の札のさらに外
+      // 外に場所が無ければ（チャートの上端・下端に近い）、内側に出す
+      const outside = (y: number, k: number) => {
+        const dir = y < a.y ? -1 : 1;
+        const room = dir < 0 ? y : h - y;
+        const span = 14 + 20 * (hasTp && y === b.y ? 1 : k) + 10;
+        return y + (room >= span ? dir : -dir) * (14 + 20 * k);
+      };
+      // 線が画面の外（上端より上・下端より下）でも、札は画面の中に収める（上は凡例・帯の下から）。n はその側に並べる札の数、k は内側から何番目か
+      const left = (text: string, y: number, bg: string, n = 1, k = 0) => {
+        const tw = ctx.measureText(text).width;
+        const top = 40 + 20 * (n - 1 - k);
+        const bottom = h - 12 - 20 * (n - 1 - k);
+        tag(text, x0 + tw + 16, Math.max(top, Math.min(bottom, y)), bg);
+      };
+      const tpY = hasTp ? b.y : a.y + (buy ? -1 : 1);
+      const n = hasTp ? 2 : 1;
+      if (hasTp) left(`利確 ${fmt(tp)}  +${pips(reward)} pips`, outside(b.y, 0), `rgba(${RR_PROFIT}, 0.8)`, n, 0);
+      if (hasSl) left(`損切 ${fmt(sl)}  -${pips(risk)} pips`, outside(c.y, 0), `rgba(${RR_LOSS}, 0.8)`);
+      let info = `${buy ? '買い' : '売り'} ${fmt(entry)}${hasTp && hasSl ? `  RR ${rr.toFixed(2)}` : ''}`;
+      if (closed) info += `  → 決済 ${closePips >= 0 ? '+' : ''}${closePips.toFixed(1)} pips`;
+      const bg = closed ? `rgba(${closePips >= 0 ? RR_PROFIT : RR_LOSS}, 0.8)` : 'rgba(76, 82, 94, 0.9)';
+      left(info, outside(tpY, hasTp ? 1 : 0), bg, n, n - 1);
+      return;
+    }
+    const mx = x1;
+    const out = (y: number, away: number) => y + (away < y ? -14 : 14);
+    if (hasTp) tag(`利確 ${fmt(tp)}  +${pips(reward)} pips`, mx, out(b.y, a.y), `rgba(${RR_PROFIT}, 0.85)`);
+    if (hasSl) tag(`損切 ${fmt(sl)}  -${pips(risk)} pips`, mx, out(c.y, a.y), `rgba(${RR_LOSS}, 0.85)`);
+    let mid = `${buy ? '買い' : '売り'} ${fmt(entry)}${hasTp && hasSl ? `  RR ${rr.toFixed(2)}` : ''}`;
+    if (closed) mid += `  → 決済 ${closePips >= 0 ? '+' : ''}${closePips.toFixed(1)} pips`;
+    else if (result) mid += result.win ? '  → 利確' : '  → 損切';
+    else if (lastClose !== null) {
+      const now = (buy ? lastClose - entry : entry - lastClose) / this.pip;
+      mid += `  今 ${now >= 0 ? '+' : ''}${now.toFixed(1)} pips`;
+    }
+    const midBg = closed ? `rgba(${closePips >= 0 ? RR_PROFIT : RR_LOSS}, 0.85)` : result ? `rgba(${result.win ? RR_PROFIT : RR_LOSS}, 0.85)` : 'rgba(76, 82, 94, 0.9)';
+    tag(mid, mx, a.y, midBg);
+  }
+
   /** マグネット（ツールバーの 🧲）。点を置く・動かすとき、近くの足の始値・高値・安値・終値に吸い付ける */
   magnet = false;
 
@@ -857,6 +1108,15 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
           hit = (inY && (Math.abs(px.x - x1) <= HIT || Math.abs(px.x - x2) <= HIT)) || (inX && (Math.abs(px.y - y1) <= HIT || Math.abs(px.y - y2) <= HIT));
           break;
         }
+        case 'rrbuy':
+        case 'rrsell': {
+          // 利益側・損失側の四角の中ならどこでもつかめる（TradingView と同じ）
+          const c = pts[2] as Px;
+          const [x1, x2] = [Math.min(a.x, b.x), Math.max(a.x, b.x)];
+          const [y1, y2] = [Math.min(b.y, c.y), Math.max(b.y, c.y)];
+          hit = px.x >= x1 - HIT && px.x <= x2 + HIT && px.y >= y1 - HIT && px.y <= y2 + HIT;
+          break;
+        }
         case 'fibo': {
           // A→B の線か、水準の数値でつかむ（水準の線の上ではつかまない。線の近くの足や図形を触れるように）
           hit = distToSegment(px, a, b) <= HIT || this.onFiboLabel(d.id, px);
@@ -918,6 +1178,36 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       e.stopPropagation();
       e.preventDefault();
       this.refresh();
+      return;
+    }
+
+    if (this.tool && isRR(this.tool) && this.series) {
+      // リスクリワードは 1 回のクリックで置く（損切は 40px、利確はその 2 倍。横は 40 本。あとでつまみで変える）。
+      // マグネットは効かせない（足の高値・安値に吸い付くと、置きたい所に置けない）
+      const sm = m;
+      const y = this.series.priceToCoordinate(sm.p);
+      const dir = this.tool === 'rrbuy' ? 1 : -1;
+      const sl = y === null ? null : this.series.coordinateToPrice(y + dir * RR_PLACE_RISK_PX);
+      const tp = y === null ? null : this.series.coordinateToPrice(y - dir * 2 * RR_PLACE_RISK_PX);
+      if (sl === null || tp === null) return;
+      const start = this.mapper.toTime(sm.l);
+      const d: Drawing = {
+        id: crypto.randomUUID(),
+        kind: this.tool,
+        points: [
+          { t: start, p: sm.p },
+          { t: this.mapper.toTime(sm.l + RR_PLACE_BARS), p: tp },
+          { t: start, p: sl },
+        ],
+        color: COLORS[this.tool],
+        tf: this.tf,
+        created: Date.now(),
+      };
+      this.drawings.push(d);
+      this.selectedId = d.id;
+      e.stopPropagation();
+      e.preventDefault();
+      this.finishCreate();
       return;
     }
 
@@ -1006,6 +1296,14 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       // 水平線・垂直線は点が 1 つなので、つかんで動かすときもマグネットで吸い付ける
       if (drag.handle === -1 && onePoint(d.kind) && d.kind !== 'text' && this.magnet && sm !== m) return { t: this.mapper.toTime(sm.l), p: sm.p };
       if (drag.handle === -1) return { t: this.mapper.toTime(o.l + dl), p: o.p + dp };
+      // リスクリワード: 0 = エントリー（価格と始まりの時刻。損切の点も同じ時刻）、1 = 利確の価格、2 = 損切の価格、3 = 終わりの時刻。
+      // マグネットは効かせない
+      if (isRR(d.kind)) {
+        const keep = { t: this.mapper.toTime(o.l), p: o.p };
+        if (drag.handle === 0) return k === 1 ? keep : { t: this.mapper.toTime(m.l), p: k === 0 ? m.p : o.p };
+        if (drag.handle === 3) return k === 1 ? { t: this.mapper.toTime(m.l), p: o.p } : keep;
+        return k === drag.handle ? { t: keep.t, p: m.p } : keep;
+      }
       // 長方形の残りの 2 隅: 2 = (A の時刻, B の価格)、3 = (B の時刻, A の価格)
       if (d.kind === 'rect' && drag.handle >= 2) {
         const timeOf = drag.handle === 2 ? 0 : 1;
@@ -1086,6 +1384,16 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
             const pts = d.points.map((pt) => this.toPx(pt));
             if (pts.some((p) => !p)) continue;
             this.drawOne(ctx, d, pts as Px[], mediaSize.width, mediaSize.height);
+          }
+          // 行のダブルクリックで指定した取引のリスクリワード（保存しない。つかめない）
+          const tb = this.tradeBox;
+          if (tb) {
+            const pts = tb.d.points.map((pt) => this.toPx(pt));
+            if (!pts.some((p) => !p)) {
+              ctx.save();
+              this.drawRR(ctx, tb.d, pts as Px[], false, mediaSize.height, tb);
+              ctx.restore();
+            }
           }
         });
       },
@@ -1235,6 +1543,10 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
         break;
       }
+      case 'rrbuy':
+      case 'rrsell':
+        this.drawRR(ctx, d, pts, sel, h);
+        break;
       case 'fibo': {
         ctx.setLineDash([4, 3]);
         line(a.x, a.y, b.x, b.y);
