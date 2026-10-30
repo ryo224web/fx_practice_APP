@@ -2,7 +2,7 @@
 // 保存先は開発サーバー（Dropbox の settings.json。server/projectStore.ts）なので、どの Mac でも同じ。
 // 届かなければブラウザの中の控えを使う。
 
-import type { NoteItem } from './ui/quickNotes';
+import type { NoteBook, NoteItem } from './ui/quickNotes';
 
 export interface AppSettings {
   /** キーボードのショートカット（働き → キー。無ければ初期値。src/ui/keys.ts） */
@@ -10,7 +10,10 @@ export interface AppSettings {
   /** スクショ（📷）で撮る時間足 */
   shotTfs?: string[];
   /** 簡易メモ（ツールバーの「📝 メモ」。階層つきの箇条書き） */
+  /** 以前の 1 枚だけの簡易メモ（2026-10-30 から notebook。読むだけ） */
   quickNotes?: NoteItem[];
+  /** 簡易メモ（フォルダとメモ） */
+  notebook?: NoteBook;
   /** 図形のマグネット（足の始値・高値・安値・終値に吸い付ける）を入れているか */
   magnet?: boolean;
   /** 図形の色を変えるときに右上の欄に並べる色 */
