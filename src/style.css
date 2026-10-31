@@ -1242,6 +1242,12 @@ th.sortable:hover {
 .quick-notes .qn-note.on {
   background: rgba(229, 165, 10, 0.18);
 }
+.quick-notes .qn-note.qn-drop-before {
+  box-shadow: inset 0 2px 0 var(--accent, #4493f8);
+}
+.quick-notes .qn-note.qn-drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent, #4493f8);
+}
 .quick-notes .qn-title {
   overflow: hidden;
   font-weight: 600;

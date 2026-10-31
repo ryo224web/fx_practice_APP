@@ -2,7 +2,7 @@
 // （保存先の settings.json の notebook。2026-10-30 に 1 枚だけの quickNotes から変えた。以前のメモは「メモ」として 1 枚目に入る）。
 // - フォルダ: 左の列。「すべて」と、フォルダの木（中にフォルダを作れる。▾ でたたむ）。右クリックで名前を変える・中にフォルダ・削除
 //   （削除しても中のメモとフォルダは 1 つ上へ移す。消えない）。メモやフォルダをドラッグしてフォルダに落とすと移る（「すべて」に落とすとフォルダの外）
-// - メモの一覧: 真ん中の列。新しく書き換えた順。1 行目が題名。＋ で今のフォルダに新しいメモ。右クリックで削除。空のまま離れたメモは消す
+// - メモの一覧: 真ん中の列。並べ方はドラッグで変える（メモの上半分に落とすとその上、下半分なら下。新しいメモは一番上）。1 行目が題名。＋ で今のフォルダに新しいメモ。右クリックで削除。空のまま離れたメモは消す
 // - 本文: 右の列。階層つきの箇条書き。Enter で次の行、Tab で字下げ、Shift+Tab で戻す、空の行で Backspace を押すと消す、↑↓ で行を移る。
 //   下に階層がある行は、左の ▾ でたたむ
 // 欄の外をクリックするか Esc で閉じる。プロジェクトごとのメモは、ターミナルの「メモ」タブ（state.note）
@@ -32,6 +32,8 @@ export interface Note {
   items: NoteItem[];
   /** 最後に書き換えた日時（UTC ミリ秒） */
   updated: number;
+  /** 一覧の並び（小さいほど上。ドラッグで変える）。無ければ（以前のメモ）書き換えた新しい順 */
+  order?: number;
 }
 
 export interface NoteBook {
@@ -72,6 +74,8 @@ function hiddenRows(items: NoteItem[]): Set<number> {
 }
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+/** 一覧の並び（並びを決めていないメモは、決めたメモの前に新しい順） */
+const byOrder = (a: Note, b: Note) => (a.order ?? -Infinity) - (b.order ?? -Infinity) || b.updated - a.updated;
 const isEmpty = (n: Note) => n.items.every((x) => !x.text.trim());
 const titleOf = (n: Note) => n.items.find((x) => x.text.trim())?.text.trim() ?? '新規メモ';
 const previewOf = (n: Note) => n.items.filter((x) => x.text.trim()).slice(1, 3).map((x) => x.text.trim()).join(' ');
@@ -139,7 +143,7 @@ export function setupQuickNotes(button: HTMLElement, load: () => NoteBook, save:
       .join('');
 
   const render = (focusId?: string, caret = -1) => {
-    const list = notesIn(folder).sort((a, b) => b.updated - a.updated);
+    const list = notesIn(folder).sort(byOrder);
     const folderName = folder === null ? 'すべてのメモ' : (book.folders.find((f) => f.id === folder)?.name ?? '');
     const items = note?.items ?? [];
     const hidden = hiddenRows(items);
@@ -188,8 +192,10 @@ export function setupQuickNotes(button: HTMLElement, load: () => NoteBook, save:
 
   const open = () => {
     book = structuredClone(load());
+    // 並びを決めていないメモ（以前のメモ）があれば、今の並び（新しい順）で全部に並びを付ける（新しいメモをその上に置けるように）
+    if (book.notes.some((n) => n.order === undefined)) book.notes.sort(byOrder).forEach((n, i) => (n.order = i));
     folder = book.openFolder && book.folders.some((f) => f.id === book.openFolder) ? book.openFolder : null;
-    note = book.notes.find((n) => n.id === book.openNote) ?? notesIn(folder).sort((a, b) => b.updated - a.updated)[0] ?? null;
+    note = book.notes.find((n) => n.id === book.openNote) ?? notesIn(folder).sort(byOrder)[0] ?? null;
     const r = button.getBoundingClientRect();
     const w = Math.min(820, window.innerWidth - 16);
     panel.style.top = `${r.bottom + 4}px`;
@@ -212,6 +218,8 @@ export function setupQuickNotes(button: HTMLElement, load: () => NoteBook, save:
 
   const addNote = () => {
     const n = newNote(folder);
+    // 新しいメモは一番上
+    n.order = Math.min(0, ...book.notes.map((x) => x.order ?? 0)) - 1;
     book.notes.push(n);
     openNote(n);
     render(n.items[0].id);
@@ -286,7 +294,7 @@ export function setupQuickNotes(button: HTMLElement, load: () => NoteBook, save:
     const fr = t.closest<HTMLElement>('[data-folder]');
     if (fr) {
       folder = fr.dataset.folder || null;
-      const first = notesIn(folder).sort((a, b) => b.updated - a.updated)[0] ?? null;
+      const first = notesIn(folder).sort(byOrder)[0] ?? null;
       openNote(first);
       return render();
     }
@@ -326,16 +334,47 @@ export function setupQuickNotes(button: HTMLElement, load: () => NoteBook, save:
     else if (t.dataset.folder) dragging = { kind: 'folder', id: t.dataset.folder };
     e.dataTransfer?.setData('text/plain', '');
   });
+  /** メモの上に落とすときの位置（上半分ならその上、下半分なら下） */
+  const dropAt = (e: DragEvent): { row: HTMLElement; after: boolean } | null => {
+    const row = (e.target as HTMLElement).closest<HTMLElement>('[data-note]');
+    if (!row || dragging?.kind !== 'note' || row.dataset.note === dragging.id) return null;
+    const r = row.getBoundingClientRect();
+    return { row, after: e.clientY > r.top + r.height / 2 };
+  };
+  const clearDrop = () => panel.querySelectorAll('.qn-drop, .qn-drop-before, .qn-drop-after').forEach((x) => x.classList.remove('qn-drop', 'qn-drop-before', 'qn-drop-after'));
   panel.addEventListener('dragover', (e) => {
+    const at = dropAt(e);
+    if (at) {
+      e.preventDefault();
+      clearDrop();
+      at.row.classList.add(at.after ? 'qn-drop-after' : 'qn-drop-before');
+      return;
+    }
     const fr = (e.target as HTMLElement).closest<HTMLElement>('[data-folder]');
     if (!dragging || !fr) return;
     // フォルダを自分の中には入れない
     if (dragging.kind === 'folder' && fr.dataset.folder && descendants(dragging.id).has(fr.dataset.folder)) return;
     e.preventDefault();
-    panel.querySelectorAll('.qn-drop').forEach((x) => x.classList.remove('qn-drop'));
+    clearDrop();
     fr.classList.add('qn-drop');
   });
   panel.addEventListener('drop', (e) => {
+    const at = dropAt(e);
+    if (at && dragging) {
+      // 並べ替え: 全部のメモの並びの中で、落とした先のメモの前（後）に入れて、並びを付け直す
+      e.preventDefault();
+      const moving = book.notes.find((x) => x.id === dragging!.id);
+      const all = book.notes.slice().sort(byOrder).filter((x) => x !== moving);
+      const k = all.findIndex((x) => x.id === at.row.dataset.note);
+      if (moving && k >= 0) {
+        all.splice(at.after ? k + 1 : k, 0, moving);
+        all.forEach((x, i) => (x.order = i));
+      }
+      dragging = null;
+      persist();
+      render();
+      return;
+    }
     const fr = (e.target as HTMLElement).closest<HTMLElement>('[data-folder]');
     if (!dragging || !fr) return;
     e.preventDefault();
@@ -353,7 +392,7 @@ export function setupQuickNotes(button: HTMLElement, load: () => NoteBook, save:
   });
   panel.addEventListener('dragend', () => {
     dragging = null;
-    panel.querySelectorAll('.qn-drop').forEach((x) => x.classList.remove('qn-drop'));
+    clearDrop();
   });
 
   // ---- 本文 ----

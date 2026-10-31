@@ -44,7 +44,7 @@
 //| set it to "All History" once (right click -> All History).        |
 //+------------------------------------------------------------------+
 #property strict
-#property version     "1.11"
+#property version     "1.12"
 #property copyright   "R（FX Practice 用の自作ツール）"
 #property description "FX Practice 用に、チャート（1 分足）を書き出す EA です。注文は一切出しません。"
 #property description "1 分足を MQL4\\Files\\fxp_bars\\銘柄\\ に書きます（時刻はサーバー時刻）。月ごとのファイル（銘柄_年.月.csv）は"
@@ -320,6 +320,39 @@ int WriteRange(string sym, datetime from, datetime to, string file, bool verbose
    return written;
 }
 
+// The first and last bar times written in a bar file (reads the first line and the end of the file only)
+bool FileRange(string path, datetime &first, datetime &last)
+{
+   int f = FileOpen(path, FILE_READ | FILE_TXT | FILE_ANSI);
+   if(f == INVALID_HANDLE) return false;
+   FileReadString(f);              // header
+   string a = FileReadString(f);
+   string b = a;
+   if(FileSize(f) > 600) FileSeek(f, -400, SEEK_END);
+   while(!FileIsEnding(f))
+   {
+      string line = FileReadString(f);
+      if(StringLen(line) >= 16) b = line;
+   }
+   FileClose(f);
+   first = StrToTime(StringSubstr(a, 0, 16));
+   last = StrToTime(StringSubstr(b, 0, 16));
+   return first > 0 && last > 0;
+}
+
+// MT4 has M1 bars of [from, to) covering all of the file's bars and more (before the first or after the last).
+// When MT4 has only part of them (it dropped older bars), the file is kept: rewriting it would lose bars.
+bool MoreInMT4(string sym, string path, datetime from, datetime to)
+{
+   datetime first, last;
+   if(!FileRange(path, first, last)) return false;
+   MqlRates r[];
+   ArraySetAsSeries(r, false);
+   int n = CopyRates(sym, PERIOD_M1, from, to - 1, r);
+   if(n <= 0 || r[0].time > first || r[n - 1].time < last) return false;
+   return r[0].time < first || r[n - 1].time > last;
+}
+
 // Writes bars before cutoff (the start of today) to the month files: this month and last month
 // only when withMonths (once a day), older months only when their file is missing.
 // Returns true when everything that should be written was written.
@@ -344,7 +377,9 @@ bool ExportMonths(string sym, datetime cutoff, bool withMonths)
       if(to <= from) continue;                            // first day of the month: nothing finished yet
       string file = sym + "_" + IntegerToString(yy) + "." + Two(mm) + ".csv";
       if(k <= 1 && !withMonths) continue;
-      if(k >= 2 && FileIsExist(Folder + "\\" + sym + "\\" + file)) continue;
+      // older months: only when the file is missing, or MT4 now has bars before / after the ones in the file
+      // (e.g. after scrolling back an M1 chart with Home, MT4 downloads the M1 bars it did not have)
+      if(k >= 2 && FileIsExist(Folder + "\\" + sym + "\\" + file) && !MoreInMT4(sym, Folder + "\\" + sym + "\\" + file, from, to)) continue;
       int n = WriteRange(sym, from, to, file, k <= 1);
       if(n > 0)
       {
