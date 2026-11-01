@@ -2243,12 +2243,12 @@ function renderProjectPanel() {
     const on = favorites.includes(id);
     return `<button type="button" class="pj-star${on ? ' pj-star-on' : ''}" data-star="${id}" title="${on ? 'お気に入りから外す' : 'お気に入りにする（右に並べる）'}">${on ? '★' : '☆'}</button>`;
   };
-  // お気に入りは右の列に、付けた順で並べる（消したプロジェクトは出さない）
+  // お気に入りは右の列に、付けた順（ドラッグで並べ替えた順）で並べる（消したプロジェクトは出さない）
   const byId = new Map(listProjects().map((p) => [p.id, p]));
   const favs = favorites.map((id) => byId.get(id)).filter((p): p is ProjectMeta => !!p);
   const favCol = favs.length
     ? `<div class="pj-fav"><div class="pj-head"><span>★ お気に入り</span></div><ul>${favs
-        .map((p) => `<li><div class="pj-row${p.id === cur.id ? ' pj-current' : ''}" data-project="${p.id}" title="${esc(p.folder ? `${p.folder.split('/').join(' ／ ')} ／ ${p.name}` : p.name)}（クリックで開く）">${p.id === cur.id ? '✓ ' : '　'}<span class="pj-name">${esc(p.name)}</span>${star(p.id)}</div></li>`)
+        .map((p) => `<li><div class="pj-row${p.id === cur.id ? ' pj-current' : ''}" data-project="${p.id}" data-fav="${p.id}" draggable="true" title="${esc(p.folder ? `${p.folder.split('/').join(' ／ ')} ／ ${p.name}` : p.name)}（クリックで開く。ドラッグで並べ替え）">${p.id === cur.id ? '✓ ' : '　'}<span class="pj-name">${esc(p.name)}</span>${star(p.id)}</div></li>`)
         .join('')}</ul></div>`
     : '';
   $('#project-panel').innerHTML = `<div class="pj-cols"><div class="pj-main"><div class="pj-head pj-drop" data-folder="" title="ここにプロジェクトを落とすと、フォルダの外に出す">
@@ -2472,10 +2472,48 @@ function setupProjects() {
     setProjectPanel(false);
     if (id !== currentMeta().id) reloadInto(() => switchProject(id));
   });
+  // お気に入りの列は、ドラッグで並べ替える（行の上半分なら前、下半分なら後ろへ）
+  const favAt = (e: DragEvent) => {
+    const row = (e.target as HTMLElement).closest<HTMLElement>('[data-fav]');
+    if (!row) return null;
+    const r = row.getBoundingClientRect();
+    return { row, after: e.clientY > r.top + r.height / 2 };
+  };
+  const clearFavDrop = () => panel.querySelectorAll('.pj-drop-before, .pj-drop-after').forEach((x) => x.classList.remove('pj-drop-before', 'pj-drop-after'));
+  panel.addEventListener('dragstart', (e) => {
+    const fav = (e.target as HTMLElement).closest<HTMLElement>('[data-fav]');
+    if (!fav || !e.dataTransfer) return;
+    e.dataTransfer.setData('text/x-fxp-fav', fav.dataset.fav!);
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  panel.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer?.types.includes('text/x-fxp-fav')) return;
+    const at = favAt(e);
+    clearFavDrop();
+    if (!at) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    at.row.classList.add(at.after ? 'pj-drop-after' : 'pj-drop-before');
+  });
+  panel.addEventListener('dragend', clearFavDrop);
+  panel.addEventListener('drop', (e) => {
+    const id = e.dataTransfer?.getData('text/x-fxp-fav');
+    const at = favAt(e);
+    clearFavDrop();
+    if (!id || !at) return;
+    e.preventDefault();
+    const to = at.row.dataset.fav!;
+    if (to === id) return;
+    const rest = favorites.filter((x) => x !== id);
+    rest.splice(rest.indexOf(to) + (at.after ? 1 : 0), 0, id);
+    favorites = rest;
+    void saveAppSettings({ favorites });
+    renderProjectPanel();
+  });
   // ドラッグしてフォルダに落とすと移す
   panel.addEventListener('dragstart', (e) => {
     const row = (e.target as HTMLElement).closest<HTMLElement>('[data-project]');
-    if (!row || !e.dataTransfer) return;
+    if (!row || !e.dataTransfer || row.dataset.fav) return;
     e.dataTransfer.setData('text/x-fxp-project', row.dataset.project!);
     e.dataTransfer.effectAllowed = 'move';
   });

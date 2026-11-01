@@ -931,6 +931,13 @@ dialog .error {
 #project-panel .pj-star-on {
   color: #e5a50a;
 }
+/* お気に入りを並べ替えるときに落とす位置 */
+#project-panel .pj-drop-before {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+#project-panel .pj-drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
 /* ドラッグして落とす先 */
 #project-panel .pj-over {
   outline: 2px solid var(--accent);
