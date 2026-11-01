@@ -9,6 +9,19 @@ export function formatTime(utcMs: number, zone: DisplayZone, rule: ServerTimeRul
   return seconds ? `${s}:${pad(d.getUTCSeconds())}` : s;
 }
 
+const WEEKDAYS = '日月火水木金土';
+
+/** 十字線・垂直線の札の "2026.10.20 火 15:30"（表示の時刻帯の曜日。wall は表示の時刻帯の壁時計を UTC として持つ値） */
+export function formatWallWithWeekday(wall: number): string {
+  const d = new Date(wall);
+  return `${d.getUTCFullYear()}.${pad(d.getUTCMonth() + 1)}.${pad(d.getUTCDate())} ${WEEKDAYS[d.getUTCDay()]} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+}
+
+/** formatTime に曜日を付けたもの（"2026.10.20 火 15:30"） */
+export function formatTimeWithWeekday(utcMs: number, zone: DisplayZone, rule: ServerTimeRule): string {
+  return formatWallWithWeekday(toDisplay(utcMs, zone, rule));
+}
+
 /** <input type="datetime-local"> 用の値（表示タイムゾーンの壁時計） */
 export function toLocalInput(utcMs: number, zone: DisplayZone, rule: ServerTimeRule): string {
   return new Date(toDisplay(utcMs, zone, rule)).toISOString().slice(0, 16);

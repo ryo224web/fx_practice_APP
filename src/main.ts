@@ -5,7 +5,7 @@ import { DEFAULT_INDICATORS, normalizeIndicators, type IndicatorConfig } from '.
 import { ChartPane, DEFAULT_COUNTDOWN, type CountdownStyle, type PaneHost } from './chart/pane';
 import { type LineEdit, type OrderPreview } from './chart/trades';
 import { aggregateWithIndex, mergeBars, TIMEFRAMES, type Aggregated, type Bar, type Timeframe } from './core/candles';
-import { formatMoney, formatPrice, formatTime, fromLocalInput, toLocalInput } from './core/format';
+import { formatMoney, formatPrice, formatTime, formatTimeWithWeekday, fromLocalInput, toLocalInput } from './core/format';
 import { sampleM1 } from './core/sample';
 import { DEFAULT_SPREAD_PIPS, symbolSpec, type SymbolSpec } from './core/symbols';
 import { DEFAULT_SERVER_RULE, serverToUtc, toDisplay, type DisplayZone } from './core/time';
@@ -2758,7 +2758,7 @@ function createPanes() {
     p.drawings.colorOf = (d) => d.custom ?? (d.tf ? (state.tfColors?.[d.tf] ?? DEFAULT_TF_COLORS[d.tf] ?? d.color) : d.color);
     p.drawings.levelsOf = levelsOf;
     p.drawings.widthOf = (k) => state.lineWidths?.[k] ?? defaultLineWidth(k);
-    p.drawings.timeLabel = (t) => formatTime(t, state.zone, rule);
+    p.drawings.timeLabel = (t) => formatTimeWithWeekday(t, state.zone, rule);
     p.drawings.onEditLevels = () => openLevelsDialog();
     p.setRightOffset(state.rightOffset ?? 12);
     return p;

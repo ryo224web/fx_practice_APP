@@ -8,6 +8,7 @@ import { DrawingManager, hasRay, LINE_KINDS, lineDash, rayOn, TEXT_SIZES, type L
 const escAttr = (s: string) => s.replace(/[&"<>]/g, (c) => ({ '&': '&amp;', '"': '&quot;', '<': '&lt;', '>': '&gt;' })[c]!);
 import { IndicatorLayer, type IndicatorConfig } from './indicators';
 import type { ServerTimeRule } from '../core/time';
+import { formatWallWithWeekday } from '../core/format';
 import { TimeMapper } from './mapper';
 import { TradeOverlay } from './trades';
 
@@ -77,10 +78,9 @@ const CHART_MAX_BARS = 30_000;
 const UP_COLOR = '#a5d6a7';
 const DOWN_COLOR = '#de7a7a';
 
+/** 十字線の時刻（チャートの時刻は表示の時刻帯の壁時計。曜日も付ける） */
 function crosshairTime(sec: number): string {
-  const d = new Date(sec * 1000);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}.${p(d.getUTCMonth() + 1)}.${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+  return formatWallWithWeekday(sec * 1000);
 }
 
 /** 足 1 本の幅（px）の初期値。ライブラリの初期値と同じ */
