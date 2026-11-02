@@ -659,6 +659,97 @@ td.sell {
   padding: 4px 14px;
 }
 
+/* ---- 敗因の札を付ける欄（src/ui/tagPicker.ts） ---- */
+.tag-picker {
+  position: fixed;
+  z-index: 20;
+  width: 400px;
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.3);
+  font-size: 12px;
+}
+.tag-picker .tp-head {
+  font-weight: bold;
+  margin: 0 2px 6px;
+}
+.tag-picker .tp-list {
+  max-height: 320px;
+  overflow-y: auto;
+}
+.tag-picker .tp-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.tag-picker .tp-row:hover {
+  background: var(--grid);
+}
+.tag-picker .tp-row.tp-drop-before {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.tag-picker .tp-row.tp-drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.tag-picker .tp-key {
+  width: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: right;
+}
+.tag-picker .tp-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tag-picker .tp-row button {
+  visibility: hidden;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  font-size: 11px;
+}
+.tag-picker .tp-row:hover button {
+  visibility: visible;
+}
+.tag-picker .tp-new {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 6px;
+}
+.tag-picker .tp-hint,
+.tag-picker .tp-empty {
+  margin: 4px 2px 0;
+}
+
+/* 履歴の行の、敗因の札の印（数。マウスを乗せると名前） */
+#terminal .tag-badge {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, #d29922 30%, transparent);
+  font-size: 10px;
+}
+
+/* 成績タブの敗因別 */
+.reason-card {
+  margin: 8px 0 12px;
+}
+.reason-how {
+  margin: 0 0 12px;
+}
+.reason-card a {
+  margin-right: 6px;
+  cursor: pointer;
+  color: var(--accent);
+}
+
 /* ---- ダイアログ ---- */
 dialog {
   border: 1px solid var(--border);

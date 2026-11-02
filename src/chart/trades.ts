@@ -91,6 +91,8 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
   showHistory = true;
   /** 矢印（エントリー・決済の印）をクリックした */
   onArrowClick: (ref: ArrowRef) => void = () => {};
+  /** 矢印を右クリックした（敗因の札を付ける） */
+  onArrowContext: (ref: ArrowRef, e: MouseEvent) => void = () => {};
   /** 口座履歴で選んだ取引。エントリーに縦線を引いて分かりやすくする */
   highlight: { openTime: number; closeTime: number } | null = null;
 
@@ -121,6 +123,18 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
       const a = this.arrowAt(e);
       if (a) this.onArrowClick(a);
     });
+    // 矢印の右クリックは、図形の右クリック（消す）より先に受け取る
+    el.addEventListener(
+      'contextmenu',
+      (e) => {
+        const a = this.arrowAt(e);
+        if (!a) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        this.onArrowContext(a, e);
+      },
+      true,
+    );
     el.addEventListener('mousemove', (e) => {
       if (this.drag) return;
       const on = !!this.arrowAt(e);

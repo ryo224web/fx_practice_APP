@@ -48,6 +48,8 @@ import { renderHistory, renderMt4, renderTrade, type Mt4Row, type TerminalTab } 
 import { quickSummary, REPORT_CSS, reportBody, reportHtml } from './ui/report';
 import { loadAppSettings, saveAppSettings } from './appSettings';
 import { notebookFrom, setupQuickNotes, type NoteBook } from './ui/quickNotes';
+import { DEFAULT_LOSS_REASONS, DEFAULT_WIN_REASONS, isWin, newReasonId, tallyReasons, type LossReason } from './trade/lossReasons';
+import { openTagPicker } from './ui/tagPicker';
 import './style.css';
 
 // 成績レポートの見た目（書き出すファイルと同じものを画面にも使う）
@@ -842,6 +844,7 @@ function renderTerminal(force = false) {
           : renderTrade(ctx);
   termBody.scrollTop = scroll;
   markPickedRow();
+  markTagBadges();
   document.querySelectorAll<HTMLButtonElement>('#terminal-tabs button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tab === tab)));
 }
 
@@ -959,7 +962,145 @@ function renderStatsTab(): string {
     <span class="hint">MAE・MFE（含み損益の最大）は、今の銘柄で価格データがある取引だけ計算します</span></div>`;
   // 一番上は簡単な一覧。詳しい分析はその下（書き出したレポートと同じ内容）
   const detail = a.summary.trades ? `<h3 class="detail-head">詳しい分析</h3>${reportBody(a, statsInfo(source), initial)}` : reportBody(a, statsInfo(source), initial);
-  return bar + (a.summary.trades ? quickSummary(a.summary, statsInfo(source)) : '') + detail;
+  return bar + (a.summary.trades ? quickSummary(a.summary, statsInfo(source)) + reasonCard(a.trades, source, true) : '') + detail;
+}
+
+// ---------------- 敗因・勝因の札 ----------------
+// 決済した取引に札を付け（履歴の行・チャートの矢印の右クリック）、成績タブで札ごとに数える。
+// 負けた取引には敗因、勝った取引には勝因の一覧を出す。一覧と札は全部のプロジェクトで共通の設定（MT4 の取引は月ごとのプロジェクトをまたぐため）。
+
+/** 敗因・勝因の一覧（共通の設定の lossReasons・winReasons。無ければ初期の一覧） */
+let lossReasons: LossReason[] = DEFAULT_LOSS_REASONS;
+let winReasons: LossReason[] = DEFAULT_WIN_REASONS;
+/** 取引ごとの札（キーは tagKeyOf） */
+let tradeTags: Record<string, string[]> = {};
+
+/** 勝ち・負けで使う一覧と、その呼び名 */
+const reasonKind = (win: boolean) => (win ? { list: winReasons, label: '勝因', prefix: 'w' } : { list: lossReasons, label: '敗因', prefix: 'r' });
+
+function setReasons(win: boolean, list: LossReason[]) {
+  if (win) winReasons = list;
+  else lossReasons = list;
+}
+
+/**
+ * 札のキー。MT4 の取引は注文番号だけで決まる（どのプロジェクトから付けても同じ取引）。
+ * 仮想の取引は検証をやり直すと番号が重なるので、プロジェクトと建てた時刻も入れる
+ */
+function tagKeyOf(mt4: boolean, ticket: number, openTime: number): string {
+  return mt4 || mt4Mode() ? `m:${ticket}` : `v:${currentMeta().id}:${ticket}:${openTime}`;
+}
+
+const tagsOf = (key: string) => tradeTags[key] ?? [];
+
+function saveTags() {
+  void saveAppSettings({ tradeTags, lossReasons, winReasons });
+}
+
+/** 取引の札を付け外しする欄を開く（kind は履歴の行の種類。history なら close で取引を特定する）。勝ちなら勝因、負けなら敗因 */
+function openTagPickerFor(kind: 'history' | 'mt4', ticket: number, close: number | undefined, x: number, y: number) {
+  let openTime = 0;
+  let profit: number;
+  if (kind === 'history') {
+    const h = shownAccount().history.find((r) => r.kind === 'trade' && r.ticket === ticket && r.closeTime === close);
+    if (!h || h.kind !== 'trade') return;
+    openTime = h.openTime;
+    profit = h.profit;
+  } else {
+    const t = mt4Trades().find((x) => x.ticket === ticket);
+    if (!t || t.closeServer === null) return;
+    profit = t.profit + t.swap + t.commission;
+  }
+  const win = isWin(profit);
+  const { label, prefix } = reasonKind(win);
+  const list = () => reasonKind(win).list;
+  const key = tagKeyOf(kind === 'mt4', ticket, openTime);
+  const changed = () => {
+    saveTags();
+    renderTerminal(true);
+  };
+  openTagPicker(x, y, {
+    title: `#${ticket} の${label}（${formatMoney(profit)} 円）`,
+    label,
+    reasons: list,
+    selected: () => new Set(tagsOf(key)),
+    onToggle: (id, on) => {
+      const next = new Set(tagsOf(key));
+      if (on) next.add(id);
+      else next.delete(id);
+      if (next.size) tradeTags[key] = [...next];
+      else delete tradeTags[key];
+      changed();
+    },
+    onAdd: (name) => {
+      const found = list().find((r) => r.name === name);
+      if (found) return found.id;
+      const id = newReasonId(list(), prefix);
+      setReasons(win, [...list(), { id, name }]);
+      changed();
+      return id;
+    },
+    onRename: (id, name) => {
+      setReasons(win, list().map((r) => (r.id === id ? { ...r, name } : r)));
+      changed();
+    },
+    onReorder: (ids) => {
+      const byId = new Map(list().map((r) => [r.id, r]));
+      setReasons(win, ids.map((id) => byId.get(id)!).filter(Boolean));
+      changed();
+    },
+    onDelete: (id) => {
+      setReasons(win, list().filter((r) => r.id !== id));
+      for (const k of Object.keys(tradeTags)) {
+        tradeTags[k] = tradeTags[k].filter((x) => x !== id);
+        if (!tradeTags[k].length) delete tradeTags[k];
+      }
+      changed();
+    },
+  });
+}
+
+/** 履歴の行に、付けた札の数の印を出す（マウスを乗せると名前） */
+function markTagBadges() {
+  const tab = state.terminalTab;
+  if (tab !== 'history' && tab !== 'mt4') return;
+  const names = new Map([...lossReasons, ...winReasons].map((r) => [r.id, r.name]));
+  const opens = new Map<string, number>();
+  if (tab === 'history') for (const h of shownAccount().history) if (h.kind === 'trade') opens.set(`${h.ticket}:${h.closeTime}`, h.openTime);
+  termBody.querySelectorAll<HTMLTableRowElement>(`tr[data-kind="${tab}"]`).forEach((row) => {
+    const ticket = Number(row.dataset.ticket);
+    const key = tab === 'mt4' ? tagKeyOf(true, ticket, 0) : tagKeyOf(false, ticket, opens.get(`${ticket}:${row.dataset.close}`) ?? 0);
+    const tags = tagsOf(key).filter((id) => names.has(id));
+    if (!tags.length) return;
+    const badge = document.createElement('span');
+    badge.className = 'tag-badge';
+    badge.textContent = `🏷${tags.length}`;
+    badge.title = tags.map((id) => names.get(id)).join('\n');
+    row.cells[0]?.append(badge);
+  });
+}
+
+/** 成績タブ（と書き出すレポート）の「敗因別」「勝因別」。links なら注文番号を押すとその取引へ飛ぶ */
+function reasonCard(records: TradeRecord[], source: 'virtual' | 'mt4', links: boolean): string {
+  const mt4 = source === 'mt4';
+  const esc = (v: string) => v.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+  const money = (v: number) => `<td class="num ${v < 0 ? 'neg' : v > 0 ? 'pos' : ''}">${formatMoney(v)}</td>`;
+  const section = (win: boolean) => {
+    const { list, label } = reasonKind(win);
+    const t = tallyReasons(records, list, (r) => tagsOf(tagKeyOf(mt4, r.ticket, r.openTime)), win);
+    const ref = (r: TradeRecord, action: string) =>
+      links ? `<a data-action="${action}" data-kind="${mt4 ? 'mt4' : 'history'}" data-ticket="${r.ticket}" data-close="${r.closeTime}" title="${action === 'reason-tag' ? `クリックでこの取引を表示して、${label}を付ける` : 'クリックでこの取引を表示'}">#${r.ticket}</a>` : `#${r.ticket}`;
+    const rows = t.rows
+      .map((x) => `<tr><td>${esc(x.reason.name)}</td><td class="num">${x.count}</td>${money(x.profit)}<td class="num">${x.pips.toFixed(1)}</td>${money(x.profit / x.count)}<td class="tickets">${x.trades.map((r) => ref(r, 'reason-trade')).join(' ')}</td></tr>`)
+      .join('');
+    const untagged = t.untagged.length ? `<p class="hint">${label}の無い${win ? '勝ち' : '負け'} ${t.untagged.length} 件: ${t.untagged.map((r) => ref(r, 'reason-tag')).join(' ')}</p>` : '';
+    const body = t.rows.length
+      ? `<table><thead><tr><th>${label}</th><th>回数</th><th>損益</th><th>pips</th><th>1 回あたり</th><th>取引</th></tr></thead><tbody>${rows}</tbody></table>`
+      : `<p class="hint">まだ${label}を付けた取引がありません</p>`;
+    return `<section class="card reason-card"><h3>${label}別</h3>${body}${untagged}</section>`;
+  };
+  const how = links ? '<p class="hint reason-how">口座履歴・MT4 履歴の行か、チャートの矢印を右クリックすると札を付けられます（負けは敗因・勝ちは勝因。1〜9 のキーでも付け外し）</p>' : '';
+  return `<div class="report">${section(false)}${section(true)}</div>${how}`;
 }
 
 function download(name: string, text: string, type: string) {
@@ -984,7 +1125,7 @@ function exportStats(kind: 'csv' | 'html') {
     const zone = state.zone === 'jst' ? '日本時間' : 'サーバー時間';
     const subtitle = `${currentMeta().name} ・ ${info.sourceLabel} ・ ${a.summary.trades} 回 ・ 時刻は${zone} ・ ${date} 作成`;
     const title = monthly ? `${monthly} 統計サマリー` : `成績レポート（${info.symbolLabel}）`;
-    download(`${base}.html`, reportHtml(title, subtitle, reportBody(a, info, initial)), 'text/html');
+    download(`${base}.html`, reportHtml(title, subtitle, reasonCard(a.trades, source, false) + reportBody(a, info, initial)), 'text/html');
   }
 }
 
@@ -1711,6 +1852,8 @@ async function showHistoryTrade(ticket: number, closeTime: number) {
 let pickedRow: string | null = null;
 
 function markPickedRow(): HTMLElement | null {
+  // 前に選んだ行の色は外す（ターミナルを作り直さないときも残らないように）
+  termBody.querySelectorAll('tr.row-picked').forEach((r) => r.classList.remove('row-picked'));
   const row = pickedRow ? termBody.querySelector<HTMLElement>(pickedRow) : null;
   row?.classList.add('row-picked');
   return row;
@@ -2783,6 +2926,7 @@ function createPanes() {
     const p = new ChartPane(i, el, host, ps.tf, indicatorsFor(ps.tf));
     p.overlay.onEdit = onLineEdit;
     p.overlay.onArrowClick = (ref) => !p.drawings.tool && void openArrowTrade(ref);
+    p.overlay.onArrowContext = (ref, e) => ref.kind !== 'position' && openTagPickerFor(ref.kind, ref.ticket, ref.kind === 'history' ? ref.close : undefined, e.clientX, e.clientY);
     p.drawings.colorOf = (d) => d.custom ?? (d.tf ? (state.tfColors?.[d.tf] ?? DEFAULT_TF_COLORS[d.tf] ?? d.color) : d.color);
     p.drawings.levelsOf = levelsOf;
     p.drawings.widthOf = (k) => state.lineWidths?.[k] ?? defaultLineWidth(k);
@@ -3016,6 +3160,15 @@ function setupControls() {
       renderTerminal(true);
       save();
     }
+    if (action === 'reason-trade' || action === 'reason-tag') {
+      const kind = target!.dataset.kind as 'history' | 'mt4';
+      const ticket = Number(target!.dataset.ticket);
+      const close = Number(target!.dataset.close);
+      const { clientX: x, clientY: y } = e;
+      void openArrowTrade(kind === 'mt4' ? { kind, ticket } : { kind, ticket, close }).then(() => {
+        if (action === 'reason-tag') openTagPickerFor(kind, ticket, close, x, y);
+      });
+    }
     if (action === 'export-csv') exportStats('csv');
     if (action === 'export-html') exportStats('html');
     if (action === 'mt4-auto') void startMt4Auto();
@@ -3133,8 +3286,14 @@ function setupControls() {
   });
   termBody.addEventListener('contextmenu', (e) => {
     const row = (e.target as HTMLElement).closest<HTMLElement>('tr[data-ticket]');
-    if (!row || row.dataset.kind === 'history' || row.dataset.kind === 'mt4') return;
+    if (!row) return;
     e.preventDefault();
+    // 決済した取引は、敗因の札を付ける
+    if (row.dataset.kind === 'history' || row.dataset.kind === 'mt4') {
+      if (row.dataset.kind === 'mt4' && mt4Trades().find((x) => x.ticket === Number(row.dataset.ticket))?.closeServer == null) return;
+      openTagPickerFor(row.dataset.kind, Number(row.dataset.ticket), Number(row.dataset.close), e.clientX, e.clientY);
+      return;
+    }
     const ticket = Number(row.dataset.ticket);
     const items: [string, () => void][] =
       row.dataset.kind === 'position'
@@ -3544,6 +3703,9 @@ async function start() {
   if (!shotTfs.length) shotTfs = DEFAULT_SHOT_TFS;
   notebook = notebookFrom(settings.notebook, settings.quickNotes);
   favorites = settings.favorites ?? [];
+  lossReasons = settings.lossReasons ?? DEFAULT_LOSS_REASONS;
+  winReasons = settings.winReasons ?? DEFAULT_WIN_REASONS;
+  tradeTags = settings.tradeTags ?? {};
   if (!settings.keymap && state.keymap) void saveAppSettings({ keymap: state.keymap });
   keyIndex = commandIndex(resolveKeymap(keymap));
   migratePanes();

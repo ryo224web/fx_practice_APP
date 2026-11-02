@@ -3,6 +3,7 @@
 // 届かなければブラウザの中の控えを使う。
 
 import type { NoteBook, NoteItem } from './ui/quickNotes';
+import type { LossReason } from './trade/lossReasons';
 
 export interface AppSettings {
   /** キーボードのショートカット（働き → キー。無ければ初期値。src/ui/keys.ts） */
@@ -26,6 +27,12 @@ export interface AppSettings {
   countdown?: { right: number; top: number; size: number };
   /** 行のダブルクリックで指定した取引を、リスクリワードの形（建値・S/L・T/P）でも見せるか。無ければ見せる */
   tradeRR?: boolean;
+  /** 敗因の一覧（成績タブの「敗因別」。src/trade/lossReasons.ts） */
+  lossReasons?: LossReason[];
+  /** 勝因の一覧（勝った取引に付ける。成績タブの「勝因別」） */
+  winReasons?: LossReason[];
+  /** 取引に付けた敗因の札（キーは main.ts の tagKeyOf。値は敗因の ID） */
+  tradeTags?: Record<string, string[]>;
 }
 
 const LOCAL_KEY = 'fx-practice-settings';
