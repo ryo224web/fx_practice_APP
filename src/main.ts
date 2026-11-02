@@ -1848,7 +1848,7 @@ async function showHistoryTrade(ticket: number, closeTime: number) {
   if (!panes[0].overlay.showHistory) $('#toggle-history').click();
 }
 
-/** 矢印のクリックで選んだ行（ターミナルを描き直しても色を付けたままにする。縦線と一緒に消える） */
+/** 矢印のクリック・行のダブルクリックで選んだ行（ターミナルを描き直しても色を付けたままにする。縦線と一緒に消える） */
 let pickedRow: string | null = null;
 
 function markPickedRow(): HTMLElement | null {
@@ -3141,9 +3141,10 @@ function setupControls() {
   termBody.addEventListener('dblclick', (e) => {
     const row = (e.target as HTMLElement).closest<HTMLElement>('tr[data-ticket]');
     if (!row) return;
-    // 矢印で選んだ行の色は、別の行を選んだら外す
-    pickedRow = null;
-    termBody.querySelectorAll('tr.row-picked').forEach((r) => r.classList.remove('row-picked'));
+    // ダブルクリックで選んだ取引の行も、矢印で選んだときと同じく色を付けたままにする（縦線と一緒に消える）
+    const kind = row.dataset.kind;
+    pickedRow = kind === 'history' || kind === 'mt4' ? `tr[data-kind="${kind}"][data-ticket="${row.dataset.ticket}"]${kind === 'history' ? `[data-close="${row.dataset.close}"]` : ''}` : null;
+    markPickedRow();
     if (row.dataset.kind === 'mt4') jumpToTrade(Number(row.dataset.ticket));
     else if (row.dataset.kind === 'history') void showHistoryTrade(Number(row.dataset.ticket), Number(row.dataset.close));
     else openModifyDialog(Number(row.dataset.ticket));
