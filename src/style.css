@@ -550,6 +550,11 @@ td.sell {
   background: var(--grid);
 }
 
+/* チャートの矢印をクリックして選んだ取引の行 */
+#terminal tr.row-picked {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
 /* MT4 と同じ、行の右端の ✕（決済・注文削除） */
 #terminal td.x {
   width: 1%;

@@ -72,6 +72,9 @@ export type LineEdit =
 
 type PreviewField = 'entry' | 'sl' | 'tp';
 
+/** チャートの矢印が指す取引（クリックで履歴の行へ飛ぶ） */
+export type ArrowRef = { kind: 'history'; ticket: number; close: number } | { kind: 'position' | 'mt4'; ticket: number };
+
 interface LineInfo {
   key: string;
   ticket: number;
@@ -86,6 +89,8 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
   /** EasyOrder の線を動かした。live は動かしている途中（離す前。数値だけを先に変える） */
   onPreviewEdit: (field: PreviewField, price: number, live?: boolean) => void = () => {};
   showHistory = true;
+  /** 矢印（エントリー・決済の印）をクリックした */
+  onArrowClick: (ref: ArrowRef) => void = () => {};
   /** 口座履歴で選んだ取引。エントリーに縦線を引いて分かりやすくする */
   highlight: { openTime: number; closeTime: number } | null = null;
 
@@ -96,6 +101,10 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
   private infos: LineInfo[] = [];
   private view: TradeView | null = null;
   private drag: { info: LineInfo; price: number; moved: boolean } | null = null;
+  /** 最後に描いた矢印の先（チャートの中の px）。クリックとマウスを乗せたときに使う */
+  private arrows: { x: number; y: number; ref: ArrowRef }[] = [];
+  private downAt: { x: number; y: number } | null = null;
+  private arrowCursor = false;
 
   constructor(
     private readonly el: HTMLElement,
@@ -104,6 +113,26 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
     // テキストを打つ欄（drawings.ts）の中のクリックは、欄に任せる
     el.addEventListener('mousedown', (e) => !(e.target as Element | null)?.closest?.('.draw-text-edit') && this.onDown(e), true);
     window.addEventListener('mousemove', (e) => this.onMove(e));
+    // 矢印のクリック（ドラッグでチャートを動かしたときは数えない）
+    el.addEventListener('mousedown', (e) => (this.downAt = { x: e.clientX, y: e.clientY }));
+    el.addEventListener('click', (e) => {
+      const d = this.downAt;
+      if (!d || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) return;
+      const a = this.arrowAt(e);
+      if (a) this.onArrowClick(a);
+    });
+    el.addEventListener('mousemove', (e) => {
+      if (this.drag) return;
+      const on = !!this.arrowAt(e);
+      // 図形のツールなどがカーソルを変えているときは触らない
+      if (on && !this.arrowCursor && !this.el.style.cursor) {
+        this.el.style.cursor = 'pointer';
+        this.arrowCursor = true;
+      } else if (!on && this.arrowCursor) {
+        if (this.el.style.cursor === 'pointer') this.el.style.cursor = '';
+        this.arrowCursor = false;
+      }
+    });
     window.addEventListener('mouseup', (e) => this.onUp(e));
   }
 
@@ -188,6 +217,24 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
     this.requestUpdate();
   }
 
+  /** マウスの所にある矢印（三角の真ん中から 8px 以内で一番近いもの） */
+  private arrowAt(e: MouseEvent): ArrowRef | null {
+    if (!this.showHistory || !this.arrows.length) return null;
+    const r = this.el.getBoundingClientRect();
+    const x = e.clientX - r.left;
+    const y = e.clientY - r.top;
+    let best: ArrowRef | null = null;
+    let bestD = 8;
+    for (const a of this.arrows) {
+      const d = Math.hypot(a.x - x, a.y - y);
+      if (d <= bestD) {
+        bestD = d;
+        best = a.ref;
+      }
+    }
+    return best;
+  }
+
   private priceAt(e: MouseEvent): { y: number; price: number } | null {
     if (!this.series || !this.chart) return null;
     const r = this.el.getBoundingClientRect();
@@ -261,6 +308,7 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
       draw: (target) => {
         const v = this.view;
         // 取引の指定の縦線は、矢印（決済した取引の印）を隠していても引く
+        this.arrows = [];
         if (!v || !this.chart || !this.series) return;
         const ts = this.chart.timeScale();
         const pt = (t: number, p: number) => {
@@ -293,7 +341,9 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
             ctx.restore();
           }
           if (!this.showHistory) return;
-          const arrow = (x: number, y: number, up: boolean, color: string) => {
+          const arrow = (x: number, y: number, up: boolean, color: string, ref: ArrowRef) => {
+            // 三角の真ん中を覚えておく（クリックで履歴の行へ）
+            this.arrows.push({ x: x - 12, y, ref });
             ctx.fillStyle = color;
             ctx.beginPath();
             const s = up ? 1 : -1;
@@ -318,12 +368,13 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
               ctx.stroke();
               ctx.setLineDash([]);
             }
-            if (a) arrow(a.x, a.y, h.side === 'buy', color);
-            if (b) arrow(b.x, b.y, h.side !== 'buy', '#d29922');
+            const ref: ArrowRef = { kind: 'history', ticket: h.ticket, close: h.closeTime };
+            if (a) arrow(a.x, a.y, h.side === 'buy', color, ref);
+            if (b) arrow(b.x, b.y, h.side !== 'buy', '#d29922', ref);
           }
           for (const p of v.positions) {
             const a = pt(p.openTime, p.openPrice);
-            if (a) arrow(a.x, a.y, p.side === 'buy', p.side === 'buy' ? BUY : SELL);
+            if (a) arrow(a.x, a.y, p.side === 'buy', p.side === 'buy' ? BUY : SELL, { kind: 'position', ticket: p.ticket });
           }
           // MT4 の取引（記録の時刻・価格のまま）
           for (const h of v.imported?.closed ?? []) {
@@ -339,12 +390,13 @@ export class TradeOverlay implements ISeriesPrimitive<Time> {
               ctx.stroke();
               ctx.setLineDash([]);
             }
-            if (a) arrow(a.x, a.y, h.side === 'buy', MT4);
-            if (b) arrow(b.x, b.y, h.side !== 'buy', '#d29922');
+            const ref: ArrowRef = { kind: 'mt4', ticket: h.ticket };
+            if (a) arrow(a.x, a.y, h.side === 'buy', MT4, ref);
+            if (b) arrow(b.x, b.y, h.side !== 'buy', '#d29922', ref);
           }
           for (const m of v.imported?.open ?? []) {
             const a = pt(m.openTime, m.openPrice);
-            if (a) arrow(a.x, a.y, m.side === 'buy', MT4);
+            if (a) arrow(a.x, a.y, m.side === 'buy', MT4, { kind: 'mt4', ticket: m.ticket });
           }
         });
       },

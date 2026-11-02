@@ -3,7 +3,7 @@ import { commandIndex, KEY_COMMANDS, keyLabel, keyOf, resolveKeymap } from './ui
 import { defaultLineWidth, DEFAULT_PALETTE, DEFAULT_TF_COLORS, DRAWING_LABELS, FIBO_EXP_LEVELS, FIBO_LEVELS, levelsFromPercents, type Drawing, type DrawingKind } from './chart/drawings';
 import { DEFAULT_INDICATORS, normalizeIndicators, type IndicatorConfig } from './chart/indicators';
 import { ChartPane, DEFAULT_COUNTDOWN, type CountdownStyle, type PaneHost } from './chart/pane';
-import { type LineEdit, type OrderPreview } from './chart/trades';
+import { type ArrowRef, type LineEdit, type OrderPreview } from './chart/trades';
 import { aggregateWithIndex, mergeBars, TIMEFRAMES, type Aggregated, type Bar, type Timeframe } from './core/candles';
 import { formatMoney, formatPrice, formatTime, formatTimeWithWeekday, fromLocalInput, toLocalInput } from './core/format';
 import { sampleM1 } from './core/sample';
@@ -841,6 +841,7 @@ function renderTerminal(force = false) {
           ? renderMt4(mt4Rows(), mt4Info(), md.digits, ctx.time, !!state.mt4OldestFirst)
           : renderTrade(ctx);
   termBody.scrollTop = scroll;
+  markPickedRow();
   document.querySelectorAll<HTMLButtonElement>('#terminal-tabs button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tab === tab)));
 }
 
@@ -1704,6 +1705,32 @@ async function showHistoryTrade(ticket: number, closeTime: number) {
   if (!h || h.kind !== 'trade') return;
   await showTradeRange(ticket, h.openTime, h.closeTime, { side: h.side, entry: h.openPrice, sl: h.sl, tp: h.tp, closePrice: h.closePrice });
   if (!panes[0].overlay.showHistory) $('#toggle-history').click();
+}
+
+/** 矢印のクリックで選んだ行（ターミナルを描き直しても色を付けたままにする。縦線と一緒に消える） */
+let pickedRow: string | null = null;
+
+function markPickedRow(): HTMLElement | null {
+  const row = pickedRow ? termBody.querySelector<HTMLElement>(pickedRow) : null;
+  row?.classList.add('row-picked');
+  return row;
+}
+
+/**
+ * チャートの矢印をクリックしたとき。その取引の行があるタブを開いて行を見せ、
+ * 行をダブルクリックしたときと同じく縦線（と RR）を出す（保有中は行を見せるだけ）
+ */
+async function openArrowTrade(ref: ArrowRef) {
+  const tab = ref.kind === 'history' ? 'history' : ref.kind === 'position' ? 'trade' : 'mt4';
+  if (state.terminalTab !== tab) {
+    state.terminalTab = tab;
+    save();
+  }
+  renderTerminal(true);
+  pickedRow = `tr[data-kind="${ref.kind}"][data-ticket="${ref.ticket}"]${ref.kind === 'history' ? `[data-close="${ref.close}"]` : ''}`;
+  markPickedRow()?.scrollIntoView({ block: 'center' });
+  if (ref.kind === 'history') await showHistoryTrade(ref.ticket, ref.close);
+  else if (ref.kind === 'mt4') await jumpToTrade(ref.ticket);
 }
 
 /**
@@ -2755,6 +2782,7 @@ function createPanes() {
     chartsEl.append(el);
     const p = new ChartPane(i, el, host, ps.tf, indicatorsFor(ps.tf));
     p.overlay.onEdit = onLineEdit;
+    p.overlay.onArrowClick = (ref) => !p.drawings.tool && void openArrowTrade(ref);
     p.drawings.colorOf = (d) => d.custom ?? (d.tf ? (state.tfColors?.[d.tf] ?? DEFAULT_TF_COLORS[d.tf] ?? d.color) : d.color);
     p.drawings.levelsOf = levelsOf;
     p.drawings.widthOf = (k) => state.lineWidths?.[k] ?? defaultLineWidth(k);
@@ -2969,6 +2997,9 @@ function setupControls() {
   termBody.addEventListener('dblclick', (e) => {
     const row = (e.target as HTMLElement).closest<HTMLElement>('tr[data-ticket]');
     if (!row) return;
+    // 矢印で選んだ行の色は、別の行を選んだら外す
+    pickedRow = null;
+    termBody.querySelectorAll('tr.row-picked').forEach((r) => r.classList.remove('row-picked'));
     if (row.dataset.kind === 'mt4') jumpToTrade(Number(row.dataset.ticket));
     else if (row.dataset.kind === 'history') void showHistoryTrade(Number(row.dataset.ticket), Number(row.dataset.close));
     else openModifyDialog(Number(row.dataset.ticket));
@@ -3298,6 +3329,10 @@ let highlightRange: { from: number; to: number } | null = null;
 
 function clearTradeHighlight() {
   exitPeek();
+  if (pickedRow) {
+    pickedRow = null;
+    termBody.querySelectorAll('tr.row-picked').forEach((r) => r.classList.remove('row-picked'));
+  }
   if (highlightTicket === null) return;
   shownTradeRR = null;
   applyTradeRR();
