@@ -40,7 +40,7 @@ export interface ReasonTally {
 
 /**
  * 敗因ごとに回数・損益を数える。1 つの取引に札が 2 つあれば、両方に数える。
- * 一覧から消した敗因の札は数えない。並びは回数の多い順（同じなら損益の大きい順）
+ * 一覧から消した敗因の札は数えない。並びは一覧の並び（札を付ける欄・成績タブの表のドラッグで変える）
  */
 export function tallyReasons(records: TradeRecord[], reasons: LossReason[], tagsOf: (r: TradeRecord) => string[], wins = false): ReasonTally {
   const rows = new Map(reasons.map((reason) => [reason.id, { reason, count: 0, profit: 0, pips: 0, trades: [] as TradeRecord[] }]));
@@ -58,7 +58,7 @@ export function tallyReasons(records: TradeRecord[], reasons: LossReason[], tags
   }
   untagged.sort((a, b) => b.closeTime - a.closeTime);
   return {
-    rows: [...rows.values()].filter((x) => x.count).sort((a, b) => b.count - a.count || Math.abs(b.profit) - Math.abs(a.profit)),
+    rows: [...rows.values()].filter((x) => x.count),
     untagged,
   };
 }
@@ -68,4 +68,17 @@ export function newReasonId(reasons: LossReason[], prefix = 'r'): string {
   let n = reasons.length + 1;
   while (reasons.some((r) => r.id === `${prefix}${n}`)) n++;
   return `${prefix}${n}`;
+}
+
+/** フィボの数値の札か（「38.2」「61.8-78.6」のように数と区切りだけの名前） */
+export const isFiboReason = (name: string) => /^\s*\d+(\.\d+)?(\s*[-–〜~]\s*\d+(\.\d+)?)?\s*$/.test(name);
+
+/**
+ * もう一方の一覧にあって、この一覧に無いフィボの数値の札（勝因の一覧にも敗因と同じ数値を用意するため）。
+ * 名前の空白の違いは同じとみなす。並びはもう一方の一覧のまま
+ */
+export function missingFiboReasons(list: LossReason[], other: LossReason[]): string[] {
+  const norm = (n: string) => n.replace(/\s/g, '');
+  const have = new Set(list.map((r) => norm(r.name)));
+  return other.filter((r) => isFiboReason(r.name) && !have.has(norm(r.name))).map((r) => r.name);
 }

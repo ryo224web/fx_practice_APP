@@ -1,6 +1,7 @@
 // 取引に敗因・勝因の札を付ける小さな欄（履歴の行・チャートの矢印の右クリック）。
 // チェックで付け外しし、続けて何個でも選べる。1〜9 のキーで上から n 番目を付け外し、下の欄に打って Enter で新しい札を足す。
 // 行にマウスを乗せると出る ✎ で名前を変え、🗑 で一覧から消す（付けてある札も数えなくなる）。行をドラッグすると並びを変える。
+// もう一方の一覧（勝因なら敗因）にあるフィボの数値の札で、この一覧に無いものはボタン 1 つで写せる。
 
 import type { LossReason } from '../trade/lossReasons';
 
@@ -17,6 +18,12 @@ export interface TagPickerOptions {
   onDelete: (id: string) => void;
   /** 並びを変えた（新しい並びの ID） */
   onReorder: (ids: string[]) => void;
+  /** もう一方の一覧から写せるフィボの数値の札（無ければボタンを出さない） */
+  copyable?: () => string[];
+  /** copyable の札を一覧の最後に足す */
+  onCopy?: () => void;
+  /** 写す元の一覧の呼び名 */
+  copyLabel?: string;
 }
 
 let current: { el: HTMLElement; close: () => void } | null = null;
@@ -33,6 +40,7 @@ export function openTagPicker(x: number, y: number, o: TagPickerOptions) {
   const render = () => {
     const sel = o.selected();
     const list = o.reasons();
+    const copy = o.copyable?.() ?? [];
     el.innerHTML = `<div class="tp-head">${esc(o.title)}</div>
       <div class="tp-list">${
         list.length
@@ -45,6 +53,7 @@ export function openTagPicker(x: number, y: number, o: TagPickerOptions) {
           : `<div class="hint tp-empty">まだ${esc(o.label)}がありません。下に打って Enter で足します</div>`
       }</div>
       <input class="tp-new" type="text" placeholder="新しい${esc(o.label)}を打って Enter" spellcheck="false">
+      ${copy.length ? `<button type="button" class="tp-copy" data-tp="copy" title="${esc(copy.join('・'))}">${esc(o.copyLabel ?? '')}のフィボの数値を写す（${copy.length} 個）</button>` : ''}
       <div class="hint tp-hint">1〜9 のキーでも付け外し・ドラッグで並べ替え・Esc で閉じる</div>`;
   };
   render();
@@ -98,6 +107,11 @@ export function openTagPicker(x: number, y: number, o: TagPickerOptions) {
     const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-tp]');
     if (!b) return;
     e.preventDefault();
+    if (b.dataset.tp === 'copy') {
+      o.onCopy?.();
+      render();
+      return;
+    }
     const id = b.closest<HTMLElement>('.tp-row')!.dataset.id!;
     const r = o.reasons().find((x) => x.id === id);
     if (!r) return;

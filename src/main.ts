@@ -48,7 +48,8 @@ import { renderHistory, renderMt4, renderTrade, type Mt4Row, type TerminalTab } 
 import { quickSummary, REPORT_CSS, reportBody, reportHtml } from './ui/report';
 import { loadAppSettings, saveAppSettings } from './appSettings';
 import { notebookFrom, setupQuickNotes, type NoteBook } from './ui/quickNotes';
-import { DEFAULT_LOSS_REASONS, DEFAULT_WIN_REASONS, isWin, newReasonId, tallyReasons, type LossReason } from './trade/lossReasons';
+import { DEFAULT_LOSS_REASONS, DEFAULT_WIN_REASONS, isWin, missingFiboReasons, newReasonId, tallyReasons, type LossReason } from './trade/lossReasons';
+import { initSymbolMenu, orderSymbols } from './ui/symbolMenu';
 import { openTagPicker } from './ui/tagPicker';
 import './style.css';
 
@@ -69,6 +70,11 @@ const DAY_BARS = 1440;
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 const statusEl = $('#status');
 const symbolEl = $<HTMLSelectElement>('#symbol');
+/** 銘柄のボタンと一覧（並びはドラッグで変える。共通の設定の symbolOrder） */
+const symbolMenu = initSymbolMenu(symbolEl, {
+  onPick: (symbol) => void changeSymbol(symbol).finally(symbolMenu.refresh),
+  onReorder: (order) => void saveAppSettings({ symbolOrder: order }),
+});
 const clockEl = $('#clock');
 const playBtn = $<HTMLButtonElement>('#play');
 const speedEl = $<HTMLInputElement>('#speed');
@@ -1014,6 +1020,7 @@ function openTagPickerFor(kind: 'history' | 'mt4', ticket: number, close: number
   const win = isWin(profit);
   const { label, prefix } = reasonKind(win);
   const list = () => reasonKind(win).list;
+  const otherList = () => reasonKind(!win).list;
   const key = tagKeyOf(kind === 'mt4', ticket, openTime);
   const changed = () => {
     saveTags();
@@ -1042,6 +1049,14 @@ function openTagPickerFor(kind: 'history' | 'mt4', ticket: number, close: number
     },
     onRename: (id, name) => {
       setReasons(win, list().map((r) => (r.id === id ? { ...r, name } : r)));
+      changed();
+    },
+    copyLabel: reasonKind(!win).label,
+    copyable: () => missingFiboReasons(list(), otherList()),
+    onCopy: () => {
+      let next = list();
+      for (const name of missingFiboReasons(next, otherList())) next = [...next, { id: newReasonId(next, prefix), name }];
+      setReasons(win, next);
       changed();
     },
     onReorder: (ids) => {
@@ -1091,15 +1106,15 @@ function reasonCard(records: TradeRecord[], source: 'virtual' | 'mt4', links: bo
     const ref = (r: TradeRecord, action: string) =>
       links ? `<a data-action="${action}" data-kind="${mt4 ? 'mt4' : 'history'}" data-ticket="${r.ticket}" data-close="${r.closeTime}" title="${action === 'reason-tag' ? `クリックでこの取引を表示して、${label}を付ける` : 'クリックでこの取引を表示'}">#${r.ticket}</a>` : `#${r.ticket}`;
     const rows = t.rows
-      .map((x) => `<tr><td>${esc(x.reason.name)}</td><td class="num">${x.count}</td>${money(x.profit)}<td class="num">${x.pips.toFixed(1)}</td>${money(x.profit / x.count)}<td class="tickets">${x.trades.map((r) => ref(r, 'reason-trade')).join(' ')}</td></tr>`)
+      .map((x) => `<tr${links ? ` class="reason-row" draggable="true" data-reason="${x.reason.id}" data-win="${win ? 1 : 0}" title="ドラッグで並びを変える"` : ''}><td>${esc(x.reason.name)}</td><td class="num">${x.count}</td>${money(x.profit)}<td class="num">${x.pips.toFixed(1)}</td>${money(x.profit / x.count)}<td class="tickets">${x.trades.map((r) => ref(r, 'reason-trade')).join(' ')}</td></tr>`)
       .join('');
     const untagged = t.untagged.length ? `<p class="hint">${label}の無い${win ? '勝ち' : '負け'} ${t.untagged.length} 件: ${t.untagged.map((r) => ref(r, 'reason-tag')).join(' ')}</p>` : '';
     const body = t.rows.length
-      ? `<table><thead><tr><th>${label}</th><th>回数</th><th>損益</th><th>pips</th><th>1 回あたり</th><th>取引</th></tr></thead><tbody>${rows}</tbody></table>`
+      ? `<table class="report-table reason-table"><thead><tr><th>${label}</th><th>回数</th><th>損益</th><th>pips</th><th>1 回あたり</th><th>取引</th></tr></thead><tbody>${rows}</tbody></table>`
       : `<p class="hint">まだ${label}を付けた取引がありません</p>`;
-    return `<section class="card reason-card"><h3>${label}別</h3>${body}${untagged}</section>`;
+    return `<section class="card wide reason-card"><h3>${label}別</h3>${body}${untagged}</section>`;
   };
-  const how = links ? '<p class="hint reason-how">口座履歴・MT4 履歴の行か、チャートの矢印を右クリックすると札を付けられます（負けは敗因・勝ちは勝因。1〜9 のキーでも付け外し）</p>' : '';
+  const how = links ? '<p class="hint reason-how">口座履歴・MT4 履歴の行か、チャートの矢印を右クリックすると札を付けられます（負けは敗因・勝ちは勝因。1〜9 のキーでも付け外し）。表の行をドラッグすると並びを変えられます</p>' : '';
   return `<div class="report">${section(false)}${section(true)}</div>${how}`;
 }
 
@@ -1331,6 +1346,7 @@ async function startTest(symbol: string, start: number, balance: number, leverag
   if (idx < 0) return 'その日時より前のデータがありません';
   state.symbol = md.symbol;
   symbolEl.value = md.symbol;
+  symbolMenu.refresh();
   const t = md.bid[idx].t;
   state.cursor = t;
   cursor = idx;
@@ -2797,6 +2813,7 @@ async function changeSymbol(symbol: string) {
   if (account.positions.length || account.orders.length) {
     toast('ポジションと待機注文をすべて閉じてから銘柄を切り替えてください');
     symbolEl.value = md.symbol;
+    symbolMenu.refresh();
     return;
   }
   setPlaying(false);
@@ -3077,7 +3094,6 @@ function setupControls() {
     refresh();
   });
 
-  symbolEl.addEventListener('change', () => changeSymbol(symbolEl.value));
   $('#new-order').addEventListener('click', () => openOrderDialog());
   $('#new-test').addEventListener('click', openNewTestDialog);
 
@@ -3148,6 +3164,54 @@ function setupControls() {
     if (row.dataset.kind === 'mt4') jumpToTrade(Number(row.dataset.ticket));
     else if (row.dataset.kind === 'history') void showHistoryTrade(Number(row.dataset.ticket), Number(row.dataset.close));
     else openModifyDialog(Number(row.dataset.ticket));
+  });
+  // 成績タブの敗因別・勝因別の行をドラッグして、一覧の並びを変える（行の上半分に落とすとその上、下半分なら下。札を付ける欄の並びも同じ）
+  let dragReason: { id: string; win: string } | null = null;
+  const reasonDropAt = (e: DragEvent) => {
+    const row = (e.target as HTMLElement).closest<HTMLElement>('tr.reason-row');
+    if (!row || !dragReason || row.dataset.win !== dragReason.win) return null;
+    const r = row.getBoundingClientRect();
+    return { row, after: e.clientY > r.top + r.height / 2 };
+  };
+  const clearReasonDrop = () => termBody.querySelectorAll('.rs-drop-before, .rs-drop-after').forEach((x) => x.classList.remove('rs-drop-before', 'rs-drop-after'));
+  termBody.addEventListener('dragstart', (e) => {
+    const row = (e.target as HTMLElement).closest<HTMLElement>('tr.reason-row');
+    dragReason = row ? { id: row.dataset.reason!, win: row.dataset.win! } : null;
+    if (dragReason && e.dataTransfer) {
+      e.dataTransfer.setData('text/plain', dragReason.id);
+      e.dataTransfer.effectAllowed = 'move';
+    }
+  });
+  termBody.addEventListener('dragover', (e) => {
+    const at = reasonDropAt(e);
+    clearReasonDrop();
+    if (!at) return;
+    e.preventDefault();
+    at.row.classList.add(at.after ? 'rs-drop-after' : 'rs-drop-before');
+  });
+  termBody.addEventListener('dragend', () => {
+    dragReason = null;
+    clearReasonDrop();
+  });
+  termBody.addEventListener('drop', (e) => {
+    const at = reasonDropAt(e);
+    const from = dragReason;
+    clearReasonDrop();
+    dragReason = null;
+    if (!at || !from) return;
+    e.preventDefault();
+    const to = at.row.dataset.reason!;
+    if (to === from.id) return;
+    // 表に出ていない（まだ付けていない）札は、一覧の中の位置のまま
+    const win = from.win === '1';
+    const list = reasonKind(win).list;
+    const moved = list.find((r) => r.id === from.id);
+    if (!moved) return;
+    const rest = list.filter((r) => r.id !== from.id);
+    rest.splice(rest.findIndex((r) => r.id === to) + (at.after ? 1 : 0), 0, moved);
+    setReasons(win, rest);
+    saveTags();
+    renderTerminal(true);
   });
   termBody.addEventListener('click', (e) => {
     const target = (e.target as HTMLElement).closest<HTMLElement>('[data-action]');
@@ -3713,7 +3777,7 @@ async function start() {
   createPanes();
   setMagnet(!!settings.magnet, false);
   manifest = await loadManifest();
-  const symbols = manifest ? Object.keys(manifest.symbols).filter((s) => manifest!.symbols[s].months.length) : [];
+  const symbols = orderSymbols(manifest ? Object.keys(manifest.symbols).filter((s) => manifest!.symbols[s].months.length) : [], settings.symbolOrder);
   if (!manifest || symbols.length === 0) {
     manifest = null;
     symbolEl.hidden = true;
@@ -3724,6 +3788,7 @@ async function start() {
     state.test = null;
   }
   symbolEl.value = state.symbol;
+  symbolMenu.refresh();
 
   // 前回の続きなら、今の時刻の辺りを読み込む（口座は保存した区切りから計算するので、検証の最初まで読まなくてよい）
   const resume = state.test && state.cursor ? state.cursor : null;

@@ -55,6 +55,11 @@ export interface Drawing {
    * （本体も時刻と価格で持つと、M1 と H1 で本体としっぽの先の離れ方が何十倍も変わるため。2026-10-27）
    */
   offset?: { x: number; y: number };
+  /**
+   * 吹き出しをいつも開いておく（吹き出しの右上の 📌 を押す）。無ければ、ふだんはしっぽの先の近くに小さな印だけ出し、
+   * 印にマウスを乗せたとき・選んでいるときだけ開く（チャートがコメントで埋まらないように。2026-11-02）
+   */
+  pinned?: boolean;
   /** 描いた日時（UTC ミリ秒。リプレイの時刻ではなく本当の日時）。テキストはマウスを乗せると右下にうっすら出す */
   created?: number;
 }
@@ -66,6 +71,17 @@ const CALLOUT_FILL = '#f3efe0';
 const CALLOUT_PAD = 8;
 const CALLOUT_RADIUS = 8;
 const textPad = (d: Drawing) => (d.callout ? CALLOUT_PAD : TEXT_PAD);
+/** たたんだ吹き出しの印の半径と、しっぽの先から印の真ん中までの距離（px。先の足を隠さないよう、本体の方へずらす） */
+const MARK_R = 8;
+const MARK_GAP = 14;
+/** 吹き出しの右上の 📌 の、本体の右上の角からのずれと、押せる半径（px。角のつまみと重ならないよう外へ出す） */
+const PIN_DX = 11;
+const PIN_DY = 1;
+const PIN_R = 9;
+/** 開いている吹き出しにマウスが乗っているとみなす、本体・しっぽの周りの幅（px）と、外れてからたたむまでの時間（ms） */
+const OPEN_MARGIN = 12;
+const OPEN_TAIL = 16;
+const CLOSE_DELAY = 300;
 
 /** 色が明るいか（吹き出しの文字を黒にするか白にするか決める） */
 function isLight(color: string): boolean {
@@ -349,6 +365,10 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   private hoverId: string | null = null;
 
   private setHover(id: string | null) {
+    if (this.closeTimer) {
+      clearTimeout(this.closeTimer);
+      this.closeTimer = null;
+    }
     if (id === this.hoverId) return;
     this.hoverId = id;
     this.refresh();
@@ -378,9 +398,42 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       }
     }
     if (this.drag || this.placing || this.polyId || this.editingId) return this.setHover(null);
-    const hit = this.hitDrawing({ x: e.clientX - r.left, y: e.clientY - r.top });
+    const px = { x: e.clientX - r.left, y: e.clientY - r.top };
+    // 開いている吹き出しは、本体・しっぽの周りを広めに見る（しっぽの細い線から少し外れただけでたたまないように）
+    const open = this.hoverId ? this.drawings.find((x) => x.id === this.hoverId) : null;
+    if (open && this.nearCallout(open, px)) return this.setHover(open.id);
+    const hit = this.hitDrawing(px);
     const d = hit && this.drawings.find((x) => x.id === hit.id);
-    this.setHover(d && d.kind === 'text' && d.created ? d.id : null);
+    const id = d && d.kind === 'text' ? d.id : null;
+    // 吹き出しから外れたときは少し待ってからたたむ（印から本文へ動かす途中で閉じないように）
+    if (!id && open?.callout) return this.closeLater();
+    this.setHover(id);
+  }
+
+  private closeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private closeLater() {
+    if (this.closeTimer) return;
+    this.closeTimer = setTimeout(() => {
+      this.closeTimer = null;
+      this.setHover(null);
+    }, CLOSE_DELAY);
+  }
+
+  /** 開いている吹き出しの本体・しっぽ・📌 の周りに px があるか */
+  private nearCallout(d: Drawing, px: Px): boolean {
+    if (d.kind !== 'text' || !d.callout) return false;
+    const a = this.textAnchor(d);
+    const box = this.textBoxes.get(d.id);
+    const tip = d.points[1] ? this.toPx(d.points[1]) : null;
+    if (!a || !box) return false;
+    const pad = textPad(d);
+    const [x0, y0, x1, y1] = [a.x - pad, a.y - pad, a.x + box.w + pad, a.y + box.h + pad];
+    if (px.x >= x0 - OPEN_MARGIN && px.x <= x1 + PIN_DX + PIN_R && px.y >= y0 - OPEN_MARGIN && px.y <= y1 + OPEN_MARGIN) return true;
+    if (!tip) return false;
+    const base = calloutTail(x0, y0, x1, y1, tip);
+    const from = base ? { x: (base[0].x + base[1].x) / 2, y: (base[0].y + base[1].y) / 2 } : { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+    return distToSegment(px, from, tip) <= OPEN_TAIL;
   }
 
   private onDouble(e: MouseEvent) {
@@ -606,12 +659,33 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     return { px, l, p };
   }
 
+  /** 開いている吹き出しの 📌 の真ん中（描いたときに置く。押すといつも開く・たたむを切り替える） */
+  private pins = new Map<string, Px>();
+
+  /** px にある 📌 の吹き出し */
+  private pinAt(px: Px): Drawing | null {
+    for (const [id, c] of this.pins) if (Math.hypot(px.x - c.x, px.y - c.y) <= PIN_R) return this.drawings.find((d) => d.id === id) ?? null;
+    return null;
+  }
+
   /** テキストの大きさ（描いたときに測る。つかむ判定に使う） */
   private textBoxes = new Map<string, { w: number; h: number }>();
   /** フィボの水準の数値の四角（描いたときに測る。水準の線ではなく、この数値でつかむ） */
   private fiboLabels = new Map<string, { x1: number; y1: number; x2: number; y2: number }[]>();
   /** 打ち直しているテキスト */
   private editingId: string | null = null;
+
+  /** 吹き出しをたたんで印だけ出すか（📌 で開いたままにしたもの・選んでいるもの・マウスを乗せているもの・打っているものは開く） */
+  private collapsed(d: Drawing): boolean {
+    return this.relative(d) && !d.pinned && d.id !== this.selectedId && d.id !== this.hoverId && d.id !== this.editingId;
+  }
+
+  /** たたんだ吹き出しの印の真ん中（しっぽの先から本体の方へ少しずらす） */
+  private markOf(d: Drawing, tip: Px): Px {
+    const o = d.offset ?? { x: 0, y: -1 };
+    const len = Math.hypot(o.x, o.y) || 1;
+    return { x: tip.x + (o.x / len) * MARK_GAP, y: tip.y + (o.y / len) * MARK_GAP };
+  }
 
   /** 吹き出しで、本体の位置をしっぽの先からの距離で持つか */
   private relative(d: Drawing): boolean {
@@ -795,6 +869,8 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       if (!d.text) this.drawings = this.drawings.filter((x) => x !== d);
       else if (d.callout) this.ensureTail(d);
       this.selectedId = null;
+      // 打ち終えた吹き出しは、マウスを動かして離れるまで開いておく（すぐたたむと打った文字が見えない）
+      this.hoverId = d.text ? d.id : null;
       this.onChange();
       this.refresh();
     };
@@ -1075,6 +1151,19 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
           hit = Math.abs(px.x - a.x) <= HIT;
           break;
         case 'text': {
+          // たたんだ吹き出しは印の上だけ
+          if (this.collapsed(d) && b) {
+            const m = this.markOf(d, b);
+            // 印の周りと、しっぽの先から印までの細い線の上（小さくてねらいにくいので広めに）
+            hit = Math.hypot(px.x - m.x, px.y - m.y) <= MARK_R + 6 || distToSegment(px, b, m) <= HIT;
+            break;
+          }
+          // 📌 の上も吹き出しの一部（マウスを 📌 へ動かしてもたたまない）
+          const pin = this.pins.get(d.id);
+          if (pin && Math.hypot(px.x - pin.x, px.y - pin.y) <= PIN_R) {
+            hit = true;
+            break;
+          }
           // 文字の四角（描いたときに測った大きさ）の中
           const box = this.textBoxes.get(d.id);
           const pad = textPad(d) + 2;
@@ -1229,6 +1318,17 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       this.drag = { id: d.id, handle, start: { l: m.l, p: m.p }, orig: d.points.map(() => ({ l: m.l, p: m.p })), moved: false, creating: true };
       e.stopPropagation();
       e.preventDefault();
+      this.refresh();
+      return;
+    }
+
+    // 吹き出しの右上の 📌: いつも開いておく・ふだんはたたむを切り替える（選んだり動かしたりはしない）
+    const pinned = this.pinAt(m.px);
+    if (pinned) {
+      pinned.pinned = !pinned.pinned;
+      e.stopPropagation();
+      e.preventDefault();
+      this.onChange();
       this.refresh();
       return;
     }
@@ -1438,8 +1538,31 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         line(a.x, 0, a.x, h);
         break;
       case 'text': {
+        this.pins.delete(d.id);
         // 打っている間は、打つ欄の方に出す
         if (this.editingId === d.id) break;
+        // たたんだ吹き出しは、しっぽの先の近くに小さな印だけ（先から印へ細い線）
+        if (this.collapsed(d) && b) {
+          const m = this.markOf(d, b);
+          const fill = d.custom ?? CALLOUT_FILL;
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 0.9;
+          ctx.strokeStyle = fill;
+          ctx.lineWidth = 1.5;
+          line(b.x, b.y, m.x - ((m.x - b.x) / MARK_GAP) * MARK_R, m.y - ((m.y - b.y) / MARK_GAP) * MARK_R);
+          ctx.fillStyle = fill;
+          ctx.beginPath();
+          ctx.roundRect(m.x - MARK_R, m.y - MARK_R + 1, MARK_R * 2, MARK_R * 2 - 2, 4);
+          ctx.fill();
+          // 吹き出しの中の 3 つの点
+          ctx.fillStyle = isLight(fill) ? '#333' : '#fff';
+          for (const dx of [-4, 0, 4]) {
+            ctx.beginPath();
+            ctx.arc(m.x + dx, m.y, 1.3, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          break;
+        }
         const size = this.textSizeOf(d);
         ctx.font = `${size}px system-ui, -apple-system, 'Hiragino Sans', sans-serif`;
         ctx.textBaseline = 'top';
@@ -1469,6 +1592,16 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
             ctx.closePath();
             ctx.fill();
           }
+          // 右上の 📌: いつも開いているものははっきり、マウスを乗せて開いているときはうっすら（押すと切り替える）
+          const pin = { x: x1 + PIN_DX, y: y0 + PIN_DY };
+          this.pins.set(d.id, pin);
+          ctx.save();
+          ctx.globalAlpha = d.pinned ? 0.95 : 0.5;
+          ctx.font = '13px system-ui, -apple-system, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('📌', pin.x, pin.y);
+          ctx.restore();
           ctx.fillStyle = isLight(fill) ? '#111' : '#fff';
         }
         lines.forEach((t, i) => ctx.fillText(t, a.x, a.y + i * lh));
