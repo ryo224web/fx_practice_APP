@@ -1,7 +1,8 @@
 // 取引に敗因・勝因の札を付ける小さな欄（履歴の行・チャートの矢印の右クリック）。
 // チェックで付け外しし、続けて何個でも選べる。1〜9 のキーで上から n 番目を付け外し、下の欄に打って Enter で新しい札を足す。
 // 行にマウスを乗せると出る ✎ で名前を変え、🗑 で一覧から消す（付けてある札も数えなくなる）。行をドラッグすると並びを変える。
-// もう一方の一覧（勝因なら敗因）にあるフィボの数値の札で、この一覧に無いものはボタン 1 つで写せる。
+// 右下の角をドラッグすると欄の幅と高さを変えられる（ダブルクリックで元の大きさ）。大きさは size・onResize で覚えてもらう。
+// もう一方の一覧（敗因なら勝因）にあってこの一覧に無い札は、「〜から写す」で選んでまとめて足せる（初めは全部にチェック）。
 
 import type { LossReason } from '../trade/lossReasons';
 
@@ -18,12 +19,16 @@ export interface TagPickerOptions {
   onDelete: (id: string) => void;
   /** 並びを変えた（新しい並びの ID） */
   onReorder: (ids: string[]) => void;
-  /** もう一方の一覧から写せるフィボの数値の札（無ければボタンを出さない） */
+  /** もう一方の一覧から写せる札の名前（無ければボタンを出さない） */
   copyable?: () => string[];
-  /** copyable の札を一覧の最後に足す */
-  onCopy?: () => void;
+  /** 選んだ名前の札を一覧の最後に足す */
+  onCopy?: (names: string[]) => void;
   /** 写す元の一覧の呼び名 */
   copyLabel?: string;
+  /** 前に変えた欄の大きさ（px。無ければ初めの大きさ） */
+  size?: { w: number; h: number } | null;
+  /** 右下の角で大きさを変えた（null は元の大きさに戻した） */
+  onResize?: (size: { w: number; h: number } | null) => void;
 }
 
 let current: { el: HTMLElement; close: () => void } | null = null;
@@ -37,6 +42,17 @@ export function openTagPicker(x: number, y: number, o: TagPickerOptions) {
   const el = document.createElement('div');
   el.className = 'tag-picker';
   const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+  // 写す項目を選んでいる間は、選ばない名前を覚える（初めは全部写す）
+  let copying = false;
+  const skip = new Set<string>();
+  const copyBox = (copy: string[]) => {
+    if (!copy.length) return '';
+    if (!copying) return `<button type="button" class="tp-copy" data-tp="copy" title="${esc(copy.join('・'))}">${esc(o.copyLabel ?? '')}の項目を写す…（${copy.length} 個）</button>`;
+    const n = copy.filter((c) => !skip.has(c)).length;
+    return `<div class="tp-copybox"><div class="tp-copyhead">${esc(o.copyLabel ?? '')}から写す項目</div>${copy
+      .map((c, i) => `<label class="tp-copyrow"><input type="checkbox" data-copy="${i}" ${skip.has(c) ? '' : 'checked'}><span>${esc(c)}</span></label>`)
+      .join('')}<div class="tp-copybtns"><button type="button" data-tp="copy-do" ${n ? '' : 'disabled'}>写す（${n} 個）</button><button type="button" data-tp="copy-cancel">やめる</button></div></div>`;
+  };
   const render = () => {
     const sel = o.selected();
     const list = o.reasons();
@@ -53,10 +69,51 @@ export function openTagPicker(x: number, y: number, o: TagPickerOptions) {
           : `<div class="hint tp-empty">まだ${esc(o.label)}がありません。下に打って Enter で足します</div>`
       }</div>
       <input class="tp-new" type="text" placeholder="新しい${esc(o.label)}を打って Enter" spellcheck="false">
-      ${copy.length ? `<button type="button" class="tp-copy" data-tp="copy" title="${esc(copy.join('・'))}">${esc(o.copyLabel ?? '')}のフィボの数値を写す（${copy.length} 個）</button>` : ''}
-      <div class="hint tp-hint">1〜9 のキーでも付け外し・ドラッグで並べ替え・Esc で閉じる</div>`;
+      ${copyBox(copy)}
+      <div class="hint tp-hint">1〜9 のキーでも付け外し・ドラッグで並べ替え・Esc で閉じる</div>
+      <div class="tp-resize" title="ドラッグで大きさを変える・ダブルクリックで元に戻す"></div>`;
   };
+  const setSize = (s: { w: number; h: number } | null | undefined) => {
+    el.classList.toggle('tp-sized', !!s);
+    el.style.width = s ? `${s.w}px` : '';
+    el.style.height = s ? `${s.h}px` : '';
+  };
+  setSize(o.size);
   render();
+  // 右下の角をドラッグして大きさを変える（左上は動かさない）
+  el.addEventListener('mousedown', (e) => {
+    if (e.button !== 0 || !(e.target as HTMLElement).classList.contains('tp-resize')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const r = el.getBoundingClientRect();
+    let size = { w: Math.round(r.width), h: Math.round(r.height) };
+    const move = (m: MouseEvent) => {
+      size = {
+        w: Math.round(Math.max(260, Math.min(innerWidth - r.left - 4, r.width + m.clientX - e.clientX))),
+        h: Math.round(Math.max(180, Math.min(innerHeight - r.top - 4, r.height + m.clientY - e.clientY))),
+      };
+      setSize(size);
+    };
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      o.onResize?.(size);
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  });
+  el.addEventListener('dblclick', (e) => {
+    if (!(e.target as HTMLElement).classList.contains('tp-resize')) return;
+    setSize(null);
+    o.onResize?.(null);
+    place();
+  });
+  // 画面からはみ出さないように置く（写す項目を開いて背が伸びたときも置き直す）
+  const place = () => {
+    const r = el.getBoundingClientRect();
+    el.style.left = `${Math.max(4, Math.min(x, innerWidth - r.width - 4))}px`;
+    el.style.top = `${Math.max(4, Math.min(y, innerHeight - r.height - 4))}px`;
+  };
   // 行をドラッグして並べ替える（行の上半分に落とすとその上、下半分なら下）
   let dragId: string | null = null;
   const dropAt = (e: DragEvent) => {
@@ -100,6 +157,15 @@ export function openTagPicker(x: number, y: number, o: TagPickerOptions) {
   });
   el.addEventListener('change', (e) => {
     const box = e.target as HTMLInputElement;
+    if (box.dataset.copy !== undefined) {
+      const name = (o.copyable?.() ?? [])[Number(box.dataset.copy)];
+      if (name !== undefined) {
+        if (box.checked) skip.delete(name);
+        else skip.add(name);
+      }
+      render();
+      return;
+    }
     const id = box.closest<HTMLElement>('.tp-row')?.dataset.id;
     if (id) o.onToggle(id, box.checked);
   });
@@ -107,9 +173,19 @@ export function openTagPicker(x: number, y: number, o: TagPickerOptions) {
     const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-tp]');
     if (!b) return;
     e.preventDefault();
-    if (b.dataset.tp === 'copy') {
-      o.onCopy?.();
+    if (b.dataset.tp === 'copy' || b.dataset.tp === 'copy-cancel') {
+      copying = b.dataset.tp === 'copy';
+      skip.clear();
       render();
+      place();
+      return;
+    }
+    if (b.dataset.tp === 'copy-do') {
+      o.onCopy?.((o.copyable?.() ?? []).filter((c) => !skip.has(c)));
+      copying = false;
+      skip.clear();
+      render();
+      place();
       return;
     }
     const id = b.closest<HTMLElement>('.tp-row')!.dataset.id!;
@@ -163,9 +239,6 @@ export function openTagPicker(x: number, y: number, o: TagPickerOptions) {
   // 開いた右クリックの mousedown で閉じないよう、次の操作から見る
   setTimeout(() => document.addEventListener('mousedown', onDown, true), 0);
   document.body.append(el);
-  // 画面からはみ出さないように置く
-  const r = el.getBoundingClientRect();
-  el.style.left = `${Math.max(4, Math.min(x, innerWidth - r.width - 4))}px`;
-  el.style.top = `${Math.max(4, Math.min(y, innerHeight - r.height - 4))}px`;
+  place();
   current = { el, close };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isFiboReason, missingFiboReasons, newReasonId, tallyReasons, type LossReason } from '../src/trade/lossReasons';
+import { isFiboReason, missingReasons, newReasonId, tallyReasons, type LossReason } from '../src/trade/lossReasons';
 import type { TradeRecord } from '../src/trade/analysis';
 
 const rec = (ticket: number, profit: number, pips: number, closeTime = ticket): TradeRecord => ({
@@ -63,10 +63,10 @@ describe('tallyReasons', () => {
     expect(newReasonId([], 'w')).toBe('w1');
   });
 
-  it('finds fib values the other list has and this one lacks', () => {
+  it('finds reasons the other list has and this one lacks', () => {
     expect(['38.2', '61.8-78.6', '0 - 23.6', '23.6〜38.2'].every(isFiboReason)).toBe(true);
     expect(['H1 3波じゃない', '50%', 'SL 38.2'].some(isFiboReason)).toBe(false);
     const loss = [{ id: 'r1', name: 'エントリーが遅い' }, { id: 'r2', name: '38.2' }, { id: 'r3', name: '61.8 - 78.6' }, { id: 'r4', name: '50' }];
-    expect(missingFiboReasons([{ id: 'w1', name: '61.8-78.6' }], loss)).toEqual(['38.2', '50']);
+    expect(missingReasons([{ id: 'w1', name: '61.8-78.6' }], loss)).toEqual(['エントリーが遅い', '38.2', '50']);
   });
 });

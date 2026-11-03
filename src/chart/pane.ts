@@ -11,6 +11,7 @@ import type { ServerTimeRule } from '../core/time';
 import { formatWallWithWeekday } from '../core/format';
 import { TimeMapper } from './mapper';
 import { TradeOverlay } from './trades';
+import { HtfOverlay } from './htf';
 
 /** 時間足ごとに作った足（main.ts で作って全チャートで使い回す） */
 export interface AggEntry {
@@ -89,6 +90,16 @@ const DEFAULT_BAR_SPACING = 6;
 const css = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 /** 昇順の配列で、v 以下の最後の位置 */
+/** 重ねる長い時間足（M1 → M5、M5 → M15、M15・M30 → H1、H1 → H4、H4 → D1。D1 以上は無し） */
+export function htfOf(tf: Timeframe): Timeframe | null {
+  if (tf === 'M1') return 'M5';
+  if (tf === 'M5') return 'M15';
+  if (TIMEFRAMES[tf] < TIMEFRAMES.H1) return 'H1';
+  if (tf === 'H1') return 'H4';
+  if (tf === 'H4') return 'D1';
+  return null;
+}
+
 export function lastLE(arr: readonly number[], v: number): number {
   let lo = 0;
   let hi = arr.length - 1;
@@ -107,6 +118,9 @@ export class ChartPane {
   readonly overlay: TradeOverlay;
   readonly drawings: DrawingManager;
   readonly indicators: IndicatorLayer;
+  /** 長い時間足の足を後ろに重ねる（キーを押している間だけ。src/chart/htf.ts） */
+  private readonly htf: HtfOverlay;
+  private htfOn = false;
   private readonly legend: HTMLElement;
   /** ライブ: 今の足が終わるまでの残り時間（ドラッグで動かし、ホイールで大きさを変える） */
   private readonly countdown: HTMLElement;
@@ -207,6 +221,8 @@ export class ChartPane {
     });
     // 縦の目盛りの上下の余白は TradingView くらいに狭く（初期値は上 20%・下 10% で、ローソク足が潰れて見えた）
     this.series.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0.08 } });
+    this.htf = new HtfOverlay(this.mapper);
+    this.series.attachPrimitive(this.htf);
     // 注文の線のドラッグを図形より優先するため、先に登録する
     this.overlay = new TradeOverlay(box, this.mapper);
     this.series.attachPrimitive(this.overlay);
@@ -484,7 +500,32 @@ export class ChartPane {
     this.shown = { tf: this.tf, k, version, start, extraT, cursor };
     this.indicators.render({ key: `${this.tf}:${version}`, closes, times: chartTimes, k, partialClose: partial.close, offset: start });
     this.drawings.refresh();
+    this.updateHtf();
     if (!this.hovering) this.renderLegend(null);
+  }
+
+  /** 長い時間足の足を重ねる・やめる（htfOf の時間足。D1 以上には重ねない） */
+  setHtf(on: boolean) {
+    this.htfOn = on;
+    this.updateHtf();
+  }
+
+  private updateHtf() {
+    const tf = htfOf(this.tf);
+    if (!this.htfOn || this.el.hidden || !tf) return this.htf.clear();
+    const { agg } = this.host.agg(tf);
+    const cursor = this.host.cursor();
+    const k = lastLE(agg.starts, cursor);
+    if (k < 0) return this.htf.clear();
+    // 今の足は今の時刻までの 1 分足だけで作る。ライブのできかけの足が同じ区切りなら含める
+    const cur = mergeBars(this.host.bid(), agg.starts[k], cursor, agg.bars[k].t);
+    const f = cursor === this.host.bid().length - 1 ? this.host.forming() : null;
+    if (f && periodStartUtc(f.t, tf, this.host.rule()) === cur.t) {
+      cur.h = Math.max(cur.h, f.h);
+      cur.l = Math.min(cur.l, f.l);
+      cur.c = f.c;
+    }
+    this.htf.set(agg.bars, k, cur, TIMEFRAMES[tf] * 60_000);
   }
 
   private renderLegend(bar: { open: number; high: number; low: number; close: number } | null) {

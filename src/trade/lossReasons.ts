@@ -74,11 +74,11 @@ export function newReasonId(reasons: LossReason[], prefix = 'r'): string {
 export const isFiboReason = (name: string) => /^\s*\d+(\.\d+)?(\s*[-–〜~]\s*\d+(\.\d+)?)?\s*$/.test(name);
 
 /**
- * もう一方の一覧にあって、この一覧に無いフィボの数値の札（勝因の一覧にも敗因と同じ数値を用意するため）。
- * 名前の空白の違いは同じとみなす。並びはもう一方の一覧のまま
+ * もう一方の一覧にあって、この一覧に無い札の名前（勝因と同じ項目（フィボの数値・エントリーの形など）を敗因にも用意して、
+ * 組み合わせごとに勝ち負けを比べるため）。名前の空白の違いは同じとみなす。並びはもう一方の一覧のまま
  */
-export function missingFiboReasons(list: LossReason[], other: LossReason[]): string[] {
+export function missingReasons(list: LossReason[], other: LossReason[]): string[] {
   const norm = (n: string) => n.replace(/\s/g, '');
   const have = new Set(list.map((r) => norm(r.name)));
-  return other.filter((r) => isFiboReason(r.name) && !have.has(norm(r.name))).map((r) => r.name);
+  return other.filter((r) => !have.has(norm(r.name))).map((r) => r.name);
 }

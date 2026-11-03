@@ -25,6 +25,8 @@ export interface AppSettings {
   symbolOrder?: string[];
   /** 図形の太さ・線の種類の欄の場所（チャートの右端・上端からの距離。px） */
   styleBarPos?: { right: number; top: number };
+  /** 敗因・勝因の札を付ける欄の大きさ（右下の角で変える） */
+  tagPickerSize?: { w: number; h: number } | null;
   /** ライブの残り時間の場所（チャートの右端・上端からの距離。px）と文字の大きさ */
   countdown?: { right: number; top: number; size: number };
   /** 行のダブルクリックで指定した取引を、リスクリワードの形（建値・S/L・T/P）でも見せるか。無ければ見せる */

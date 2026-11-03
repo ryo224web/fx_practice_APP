@@ -663,6 +663,9 @@ td.sell {
 .tag-picker {
   position: fixed;
   z-index: 20;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
   width: 400px;
   padding: 8px;
   background: var(--panel);
@@ -678,6 +681,25 @@ td.sell {
 .tag-picker .tp-list {
   max-height: 320px;
   overflow-y: auto;
+}
+/* 大きさを変えたときは、一覧が残りの高さを使う */
+.tag-picker.tp-sized .tp-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+.tag-picker > * {
+  flex-shrink: 0;
+}
+.tag-picker .tp-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, var(--border) 50%, var(--border) 60%, transparent 60%, transparent 72%, var(--border) 72%, var(--border) 82%, transparent 82%);
+  border-bottom-right-radius: 8px;
 }
 .tag-picker .tp-row {
   display: flex;
@@ -726,6 +748,30 @@ td.sell {
 .tag-picker .tp-copy {
   width: 100%;
   margin-top: 6px;
+}
+.tag-picker .tp-copybox {
+  margin-top: 6px;
+  padding: 6px;
+  border: 1px solid var(--grid);
+  border-radius: 4px;
+}
+.tag-picker .tp-copyhead {
+  margin-bottom: 4px;
+  opacity: 0.8;
+}
+.tag-picker .tp-copyrow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 1px 0;
+}
+.tag-picker .tp-copybtns {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.tag-picker .tp-copybtns button {
+  flex: 1;
 }
 .tag-picker .tp-hint,
 .tag-picker .tp-empty {

@@ -48,7 +48,7 @@ import { renderHistory, renderMt4, renderTrade, type Mt4Row, type TerminalTab } 
 import { quickSummary, REPORT_CSS, reportBody, reportHtml } from './ui/report';
 import { loadAppSettings, saveAppSettings } from './appSettings';
 import { notebookFrom, setupQuickNotes, type NoteBook } from './ui/quickNotes';
-import { DEFAULT_LOSS_REASONS, DEFAULT_WIN_REASONS, isWin, missingFiboReasons, newReasonId, tallyReasons, type LossReason } from './trade/lossReasons';
+import { DEFAULT_LOSS_REASONS, DEFAULT_WIN_REASONS, isWin, missingReasons, newReasonId, tallyReasons, type LossReason } from './trade/lossReasons';
 import { initSymbolMenu, orderSymbols } from './ui/symbolMenu';
 import { openTagPicker } from './ui/tagPicker';
 import './style.css';
@@ -1051,11 +1051,16 @@ function openTagPickerFor(kind: 'history' | 'mt4', ticket: number, close: number
       setReasons(win, list().map((r) => (r.id === id ? { ...r, name } : r)));
       changed();
     },
+    size: tagPickerSize,
+    onResize: (size) => {
+      tagPickerSize = size;
+      void saveAppSettings({ tagPickerSize: size });
+    },
     copyLabel: reasonKind(!win).label,
-    copyable: () => missingFiboReasons(list(), otherList()),
-    onCopy: () => {
+    copyable: () => missingReasons(list(), otherList()),
+    onCopy: (names) => {
       let next = list();
-      for (const name of missingFiboReasons(next, otherList())) next = [...next, { id: newReasonId(next, prefix), name }];
+      for (const name of names) next = [...next, { id: newReasonId(next, prefix), name }];
       setReasons(win, next);
       changed();
     },
@@ -3396,6 +3401,9 @@ function setupControls() {
   });
 
   document.addEventListener('keydown', onKey);
+  // 長い時間足はキーを押している間だけ重ねる（Shift などを先に離しても、同じ位置のキーを離したときにやめる）
+  document.addEventListener('keyup', (e) => htfKey && e.code === htfKey && setHtf(null));
+  window.addEventListener('blur', () => htfKey && setHtf(null));
   window.addEventListener('beforeunload', () => save(true));
   // 別のアプリに切り替えたときもすぐ書く（閉じる直前の分がファイルに届かないことがあるため）
   document.addEventListener('visibilitychange', () => document.hidden && save(true));
@@ -3451,6 +3459,8 @@ function setMagnet(on: boolean, persist = true) {
 let palette: string[] = DEFAULT_PALETTE;
 /** 図形の太さ・線の種類の欄の場所（全部のプロジェクトで共通） */
 let styleBarPos: { right: number; top: number } | null = null;
+/** 札を付ける欄の大きさ（全部のプロジェクトで共通） */
+let tagPickerSize: { w: number; h: number } | null = null;
 let countdownStyle: CountdownStyle = DEFAULT_COUNTDOWN;
 let keyIndex = commandIndex(resolveKeymap(undefined));
 
@@ -3505,6 +3515,13 @@ function toggleTool(tool: DrawingKind) {
   for (const p of panes) p.drawings.setTool(next);
 }
 
+/** 長い時間足を重ねているときの、押しているキー（離すとやめる） */
+let htfKey: string | null = null;
+function setHtf(code: string | null) {
+  htfKey = code;
+  for (const p of panes) p.setHtf(code !== null);
+}
+
 function onKey(e: KeyboardEvent) {
   const tag = (e.target as HTMLElement).tagName;
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || document.querySelector('dialog[open]')) return;
@@ -3517,6 +3534,11 @@ function onKey(e: KeyboardEvent) {
   // ⌘C（コピー）などは keyOf が null を返すので邪魔しない
   const k = keyOf(e);
   const cmd = k && keyIndex.get(k);
+  if (cmd === 'htf') {
+    e.preventDefault();
+    if (!htfKey) setHtf(e.code);
+    return;
+  }
   if (cmd) {
     runCommand(cmd);
     e.preventDefault();
@@ -3759,6 +3781,7 @@ async function start() {
   // キーの設定は全部のプロジェクトで共通。共通の設定がまだ無ければ（以前はプロジェクトごと）、今のプロジェクトの設定を共通にする
   keymap = settings.keymap ?? state.keymap;
   styleBarPos = settings.styleBarPos ?? null;
+  tagPickerSize = settings.tagPickerSize ?? null;
   countdownStyle = settings.countdown ?? DEFAULT_COUNTDOWN;
   tradeRR = settings.tradeRR ?? true;
   $<HTMLInputElement>('#trade-rr').checked = tradeRR;
