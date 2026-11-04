@@ -248,6 +248,9 @@ td.sell {
 .pane-chart {
   position: absolute;
   inset: 0;
+  /* チャートの部品のサブウィンドウの境目（つかむ所は z-index 50）を、このチャートの中に閉じ込める。
+     でないと札を付ける欄などの上に出てきて、欄の上で境目が反応した */
+  isolation: isolate;
 }
 
 .pane .legend {
