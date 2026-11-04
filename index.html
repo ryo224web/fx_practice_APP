@@ -82,9 +82,10 @@
         <label id="eo-entry-row">エントリー <span class="pair"><input id="eo-entry" type="number" step="any" /><small id="eo-entry-info"></small></span></label>
         <label>損切り（S/L） <span class="pair"><input id="eo-sl" type="number" step="any" /><small id="eo-sl-pips"></small></span></label>
         <label>利確（T/P） <span class="pair"><input id="eo-tp" type="number" step="any" placeholder="なし" /><small id="eo-tp-pips"></small></span></label>
+        <div class="eo-row" title="T/P を S/L の幅の何倍の所に置き続けるか（S/L・エントリーを動かすと T/P が付いてくる。T/P の線をドラッグするとその RR に変わる）">RR 連動 <span class="pair"><span id="eo-rr" class="eo-seg"><button type="button" data-rr="0">切</button><button type="button" data-rr="1">1</button><button type="button" data-rr="1.5">1.5</button><button type="button" data-rr="2">2</button><button type="button" data-rr="3">3</button></span><input id="eo-rr-val" type="number" step="0.1" min="0.1" title="好きな比率（1:x）" /></span></div>
         <div id="eo-calc"></div>
         <button id="eo-send" class="buy">—</button>
-        <p class="hint">チャートの太い線（S/L・T/P・エントリー）をドラッグして動かせます。S/L をエントリーより下に置くと買い、上に置くと売りになります。</p>
+        <p class="hint">チャートの太い線（S/L・T/P・エントリー）をドラッグして動かせます。S/L をエントリーより下に置くと買い、上に置くと売りになります。RR 連動（1 なら 1:1）を入れると、T/P が S/L の幅 × 比率の所に付いてきます。</p>
       </div>
       <div id="toast" role="status"></div>
     </main>

@@ -43,6 +43,8 @@ export interface EasyOrderState {
   entry: number | null;
   sl: number | null;
   tp: number | null;
+  /** T/P を RR に連動させる比率（1 なら 1:1。S/L・エントリーを動かすと T/P が付いてくる）。無ければ連動しない */
+  rr?: number | null;
   /** 欄を置いた場所（チャートの欄の左上からの px）。無ければ左上 */
   pos?: { x: number; y: number };
 }
@@ -396,6 +398,18 @@ export async function renameProject(id: string, name: string) {
 }
 
 /** プロジェクトを入れるフォルダを決める（空なら、フォルダから出す）。保存先のフォルダでも、ファイルをそのフォルダへ移す */
+/** プロジェクトの並びを変える（左上の一覧。index.json の order に保存） */
+export async function moveProjectBefore(id: string, to: string, after: boolean) {
+  const p = index.list.find((x) => x.id === id);
+  if (!p || id === to) return;
+  const rest = index.list.filter((x) => x.id !== id);
+  const at = rest.findIndex((x) => x.id === to);
+  if (at < 0) return;
+  rest.splice(at + (after ? 1 : 0), 0, p);
+  index.list = rest;
+  await putIndex();
+}
+
 export async function setProjectFolder(id: string, folder: string) {
   const p = index.list.find((x) => x.id === id);
   if (!p) return;

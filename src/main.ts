@@ -26,6 +26,7 @@ import {
   loadState,
   renameProject,
   setProjectFolder,
+  moveProjectBefore,
   createFolder,
   renameFolder,
   deleteFolder,
@@ -1980,11 +1981,32 @@ function eoSetDefaults() {
   e.entry = e.mode === 'pending' ? roundPrice(bid) : null;
   e.sl = roundPrice(bid - d);
   e.tp = roundPrice(bid + 2 * d);
+  eoApplyRR();
+}
+
+/** RR 連動のとき、T/P をエントリーから S/L の幅 × 比率の所に置く */
+function eoApplyRR() {
+  const e = eo();
+  if (!e.rr || e.sl === null) return;
+  const c = eoCalc();
+  if (!c.ok) return;
+  e.tp = roundPrice(c.entry + e.rr * (c.entry - e.sl));
+}
+
+/** RR 連動のまま T/P を動かしたら、その位置の RR（0.1 刻み）を新しい比率にする。逆側なら連動をやめる */
+function eoRatioFromTp() {
+  const e = eo();
+  if (!e.rr) return;
+  const c = eoCalc();
+  if (!c.ok || e.tp === null || e.sl === null || c.entry === e.sl) return void (e.rr = null);
+  const r = Math.round(((e.tp - c.entry) / (c.entry - e.sl)) * 10) / 10;
+  e.rr = r > 0 ? r : null;
 }
 
 function eoPreview(): OrderPreview | null {
   const e = eo();
   if (!e.open) return null;
+  eoApplyRR();
   const c = eoCalc();
   if (!c.ok) return { side: 'buy', entry: e.mode === 'pending' ? e.entry : null, sl: e.sl, tp: e.tp, labels: { entry: 'EO', sl: 'EO S/L', tp: 'EO T/P' } };
   return {
@@ -2012,7 +2034,11 @@ function eoRender() {
     const el = $<HTMLInputElement>(id);
     if (document.activeElement !== el) el.value = v === null ? '' : v.toFixed(digits);
   };
+  eoApplyRR();
   for (const b of $('#eo-mode').querySelectorAll<HTMLButtonElement>('button')) b.setAttribute('aria-pressed', String(b.dataset.mode === e.mode));
+  for (const b of $('#eo-rr').querySelectorAll<HTMLButtonElement>('button')) b.setAttribute('aria-pressed', String(Number(b.dataset.rr) === (e.rr ?? 0)));
+  const rrVal = $<HTMLInputElement>('#eo-rr-val');
+  if (document.activeElement !== rrVal) rrVal.value = e.rr ? String(e.rr) : '';
   $<HTMLSelectElement>('#eo-unit').value = e.riskUnit;
   setVal('#eo-risk', e.risk, e.riskUnit === 'pct' ? 1 : 0);
   setVal('#eo-sl', e.sl);
@@ -2043,6 +2069,7 @@ function eoRender() {
 
 function eoSend() {
   const e = eo();
+  eoApplyRR();
   const c = eoCalc();
   if (!c.ok || c.error) return toast(c.error ?? '');
   const ok =
@@ -2130,12 +2157,33 @@ function setupEasyOrder() {
     });
   bindNum('#eo-risk', 'risk', false);
   bindNum('#eo-sl', 'sl', false);
-  bindNum('#eo-tp', 'tp', true);
+  // T/P を打ち直したら、RR 連動の比率もそこに合わせる（消したら連動をやめる）
+  $('#eo-tp').addEventListener('change', (ev) => {
+    const el = ev.target as HTMLInputElement;
+    const v = el.value.trim() === '' ? null : Number(el.value);
+    if (v !== null && !Number.isFinite(v)) return refresh();
+    e().tp = v;
+    eoRatioFromTp();
+    refresh();
+  });
+  // RR 連動: 切 / 1 / 1.5 / 2 / 3 は押した方に、欄には好きな比率を打つ
+  $('#eo-rr').addEventListener('click', (ev) => {
+    const b = (ev.target as HTMLElement).closest<HTMLButtonElement>('button[data-rr]');
+    if (!b) return;
+    e().rr = Number(b.dataset.rr) || null;
+    refresh();
+  });
+  $('#eo-rr-val').addEventListener('change', (ev) => {
+    const v = Number((ev.target as HTMLInputElement).value);
+    e().rr = Number.isFinite(v) && v > 0 ? Math.round(v * 10) / 10 : null;
+    refresh();
+  });
   bindNum('#eo-entry', 'entry', false);
   $('#eo-send').addEventListener('click', eoSend);
   for (const p of panes)
     p.overlay.onPreviewEdit = (field, price, live) => {
       e()[field] = roundPrice(price);
+      if (field === 'tp') eoRatioFromTp();
       // 動かしている途中は、線と EasyOrder の数値だけを描き直す（軽くするため）。離したら全部
       if (live) renderQuotes();
       else refresh();
@@ -2345,7 +2393,7 @@ async function reloadInto(fn: () => Promise<unknown>) {
 // ---- 左上のプロジェクトの一覧（フォルダの木） ----
 // ボタンに今のプロジェクトの名前を出し、押すとフォルダの木を開く。フォルダは開く・閉じるができ、開いた状態はこの Mac に覚える。
 // 一番上の「＋ 新規」「📁＋」と、フォルダの行にマウスを乗せると出るボタン（＋ 中に新規 / 📁＋ 中にフォルダ / ✎ 名前 / 🗑 空なら消す）で作る。
-// プロジェクトはドラッグしてフォルダに落とすと移る（一番上の行に落とすとフォルダの外へ）。
+// プロジェクトはドラッグしてフォルダに落とすと移る（一番上の行に落とすとフォルダの外へ）。プロジェクトの行に落とすと並べ替える（index.json の order）。
 
 const OPEN_FOLDERS_KEY = 'fx-practice-open-folders';
 /** お気に入り（★）のプロジェクトの ID（全部の Mac で共通。共通の設定の favorites） */
@@ -2426,7 +2474,7 @@ function renderProjectPanel() {
         </div>${isOpen ? html(f) : ''}</li>`;
       })
       .join('')}${n.projects
-      .map((p) => `<li><div class="pj-row${p.id === cur.id ? ' pj-current' : ''}" data-project="${p.id}" draggable="true" title="クリックで開く。ドラッグしてフォルダに落とすと移る">${p.id === cur.id ? '✓ ' : '　'}<span class="pj-name">${esc(p.name)}</span>${star(p.id)}</div></li>`)
+      .map((p) => `<li><div class="pj-row${p.id === cur.id ? ' pj-current' : ''}" data-project="${p.id}" draggable="true" title="クリックで開く。ドラッグして並べ替え・フォルダに落とすと移る">${p.id === cur.id ? '✓ ' : '　'}<span class="pj-name">${esc(p.name)}</span>${star(p.id)}</div></li>`)
       .join('')}</ul>`;
   };
   // ★ はいつも出し、☆ はマウスを乗せたときだけ出す
@@ -2709,23 +2757,45 @@ function setupProjects() {
     e.dataTransfer.effectAllowed = 'move';
   });
   const dropTarget = (e: DragEvent) => (e.target as HTMLElement).closest<HTMLElement>('.pj-drop');
+  // 木の中のプロジェクトの行に落とすと、その前（上半分）か後ろ（下半分）へ並べ替える（別のフォルダの行ならそのフォルダへ移す）
+  const projAt = (e: DragEvent) => {
+    const row = (e.target as HTMLElement).closest<HTMLElement>('.pj-main [data-project]');
+    if (!row) return null;
+    const r = row.getBoundingClientRect();
+    return { row, after: e.clientY > r.top + r.height / 2 };
+  };
+  const clearProjDrop = () => panel.querySelectorAll('.pj-over, .pj-drop-before, .pj-drop-after').forEach((x) => x.classList.remove('pj-over', 'pj-drop-before', 'pj-drop-after'));
   panel.addEventListener('dragover', (e) => {
-    if (!e.dataTransfer?.types.includes('text/x-fxp-project') || !dropTarget(e)) return;
+    if (!e.dataTransfer?.types.includes('text/x-fxp-project')) return;
+    const at = projAt(e);
+    const target = at ? null : dropTarget(e);
+    clearProjDrop();
+    if (!at && !target) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    panel.querySelectorAll('.pj-over').forEach((x) => x.classList.remove('pj-over'));
-    dropTarget(e)!.classList.add('pj-over');
+    if (at) at.row.classList.add(at.after ? 'pj-drop-after' : 'pj-drop-before');
+    else target!.classList.add('pj-over');
   });
   panel.addEventListener('dragleave', (e) => dropTarget(e)?.classList.remove('pj-over'));
+  panel.addEventListener('dragend', clearProjDrop);
   panel.addEventListener('drop', (e) => {
-    const target = dropTarget(e);
+    const at = projAt(e);
+    const target = at ? null : dropTarget(e);
     const id = e.dataTransfer?.getData('text/x-fxp-project');
-    panel.querySelectorAll('.pj-over').forEach((x) => x.classList.remove('pj-over'));
-    if (!target || !id) return;
+    clearProjDrop();
+    if ((!at && !target) || !id) return;
     e.preventDefault();
-    const folder = target.dataset.folder ?? '';
     const p = listProjects().find((x) => x.id === id);
-    if (!p || (p.folder ?? '') === folder) return;
+    if (!p) return;
+    let folder = target?.dataset.folder ?? '';
+    if (at) {
+      const to = at.row.dataset.project!;
+      if (to === id) return;
+      folder = listProjects().find((x) => x.id === to)?.folder ?? '';
+      void moveProjectBefore(id, to, at.after).catch((err) => toast(err instanceof Error ? err.message : String(err)));
+      renderProjectPanel();
+    }
+    if ((p.folder ?? '') === folder) return;
     setProjectFolder(id, folder).then(
       () => {
         if (folder) openFolder(folder);
