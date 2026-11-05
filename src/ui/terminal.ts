@@ -157,17 +157,21 @@ export function renderMt4(rows: Mt4Row[], info: Mt4Info | null, digits: number, 
   const sorted = rows.slice().sort((a, b) => (a.openUtc - b.openUtc || a.ticket - b.ticket) * (oldestFirst ? 1 : -1));
   const body = sorted.map((r) => {
     const cls = r.status === 'wait' ? 'pending' : '';
-    const pl = r.status === 'closed' ? money(r.profit + r.swap + r.commission) : r.status === 'open' && r.floating !== null ? money(r.floating) : '<td></td>';
+    // 損益は MT4 と同じく手数料・スワップを含めない値（合計は一番下の行）
+    const pl = r.status === 'closed' ? money(r.profit) : r.status === 'open' && r.floating !== null ? money(r.floating) : '<td></td>';
     return `<tr data-ticket="${r.ticket}" data-kind="mt4" class="${cls}">
       <td>${r.ticket}</td><td>${STATUS_LABEL[r.status]}</td><td>${time(r.openUtc)}</td><td class="${r.side}">${r.side}</td><td class="num">${lots(r.lots)}</td>
       <td class="num">${price(r.openPrice, digits)} ${mark(r.matchOpen)}</td><td class="num">${price(r.sl, digits)}</td><td class="num">${price(r.tp, digits)}</td>
       <td>${r.closeUtc === null ? '' : time(r.closeUtc)}</td><td class="num">${r.closePrice === null ? '' : `${price(r.closePrice, digits)} ${mark(r.matchClose)}`}</td>
-      <td class="num">${formatMoney(r.swap)}</td>${pl}</tr>`;
+      <td class="num">${formatMoney(r.commission)}</td><td class="num">${formatMoney(r.swap)}</td>${pl}</tr>`;
   });
   const closed = rows.filter((r) => r.status === 'closed');
   const total = closed.reduce((s, r) => s + r.profit + r.swap + r.commission, 0);
   const floating = rows.reduce((s, r) => s + (r.status === 'open' && r.floating !== null && Number.isFinite(r.floating) ? r.floating : 0), 0);
-  const summary = `<tr class="summary"><td colspan="12">決済済み ${closed.length} 件の損益（記録の値）: <b class="${total < 0 ? 'neg' : ''}">${formatMoney(total)}</b>　保有中 ${rows.filter((r) => r.status === 'open').length} 件の含み損益: <b class="${floating < 0 ? 'neg' : ''}">${formatMoney(floating)}</b>　未エントリー ${rows.filter((r) => r.status === 'wait').length} 件</td></tr>`;
-  return `${head}<table><thead><tr><th class="sortable" data-action="mt4-sort" title="クリックで並べ方を切り替える（新しい順・古い順）">注文番号 ${oldestFirst ? '▲' : '▼'}</th><th>状態</th><th>注文時間</th><th>取引種別</th><th>数量</th><th>価格</th><th>決済逆指値(S/L)</th><th>決済指値(T/P)</th><th>決済時間</th><th>価格</th><th>スワップ</th><th>損益</th></tr></thead>
-    <tbody>${summary}${body.join('')}</tbody></table>`;
+  const sum = (f: (r: Mt4Row) => number) => closed.reduce((s, r) => s + f(r), 0);
+  // 合計は 1 段あけて、取引の行と見分けやすくする
+  const foot = `<tr class="mt4-gap"><td colspan="13"></td></tr><tr class="summary mt4-total"><td colspan="10">合計（決済済み ${closed.length} 件）　純損益（損益 + 手数料 + スワップ）: <b class="${total < 0 ? 'neg' : ''}">${formatMoney(total)}</b></td>${money(sum((r) => r.commission))}${money(sum((r) => r.swap))}${money(sum((r) => r.profit))}</tr>`;
+  const summary = `<tr class="summary"><td colspan="13">決済済み ${closed.length} 件の損益（記録の値）: <b class="${total < 0 ? 'neg' : ''}">${formatMoney(total)}</b>　保有中 ${rows.filter((r) => r.status === 'open').length} 件の含み損益: <b class="${floating < 0 ? 'neg' : ''}">${formatMoney(floating)}</b>　未エントリー ${rows.filter((r) => r.status === 'wait').length} 件</td></tr>`;
+  return `${head}<table><thead><tr><th class="sortable" data-action="mt4-sort" title="クリックで並べ方を切り替える（新しい順・古い順）">注文番号 ${oldestFirst ? '▲' : '▼'}</th><th>状態</th><th>注文時間</th><th>取引種別</th><th>数量</th><th>価格</th><th>決済逆指値(S/L)</th><th>決済指値(T/P)</th><th>決済時間</th><th>価格</th><th>手数料</th><th>スワップ</th><th>損益</th></tr></thead>
+    <tbody>${summary}${body.join('')}${foot}</tbody></table>`;
 }

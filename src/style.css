@@ -585,6 +585,17 @@ td.sell {
 #terminal tr.summary td {
   background: var(--panel);
 }
+/* MT4 履歴の合計の行の前の空き */
+#terminal tr.mt4-gap td {
+  height: 14px;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+#terminal tr.mt4-total td {
+  border-top: 1px solid var(--border);
+  font-weight: 600;
+}
 
 #terminal tr.pending td {
   color: var(--muted);
