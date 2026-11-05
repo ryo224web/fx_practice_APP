@@ -44,7 +44,7 @@
 //| set it to "All History" once (right click -> All History).        |
 //+------------------------------------------------------------------+
 #property strict
-#property version     "1.12"
+#property version     "1.13"
 #property copyright   "R（FX Practice 用の自作ツール）"
 #property description "FX Practice 用に、チャート（1 分足）を書き出す EA です。注文は一切出しません。"
 #property description "1 分足を MQL4\\Files\\fxp_bars\\銘柄\\ に書きます（時刻はサーバー時刻）。月ごとのファイル（銘柄_年.月.csv）は"
@@ -451,11 +451,12 @@ void ExportAll()
 string HistorySig()
 {
    // Also changes when the S/L or T/P of a position is moved or it is partly closed
-   // (with the numbers only, a moved S/L never reached FX Practice)
+   // (with the numbers only, a moved S/L never reached FX Practice), and when a pending order is filled
+   // (same ticket and counts, only the type changes: buy limit -> buy. Before 1.13 a filled limit order was not written)
    string sig = HistoryCounts();
    for(int i = 0; i < OrdersTotal(); i++)
       if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
-         sig += "|" + IntegerToString(OrderTicket()) + ":" + DoubleToString(OrderStopLoss(), 5) + ":" + DoubleToString(OrderTakeProfit(), 5) + ":" + DoubleToString(OrderLots(), 2);
+         sig += "|" + IntegerToString(OrderTicket()) + ":" + IntegerToString(OrderType()) + ":" + DoubleToString(OrderStopLoss(), 5) + ":" + DoubleToString(OrderTakeProfit(), 5) + ":" + DoubleToString(OrderLots(), 2);
    return sig;
 }
 
