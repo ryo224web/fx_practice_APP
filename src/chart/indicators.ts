@@ -3,7 +3,8 @@
 // RCI は重いので、表示している辺りだけ計算する。
 
 import { LineSeries, LineStyle, type IChartApi, type ISeriesApi, type LineData, type Time, type WhitespaceData } from 'lightweight-charts';
-import { ema, emaNext, rciAt, sma } from '../indicators/calc';
+import { atr, ema, emaNext, rciAt, sma, zigzag, zigzagByMa, type ZigzagPoint } from '../indicators/calc';
+import type { Bar } from '../core/candles';
 
 export interface MaConfig {
   enabled: boolean;
@@ -28,11 +29,45 @@ export interface RciPane {
   lines: RciLine[];
 }
 
+/** ZigZag（MT4 の標準と同じ。Depth・Deviation（ポイント）・Backstep） */
+export interface ZigzagConfig {
+  enabled: boolean;
+  /**
+   * 区切り方。ma: 移動平均が少しでも逆を向いたら（A）。ma-atr: MA がその脚の端から ATR × atrMult 以上戻したら（B）。
+   * ma-cross: MA が逆を向き、終値も MA の反対側に出たら（C）。mt4: MT4 の標準（Depth・Deviation・Backstep）
+   */
+  mode?: ZigzagMode;
+  /** B の倍率（ATR の何倍戻したら区切るか） */
+  atrMult?: number;
+  /** A・B・C を色を変えて重ねる（どれが自分の数え方に近いか比べる） */
+  compare?: boolean;
+  maPeriod?: number;
+  maType?: 'sma' | 'ema';
+  depth: number;
+  deviation: number;
+  backstep: number;
+  color: string;
+  width?: number;
+}
+
+export type ZigzagMode = 'ma' | 'ma-atr' | 'ma-cross' | 'mt4';
+
+/** 比べるときの A・B・C の見た目 */
+export const ZIGZAG_COMPARE: { mode: ZigzagMode; label: string; color: string; width: 1 | 2 | 3 | 4; dashed?: boolean }[] = [
+  { mode: 'ma', label: 'A', color: '#f0883e', width: 4 },
+  { mode: 'ma-atr', label: 'B', color: '#db61a2', width: 2 },
+  { mode: 'ma-cross', label: 'C', color: '#39c5cf', width: 2, dashed: true },
+];
+
 export interface IndicatorConfig {
   ma: MaConfig[];
   /** RCI のサブウィンドウ（上から順に。今は 2 段） */
   rci: RciPane[];
+  /** 無ければ初めの設定（以前の保存） */
+  zigzag?: ZigzagConfig;
 }
+
+export const DEFAULT_ZIGZAG: ZigzagConfig = { enabled: false, mode: 'ma-atr', maPeriod: 20, maType: 'sma', atrMult: 0.2, compare: false, depth: 12, deviation: 5, backstep: 3, color: '#f0883e', width: 2 };
 
 const rciLines = (periods: number[]): RciLine[] =>
   periods.map((period, i) => ({ enabled: true, period, color: ['#f85149', '#3fb950', '#4493f8', '#e5a50a'][i] }));
@@ -48,6 +83,7 @@ export const DEFAULT_INDICATORS: IndicatorConfig = {
     { enabled: true, lines: rciLines([9, 26, 52, 78]) },
     { enabled: true, lines: rciLines([9, 26, 52, 78]) },
   ],
+  zigzag: DEFAULT_ZIGZAG,
 };
 
 /** RCI の段の数 */
@@ -57,7 +93,7 @@ export const RCI_PANES = 2;
 export function normalizeIndicators(cfg: IndicatorConfig | (Omit<IndicatorConfig, 'rci'> & { rci: RciPane | RciPane[] })): IndicatorConfig {
   const rci = Array.isArray(cfg.rci) ? cfg.rci.slice() : [cfg.rci];
   while (rci.length < RCI_PANES) rci.push(structuredClone(DEFAULT_INDICATORS.rci[rci.length]));
-  return { ma: cfg.ma, rci: rci.slice(0, RCI_PANES) };
+  return { ma: cfg.ma, rci: rci.slice(0, RCI_PANES), zigzag: { ...DEFAULT_ZIGZAG, ...(cfg as IndicatorConfig).zigzag } };
 }
 
 /** 線の太さ（1〜4。チャートの部品が受け付ける形にする） */
@@ -80,6 +116,11 @@ export interface IndicatorInput {
   partialClose: number;
   /** ローソク足のチャートに渡した最初の足の位置。これより古い値は描かない（横の位置がずれるため） */
   offset: number;
+  /** ZigZag 用: 足（k 番目より後は使わない）と、今の足（作りかけ）の高値・安値、1 ポイントの値幅 */
+  bars: readonly Bar[];
+  partialHigh: number;
+  partialLow: number;
+  point: number;
 }
 
 interface Line {
@@ -90,6 +131,7 @@ interface Line {
 export class IndicatorLayer {
   private config: IndicatorConfig = DEFAULT_INDICATORS;
   private lines: Line[] = [];
+  private zz: { lines: { series: ISeriesApi<'Line'>; mode: ZigzagMode; shown: string }[]; cfg: ZigzagConfig } | null = null;
   private cacheKey = '';
   private maCache = new Map<string, Float64Array>();
   private rciCache = new Map<number, Float64Array>();
@@ -122,6 +164,8 @@ export class IndicatorLayer {
     this.config = config;
     for (const l of this.lines) this.chart.removeSeries(l.series);
     this.lines = [];
+    for (const l of this.zz?.lines ?? []) this.chart.removeSeries(l.series);
+    this.zz = null;
     while (this.chart.panes().length > 1) this.chart.removePane(1);
 
     // 価格の目盛りに名前や値の札は出さない（見づらいため）
@@ -132,6 +176,23 @@ export class IndicatorLayer {
       // 離れた移動平均まで収めようとすると、ローソク足が潰れて見えるため
       const series = this.chart.addSeries(LineSeries, { ...common, color: m.color, lineWidth: lineWidth(m.width), autoscaleInfoProvider: () => null }, 0);
       this.lines.push({ series, values: (inp, j) => this.maValue(inp, j, m) });
+    }
+    // ZigZag は山と谷だけの点を渡す（間は部品が直線でつなぐ）
+    const zc = normalizeIndicators(config).zigzag!;
+    if (zc.enabled) {
+      const looks = zc.compare
+        ? ZIGZAG_COMPARE
+        : [{ mode: zc.mode ?? 'mt4', color: zc.color, width: lineWidth(zc.width), dashed: false }];
+      const lines = looks.map((lk) => ({
+        series: this.chart.addSeries(
+          LineSeries,
+          { ...common, color: lk.color, lineWidth: lk.width, lineStyle: lk.dashed ? LineStyle.Dashed : LineStyle.Solid, autoscaleInfoProvider: () => null, pointMarkersVisible: false },
+          0,
+        ),
+        mode: lk.mode,
+        shown: '',
+      }));
+      this.zz = { lines, cfg: zc };
     }
     // RCI は段ごとにサブウィンドウを 1 つ使う（表示する段だけ、上から 1, 2 …）
     let paneIndex = 0;
@@ -194,7 +255,62 @@ export class IndicatorLayer {
       }
     }
     this.shown = { key: input.key, k, from: this.from };
+    this.renderZigzag(input);
   }
+
+  /** ZigZag は最後の山・谷が先の足で動くので、毎回描いている範囲を計算し直す（山と谷の点が変わったときだけ渡す） */
+  private renderZigzag(inp: IndicatorInput) {
+    if (!this.zz) return;
+    const { cfg, lines } = this.zz;
+    const from = this.from;
+    if (inp.k < from) return;
+    // 移動平均・ATR は前の足から計算する（from の手前に期間の 3 倍あれば EMA も落ち着く）
+    const period = Math.max(1, Math.round(cfg.maPeriod ?? 20));
+    const s0 = Math.max(0, from - Math.max(period * 3, 30));
+    const n = inp.k - s0 + 1;
+    const high = new Float64Array(n);
+    const low = new Float64Array(n);
+    const close = new Float64Array(n);
+    for (let j = 0; j < n - 1; j++) {
+      const b = inp.bars[s0 + j];
+      high[j] = b.h;
+      low[j] = b.l;
+      close[j] = inp.closes[s0 + j];
+    }
+    high[n - 1] = inp.partialHigh;
+    low[n - 1] = inp.partialLow;
+    close[n - 1] = inp.partialClose;
+    let ma: Float64Array | null = null;
+    let tr: Float64Array | null = null;
+    const start = from - s0;
+    for (const line of lines) {
+      let pts: ZigzagPoint[];
+      if (line.mode === 'mt4') pts = zigzag(high, low, start, n - 1, Math.round(cfg.depth), cfg.deviation * inp.point, Math.round(cfg.backstep));
+      else {
+        ma ??= cfg.maType === 'ema' ? ema(close, period) : sma(close, period);
+        if (line.mode === 'ma-atr') tr ??= atr(high, low, close, 14);
+        pts = zigzagByMa(high, low, ma, start, n - 1, {
+          kind: line.mode === 'ma-atr' ? 'atr' : line.mode === 'ma-cross' ? 'cross' : 'turn',
+          close,
+          atr: tr ?? undefined,
+          atrMult: cfg.atrMult ?? 0.2,
+        });
+      }
+      // 山と谷の点が変わったときだけ渡す
+      const sig = `${inp.key}:${from}:${pts.map((p) => `${p.i}=${p.price}`).join(',')}`;
+      if (sig === line.shown) continue;
+      line.shown = sig;
+      // 時刻が前の点より後のものだけ渡す（同じ時刻があると部品が例外を出し、チャートの描き直しが途中で止まる）
+      const data: LineData[] = [];
+      for (const p of pts) {
+        const time = inp.times[s0 + p.i];
+        if (time === undefined || (data.length && (time as number) <= (data[data.length - 1].time as number))) continue;
+        data.push({ time, value: p.price });
+      }
+      line.series.setData(data);
+    }
+  }
+
 
   private maValue(inp: IndicatorInput, j: number, m: MaConfig): number {
     const id = `${m.type}${m.period}`;

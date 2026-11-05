@@ -1,7 +1,7 @@
 import { type CandlestickData, type Time, type UTCTimestamp } from 'lightweight-charts';
 import { commandIndex, KEY_COMMANDS, keyLabel, keyOf, resolveKeymap } from './ui/keys';
 import { defaultLineWidth, DEFAULT_PALETTE, DEFAULT_TF_COLORS, DRAWING_LABELS, FIBO_EXP_LEVELS, FIBO_LEVELS, levelsFromPercents, type Drawing, type DrawingKind } from './chart/drawings';
-import { DEFAULT_INDICATORS, normalizeIndicators, type IndicatorConfig } from './chart/indicators';
+import { DEFAULT_INDICATORS, normalizeIndicators, type IndicatorConfig, type ZigzagMode } from './chart/indicators';
 import { ChartPane, DEFAULT_COUNTDOWN, type CountdownStyle, type PaneHost } from './chart/pane';
 import { type ArrowRef, type LineEdit, type OrderPreview } from './chart/trades';
 import { aggregateWithIndex, mergeBars, TIMEFRAMES, type Aggregated, type Bar, type Timeframe } from './core/candles';
@@ -2216,6 +2216,20 @@ function openIndicatorDialog(cfg: IndicatorConfig = indicatorsFor(active.tf)) {
         <td><input type="color" data-i="${i}" data-f="color" value="${m.color}" /></td>${widthCell(i, m.width)}</tr>`,
       )
       .join('');
+  const z = cfg.zigzag!;
+  const sel = (f: string, opts: [string, string][], v: string) => `<select data-zz="${f}">${opts.map(([k, l]) => `<option value="${k}" ${k === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+  $('#ind-zz').innerHTML = `<tr><td></td><td>区切り方</td><td title="この移動平均の向きが変わるごとに波を区切る">MA 期間</td><td>MA 種類</td><td title="B: MA がその脚の端から ATR（14 本の平均の値幅）の何倍戻したら区切るか">B の倍率</td><td title="山・谷を探す足の本数（MT4 の区切り方のとき）">Depth</td><td title="この値幅（ポイント。5 桁の銘柄なら 5 = 0.5 pips）より戻ると、新しい山・谷にしない">Deviation</td><td title="山・谷の間に必要な足の本数">Backstep</td><td>色</td><td>太さ</td></tr>
+    <tr><td><input type="checkbox" data-zz="enabled" ${z.enabled ? 'checked' : ''} /></td>
+    <td>${sel('mode', [['ma', 'A: MA が逆を向いたら'], ['ma-atr', 'B: MA が ATR × 倍率 戻したら'], ['ma-cross', 'C: MA が逆を向き、終値も反対側'], ['mt4', 'MT4（Depth）']], z.mode ?? 'mt4')}</td>
+    <td><input type="number" min="1" step="1" data-zz="maPeriod" value="${z.maPeriod ?? 20}" /></td>
+    <td>${sel('maType', [['sma', 'SMA'], ['ema', 'EMA']], z.maType ?? 'sma')}</td>
+    <td><input type="number" min="0" step="0.05" data-zz="atrMult" value="${z.atrMult ?? 0.2}" /></td>
+    <td><input type="number" min="1" step="1" data-zz="depth" value="${z.depth}" /></td>
+    <td><input type="number" min="0" step="1" data-zz="deviation" value="${z.deviation}" /></td>
+    <td><input type="number" min="0" step="1" data-zz="backstep" value="${z.backstep}" /></td>
+    <td><input type="color" data-zz="color" value="${z.color}" /></td>
+    <td><select data-zz="width">${[1, 2, 3, 4].map((n) => `<option value="${n}" ${n === (z.width ?? 1) ? 'selected' : ''}>${n}</option>`).join('')}</select></td></tr>
+    <tr><td><input type="checkbox" data-zz="compare" ${z.compare ? 'checked' : ''} /></td><td colspan="9">A・B・C を重ねて比べる（<b style="color:#f0883e">A 橙の太線</b>・<b style="color:#db61a2">B ピンク</b>・<b style="color:#39c5cf">C 水色の破線</b>。区切り方・色・太さの欄は使わない）</td></tr>`;
   $('#ind-rci-wrap').innerHTML = cfg.rci
     .map(
       (rp, k) => `<h3>RCI ${k + 1} 段目（サブウィンドウ）<label class="inline"><input class="ind-rci-on" data-k="${k}" type="checkbox" ${rp.enabled ? 'checked' : ''} /> 表示する</label></h3>
@@ -2250,7 +2264,30 @@ function readIndicatorDialog(): IndicatorConfig {
       return out as T;
     });
   const cur = indicatorsFor(active.tf);
+  const zv = (f: string) => document.querySelector<HTMLInputElement | HTMLSelectElement>(`#ind-zz [data-zz="${f}"]`)!;
+  const zn = (f: string, min: number, fallback: number) => {
+    const v = Math.round(Number(zv(f).value));
+    return Number.isFinite(v) ? Math.max(min, v) : fallback;
+  };
+  const z0 = cur.zigzag!;
   return {
+    zigzag: {
+      // 「重ねて比べる」に入れたら、左のチェックが無くても出す
+      enabled: (zv('enabled') as HTMLInputElement).checked || (zv('compare') as HTMLInputElement).checked,
+      mode: zv('mode').value as ZigzagMode,
+      compare: (zv('compare') as HTMLInputElement).checked,
+      atrMult: (() => {
+        const v = Number(zv('atrMult').value);
+        return Number.isFinite(v) && v >= 0 ? Math.round(v * 100) / 100 : (z0.atrMult ?? 0.2);
+      })(),
+      maPeriod: zn('maPeriod', 1, z0.maPeriod ?? 20),
+      maType: zv('maType').value as 'sma' | 'ema',
+      depth: zn('depth', 1, z0.depth),
+      deviation: zn('deviation', 0, z0.deviation),
+      backstep: zn('backstep', 0, z0.backstep),
+      color: zv('color').value,
+      width: Math.max(1, Math.min(4, Number(zv('width').value))),
+    },
     ma: rows('#ind-ma', cur.ma),
     rci: cur.rci.map((rp, k) => ({
       enabled: document.querySelector<HTMLInputElement>(`.ind-rci-on[data-k="${k}"]`)!.checked,

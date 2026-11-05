@@ -498,7 +498,18 @@ export class ChartPane {
       this.series.update(partial);
     }
     this.shown = { tf: this.tf, k, version, start, extraT, cursor };
-    this.indicators.render({ key: `${this.tf}:${version}`, closes, times: chartTimes, k, partialClose: partial.close, offset: start });
+    this.indicators.render({
+      key: `${this.tf}:${version}`,
+      closes,
+      times: chartTimes,
+      k,
+      partialClose: partial.close,
+      offset: start,
+      bars: agg.bars,
+      partialHigh: cur.h,
+      partialLow: cur.l,
+      point: 10 ** -this.host.digits(),
+    });
     this.drawings.refresh();
     this.updateHtf();
     if (!this.hovering) this.renderLegend(null);
