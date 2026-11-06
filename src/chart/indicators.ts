@@ -39,6 +39,16 @@ export interface ZigzagConfig {
   mode?: ZigzagMode;
   /** B の倍率（ATR の何倍戻したら区切るか） */
   atrMult?: number;
+  /**
+   * B の ATR の本数。14 本だと、大きく動いた後の静かな数時間で ATR が縮み、MA のわずかな下がりでも区切った。
+   * 100 本ならその日の普段の値幅が基準になる（2026-11-05）
+   */
+  atrPeriod?: number;
+  /**
+   * B: MA がこの本数のあいだ高値（安値）を更新しなかったら、戻した幅が小さくても区切る（0 で使わない）。
+   * ATR 100 本だけだと、MA が 20 本ほど横ばいになった押し（M1 04-20 17:53〜18:28）を 1 波にまとめた（2026-11-05）
+   */
+  stallBars?: number;
   /** A・B・C を色を変えて重ねる（どれが自分の数え方に近いか比べる） */
   compare?: boolean;
   maPeriod?: number;
@@ -67,7 +77,7 @@ export interface IndicatorConfig {
   zigzag?: ZigzagConfig;
 }
 
-export const DEFAULT_ZIGZAG: ZigzagConfig = { enabled: false, mode: 'ma-atr', maPeriod: 20, maType: 'sma', atrMult: 0.2, compare: false, depth: 12, deviation: 5, backstep: 3, color: '#f0883e', width: 2 };
+export const DEFAULT_ZIGZAG: ZigzagConfig = { enabled: false, mode: 'ma-atr', maPeriod: 20, maType: 'sma', atrMult: 0.2, atrPeriod: 100, stallBars: 10, compare: false, depth: 12, deviation: 5, backstep: 3, color: '#f0883e', width: 2 };
 
 const rciLines = (periods: number[]): RciLine[] =>
   periods.map((period, i) => ({ enabled: true, period, color: ['#f85149', '#3fb950', '#4493f8', '#e5a50a'][i] }));
@@ -93,7 +103,10 @@ export const RCI_PANES = 2;
 export function normalizeIndicators(cfg: IndicatorConfig | (Omit<IndicatorConfig, 'rci'> & { rci: RciPane | RciPane[] })): IndicatorConfig {
   const rci = Array.isArray(cfg.rci) ? cfg.rci.slice() : [cfg.rci];
   while (rci.length < RCI_PANES) rci.push(structuredClone(DEFAULT_INDICATORS.rci[rci.length]));
-  return { ma: cfg.ma, rci: rci.slice(0, RCI_PANES), zigzag: { ...DEFAULT_ZIGZAG, ...(cfg as IndicatorConfig).zigzag } };
+  const zigzag = { ...DEFAULT_ZIGZAG, ...(cfg as IndicatorConfig).zigzag };
+  // 止まりの初期値は 12 本で始め、同じ日（2026-11-05）に 10 本へ変えた。12 は前の初期値がそのまま保存されたものなので 10 にする
+  if (zigzag.stallBars === 12) zigzag.stallBars = 10;
+  return { ma: cfg.ma, rci: rci.slice(0, RCI_PANES), zigzag };
 }
 
 /** 線の太さ（1〜4。チャートの部品が受け付ける形にする） */
@@ -264,9 +277,10 @@ export class IndicatorLayer {
     const { cfg, lines } = this.zz;
     const from = this.from;
     if (inp.k < from) return;
-    // 移動平均・ATR は前の足から計算する（from の手前に期間の 3 倍あれば EMA も落ち着く）
+    // 移動平均・ATR は前の足から計算する（from の手前に期間の 3 倍あれば EMA も落ち着く。ATR はその本数より前から）
     const period = Math.max(1, Math.round(cfg.maPeriod ?? 20));
-    const s0 = Math.max(0, from - Math.max(period * 3, 30));
+    const atrPeriod = Math.max(1, Math.round(cfg.atrPeriod ?? 100));
+    const s0 = Math.max(0, from - Math.max(period * 3, atrPeriod + 10, 30));
     const n = inp.k - s0 + 1;
     const high = new Float64Array(n);
     const low = new Float64Array(n);
@@ -288,12 +302,13 @@ export class IndicatorLayer {
       if (line.mode === 'mt4') pts = zigzag(high, low, start, n - 1, Math.round(cfg.depth), cfg.deviation * inp.point, Math.round(cfg.backstep));
       else {
         ma ??= cfg.maType === 'ema' ? ema(close, period) : sma(close, period);
-        if (line.mode === 'ma-atr') tr ??= atr(high, low, close, 14);
+        if (line.mode === 'ma-atr') tr ??= atr(high, low, close, atrPeriod);
         pts = zigzagByMa(high, low, ma, start, n - 1, {
           kind: line.mode === 'ma-atr' ? 'atr' : line.mode === 'ma-cross' ? 'cross' : 'turn',
           close,
           atr: tr ?? undefined,
           atrMult: cfg.atrMult ?? 0.2,
+          stall: line.mode === 'ma-atr' ? Math.max(0, Math.round(cfg.stallBars ?? 10)) : 0,
         });
       }
       // 山と谷の点が変わったときだけ渡す

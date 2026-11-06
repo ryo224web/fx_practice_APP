@@ -166,6 +166,12 @@ export interface MaTurnRule {
   close?: ArrayLike<number>;
   atr?: ArrayLike<number>;
   atrMult?: number;
+  /**
+   * MA がこの本数のあいだ脚の端（上向きなら一番高い値）を更新しなかったら、戻した幅が小さくても向きが変わったとみなす
+   * （MA が横ばいになって波が終わったのを拾う。0 か無しなら使わない）。値もその本数のあいだ脚の端を更新していないときだけ
+   * （MA は止まっていても値が高値を更新している所で区切ると、1〜2 本だけの小さな谷ができた。M1 2022-05-02 08:19〜08:20）
+   */
+  stall?: number;
 }
 
 /**
@@ -209,12 +215,15 @@ export function zigzagByMa(
   // 今の脚の一番高い・安い足（前の点より後）と、その脚の MA の一番高い・安い値
   let ext = -1;
   let maExt = NaN;
+  let maExtI = -1;
+  const stall = rule.stall ?? 0;
   const better = (q: number, e: number) => (dir > 0 ? high[q] > high[e] : low[q] < low[e]);
   const startLeg = (pivot: number, j: number) => {
     ext = Math.min(pivot + 1, j);
     for (let q = ext; q <= j; q++) if (better(q, ext)) ext = q;
     // MA の端は、向きが変わったと決まった足から数える（その前の MA はまだ前の向きの続き）
     maExt = ma[j];
+    maExtI = j;
   };
   for (let j = from + 1; j <= to; j++) {
     const a = ma[j - 1];
@@ -231,7 +240,7 @@ export function zigzagByMa(
       startLeg(s, j);
       continue;
     }
-    if (flips(j, dir, maExt)) {
+    if (flips(j, dir, maExt) || (stall > 0 && j - maExtI >= stall && j - ext >= stall)) {
       // 向きが変わった: 今までの脚の端を点に決め、反対の脚を始める
       add({ i: ext, price: dir > 0 ? high[ext] : low[ext] });
       const pivot = ext;
@@ -240,7 +249,10 @@ export function zigzagByMa(
       continue;
     }
     if (better(j, ext)) ext = j;
-    if (dir > 0 ? b > maExt : b < maExt) maExt = b;
+    if (dir > 0 ? b > maExt : b < maExt) {
+      maExt = b;
+      maExtI = j;
+    }
   }
   if (dir !== 0 && ext >= 0) add({ i: ext, price: dir > 0 ? high[ext] : low[ext] });
   return out;

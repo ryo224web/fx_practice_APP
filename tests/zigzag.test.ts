@@ -133,3 +133,21 @@ describe('zigzagByMa の点の並び', () => {
     }
   });
 });
+
+describe('zigzagByMa の止まり（stall）', () => {
+  it('MA が戻らずに横ばいになっても、決めた本数のあいだ高値を更新しなければ区切る', () => {
+    // 上げて 50 本横ばい（MA は追い付いた後、下がらずに平らになる）、また上げる
+    const close: number[] = [];
+    for (let i = 0; i < 40; i++) close.push(100 + i);
+    for (let i = 0; i < 50; i++) close.push(139);
+    for (let i = 0; i < 40; i++) close.push(139 + i);
+    const high = close.map((c) => c + 0.1);
+    const low = close.map((c) => c - 0.1);
+    const ma = sma(close, 20);
+    const a = atr(high, low, close, 14);
+    const without = zigzagByMa(high, low, ma, 20, close.length - 1, { kind: 'atr', atr: a, atrMult: 0.5 });
+    const withStall = zigzagByMa(high, low, ma, 20, close.length - 1, { kind: 'atr', atr: a, atrMult: 0.5, stall: 12 });
+    expect(without.length).toBe(2);
+    expect(withStall.length).toBe(4);
+  });
+});
