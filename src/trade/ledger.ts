@@ -37,6 +37,10 @@ const monthKey = (t: number) => {
   return d.getUTCFullYear() * 12 + d.getUTCMonth();
 };
 
+const HOUR = 3_600_000;
+/** 1 時間ごとの区切りを覚えておく数（約 2 か月分） */
+const FINE_KEEP = 1500;
+
 const clonePositions = (ps: Position[]) => ps.map((p) => ({ ...p }));
 const cloneOrders = (os: PendingOrder[]) => os.map((o) => ({ ...o }));
 
@@ -91,6 +95,11 @@ export class Runner {
      * （出発点の足でした操作を当てるため。区切りから続けるときは、その足は処理済み）
      */
     private includeCurrentBar = false,
+    /**
+     * 1 時間ごとの区切り（保存しない。1 本・1 分戻るときに月の初めから計算し直さないため。
+     * M1 で 1 本戻るたびに月の初めから計算すると 0.015 秒かかった）。直近 FINE_KEEP 個まで
+     */
+    public fine: Checkpoint[] = [],
   ) {
     this.k = actions.findIndex((a) => a.t > account.time);
     if (this.k < 0) this.k = actions.length;
@@ -111,6 +120,11 @@ export class Runner {
       // 月が変わる前の状態（前の月の最後の足の操作まで済んだもの）を区切りとして残す
       const last = this.checkpoints[this.checkpoints.length - 1];
       if (monthKey(t) !== monthKey(a.time) && (!last || last.time < a.time)) this.checkpoints.push(snapshot(a));
+      const lastFine = this.fine[this.fine.length - 1];
+      if (Math.floor(t / HOUR) !== Math.floor(a.time / HOUR) && (!lastFine || lastFine.time < a.time)) {
+        this.fine.push(snapshot(a));
+        if (this.fine.length > FINE_KEEP) this.fine.splice(0, this.fine.length - FINE_KEEP);
+      }
       const ev = a.processBar(feed, i);
       while (this.k < this.actions.length && this.actions[this.k].t <= t) {
         if (a.apply(feed, i, this.actions[this.k]) === null) this.k++;
@@ -126,6 +140,7 @@ export class Runner {
     this.actions.push(action);
     this.k = this.actions.length;
     this.checkpoints = this.checkpoints.filter((c) => c.time < action.t);
+    this.fine = this.fine.filter((c) => c.time < action.t);
   }
 
   ledger(baselineTime: number): Ledger {

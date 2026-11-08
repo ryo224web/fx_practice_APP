@@ -78,6 +78,8 @@ function explainedTable(s: Summary, info: ReportInfo): string {
       row('負けの平均', pips(s.avgLossPips), 'neg', 'low', '負けトレードの平均の値幅（小さいほど良い）'),
       row('最大の含み益の平均（MFE）', pips(s.avgMfe), '', 'case', '保有中に一番有利だったときの値幅。今の銘柄で価格データがある取引だけ'),
       row('最大の含み損の平均（MAE）', pips(s.avgMae), '', 'case', '保有中に一番不利だったときの値幅。今の銘柄で価格データがある取引だけ'),
+      row('合計 R', s.rTrades ? `${num(s.totalR, 1)} R` : '—', cls(s.totalR), 'high', '全部の取引を同じリスク（S/L に掛かったら 1R の損）で建てたときの損益。複利やロットの大きさに左右されない、手法そのものの成績'),
+      row('最大ドローダウン（R）', s.rTrades ? `${num(s.maxDrawdownR, 1)} R` : '—', 'neg', 'low', 'R の累積が一番高い所から、どれだけ下がったかの最大。続けるかやめるかの基準（「15R 下げたら見直す」など）に使う'),
       row('平均 R', s.rTrades ? `${num(s.avgR, 2)} R（${s.rTrades} 回）` : '—', cls(s.avgR), 'high', '決済した時点の S/L までの値幅を 1R とした損益。S/L を建値や利益側に動かした取引は除く'),
     ]),
     section('その他・統計', [
@@ -110,28 +112,40 @@ function sideTable(a: Analysis): string {
 function bucketTable(bs: Bucket[], head: string): string {
   const used = bs.filter((b) => b.trades > 0);
   if (!used.length) return '<p class="hint">データがありません</p>';
-  return `<table class="report-table"><thead><tr><th>${head}</th><th>回数</th><th>勝率</th><th>損益</th><th>pips</th></tr></thead><tbody>${used
+  const withR = used.some((b) => b.rTrades);
+  return `<table class="report-table"><thead><tr><th>${head}</th><th>回数</th><th>勝率</th>${withR ? R_HEAD : ''}<th>損益</th><th>pips</th></tr></thead><tbody>${used
     .map(
       (b) =>
-        `<tr><td>${esc(b.label)}</td><td class="num">${b.trades}</td><td class="num">${pct(b.winRate)}</td><td class="num ${cls(b.net)}">${yen(b.net)}</td><td class="num ${cls(b.pips)}">${b.pips.toFixed(1)}</td></tr>`,
+        `<tr><td>${esc(b.label)}</td><td class="num">${b.trades}</td><td class="num">${pct(b.winRate)}</td>${withR ? rCells(b) : ''}<td class="num ${cls(b.net)}">${yen(b.net)}</td><td class="num ${cls(b.pips)}">${b.pips.toFixed(1)}</td></tr>`,
     )
     .join('')}</tbody></table>`;
 }
+
+/**
+ * R の列（合計と 1 回あたり）。円は複利で後半の取引ほど大きく出るので、内訳どうしを比べるのは R で見る
+ */
+const R_HEAD = '<th title="R の合計（S/L 1 回分の損を 1R とした損益。複利・ロットに左右されない）">R</th><th>1 回あたり R</th>';
+const rCells = (b: Bucket) =>
+  b.rTrades ? `<td class="num ${cls(b.r)}">${b.r.toFixed(1)}</td><td class="num ${cls(b.r)}">${(b.r / b.rTrades).toFixed(2)}</td>` : '<td class="num">—</td><td class="num">—</td>';
 
 /** 週別・時間帯別などの表（買い・売りの内訳つき） */
 function sideBucketTable(bs: Bucket[], head: string): string {
   const used = bs.filter((b) => b.trades > 0);
   if (!used.length) return '<p class="hint">データがありません</p>';
   const rate = (w: number, n: number) => (n ? pct((w / n) * 100) : '—');
-  return `<table class="report-table"><thead><tr><th>${head}</th><th>回数</th><th>純損益</th><th>勝率</th><th>買い</th><th>買いの勝率</th><th>売り</th><th>売りの勝率</th></tr></thead><tbody>${used
+  const withR = used.some((b) => b.rTrades);
+  return `<table class="report-table"><thead><tr><th>${head}</th><th>回数</th><th>勝率</th>${withR ? R_HEAD : ''}<th>純損益</th><th>買い</th><th>買いの勝率</th><th>売り</th><th>売りの勝率</th></tr></thead><tbody>${used
     .map(
       (b) =>
-        `<tr><td>${esc(b.label)}</td><td class="num">${b.trades}</td><td class="num ${cls(b.net)}">${yen(b.net)}</td><td class="num">${pct(b.winRate)}</td><td class="num">${b.longs}</td><td class="num">${rate(b.longWins, b.longs)}</td><td class="num">${b.shorts}</td><td class="num">${rate(b.shortWins, b.shorts)}</td></tr>`,
+        `<tr><td>${esc(b.label)}</td><td class="num">${b.trades}</td><td class="num">${pct(b.winRate)}</td>${withR ? rCells(b) : ''}<td class="num ${cls(b.net)}">${yen(b.net)}</td><td class="num">${b.longs}</td><td class="num">${rate(b.longWins, b.longs)}</td><td class="num">${b.shorts}</td><td class="num">${rate(b.shortWins, b.shorts)}</td></tr>`,
     )
     .join('')}</tbody></table>`;
 }
 
-const toBars = (bs: Bucket[]) => bs.map((b) => ({ label: b.label, value: b.net, note: `${b.trades} 回・勝率 ${pct(b.winRate)}` }));
+/** 内訳の棒グラフ。R を出せる取引があれば R の合計（円は複利で後半ほど大きく出るため）、無ければ円 */
+const toBars = (bs: Bucket[], useR: boolean) =>
+  bs.map((b) => ({ label: b.label, value: useR ? b.r : b.net, note: `${b.trades} 回・勝率 ${pct(b.winRate)}` }));
+const barOpts = (useR: boolean, labelEvery: number) => (useR ? { labelEvery, unit: ' R', digits: 1 } : { labelEvery });
 
 /** 成績タブの一番上に置く、簡単な一覧（詳しいものはその下と、書き出したレポートで見る） */
 export function quickSummary(s: Summary, info: ReportInfo): string {
@@ -142,6 +156,7 @@ export function quickSummary(s: Summary, info: ReportInfo): string {
     ${it('平均利益', yen(s.avgWin), 'pos')}${it('平均損失', yen(s.avgLoss), 'neg')}${it('期待値（1 回あたり）', yen(s.expectancy), cls(s.expectancy))}${it('最大ドローダウン', `${yen(s.maxDrawdown)}${info.hasBalance ? `（${pct(s.maxDrawdownPct)}）` : ''}`, 'neg')}
     ${it('最大利益', yen(s.maxWin), 'pos')}${it('最大損失', yen(s.maxLoss), 'neg')}${it('最大連勝', `${s.maxConsecWins}`)}${it('最大連敗', `${s.maxConsecLosses}`)}
     ${it('獲得 pips', pips(s.winPips), 'pos')}${it('損失 pips', pips(s.lossPips), 'neg')}${it('期待値（pips）', pips(s.avgPips), cls(s.avgPips))}
+    ${s.rTrades ? `${it('合計 R', `${num(s.totalR, 1)} R`, cls(s.totalR))}${it('最大ドローダウン（R）', `${num(s.maxDrawdownR, 1)} R`, 'neg')}` : ''}
   </div>`;
 }
 
@@ -149,20 +164,22 @@ export function quickSummary(s: Summary, info: ReportInfo): string {
 export function reportBody(a: Analysis, info: ReportInfo, initialBalance: number): string {
   const s = a.summary;
   if (!s.trades) return `<p class="hint">${esc(info.sourceLabel)}に、決済した取引がまだありません。</p>`;
+  const useR = s.rTrades > 0;
+  const rNote = useR ? '・棒は R の合計' : '';
   const card = (title: string, body: string, wide = false) => `<section class="card ${wide ? 'wide' : ''}"><h3>${title}</h3>${body}</section>`;
   return `<div class="report">
     ${card('気づき（数字から読み取れること）', a.insights.length ? `<ul class="insights">${a.insights.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '<p class="hint">取引が増えると表示します</p>', true)}
-    ${card('残高の推移（薄い赤はドローダウン）', equityChart(a.equity, info.hasBalance ? initialBalance : 0), true)}
+    ${card('残高の推移（薄い赤はドローダウン・橙は R の累積）', equityChart(a.equity, info.hasBalance ? initialBalance : 0), true)}
     ${card('主な数字（目安と説明つき）', explainedTable(s, info), true)}
     ${a.bySymbol.length > 1 ? card('銘柄別', sideBucketTable(a.bySymbol, '銘柄'), true) : ''}
     ${card('取引ごとの損益', barChart(a.trades.map((t, i) => ({ label: `${i + 1}`, value: t.profit, note: `#${t.ticket} ${t.side} ${t.pips.toFixed(1)} pips` }))), true)}
     ${card('pips の分布（回数）', barChart(a.pipsHistogram.map((b, i) => ({ label: b.label, value: b.trades, tone: i < 6 ? 'neg' : 'pos' })), { labelEvery: 2, unit: ' 回' }))}
     ${card('買い・売り別', sideTable(a))}
-    ${card('曜日別の損益（エントリーした日）', barChart(toBars(a.byWeekday), { labelEvery: 1 }) + bucketTable(a.byWeekday, '曜日'))}
+    ${card(`曜日別の損益（エントリーした日${rNote}）`, barChart(toBars(a.byWeekday, useR), barOpts(useR, 1)) + bucketTable(a.byWeekday, '曜日'))}
     ${card('週別（月曜始まり・エントリーした日）', sideBucketTable(a.byWeek, '週'), true)}
-    ${card('時間帯別（エントリーした時刻）', barChart(toBars(a.bySession), { labelEvery: 1 }) + sideBucketTable(a.bySession, '時間帯'), true)}
-    ${card('時刻別の損益（エントリーした時刻・1 時間ごと）', barChart(toBars(a.byHour), { labelEvery: 3 }), true)}
-    ${card('保有時間別の損益', barChart(toBars(a.byHold), { labelEvery: 1 }) + bucketTable(a.byHold, '保有時間'))}
+    ${card(`時間帯別（エントリーした時刻${rNote}）`, barChart(toBars(a.bySession, useR), barOpts(useR, 1)) + sideBucketTable(a.bySession, '時間帯'), true)}
+    ${card(`時刻別の損益（エントリーした時刻・1 時間ごと${rNote}）`, barChart(toBars(a.byHour, useR), barOpts(useR, 3)), true)}
+    ${card(`保有時間別の損益${useR ? '（棒は R の合計）' : ''}`, barChart(toBars(a.byHold, useR), barOpts(useR, 1)) + bucketTable(a.byHold, '保有時間'))}
     ${card('月別', bucketTable(a.byMonth, '月'))}
   </div>`;
 }

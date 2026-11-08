@@ -49,6 +49,15 @@ describe('成績の分析', () => {
     expect(summarize(list, 1_000_000, PIP).maxDrawdown).toBe(2000);
   });
 
+  it('R の合計と R のドローダウン（S/L 20 pips = 1R）、残高の推移にも R の累積', () => {
+    // R: +1 → -0.5 → +1.5 → -0.5 → -0.5。累積 1 → 0.5 → 2 → 1.5 → 1。山 2 から 1 下がる
+    const s = summarize(list, 1_000_000, PIP);
+    expect(s.totalR).toBeCloseTo(1);
+    expect(s.maxDrawdownR).toBeCloseTo(1);
+    const a = analyze([...list, trade(5, 10, { sl: null })], 1_000_000, PIP, jst);
+    expect(a.equity.map((p) => p.r)).toEqual([0, 1, 0.5, 2, 1.5, 1, 1].map((v) => expect.closeTo(v, 9)));
+  });
+
   it('R は決済時の S/L までの値幅を 1 とした倍率', () => {
     // S/L まで 20 pips。+20 pips は 1R、-10 pips は -0.5R
     const s = summarize([trade(0, 20), trade(1, -10)], 1_000_000, PIP);

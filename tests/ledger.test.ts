@@ -119,6 +119,26 @@ describe('区切りから・1 か月ずつの計算が、最初からの計算�
     }
   });
 
+  it('1 時間ごとの区切り（保存しない・1 本戻るとき用）から計算し直しても同じ口座になる', () => {
+    const whole = new Runner(restoreAccount(spec, settings, baseline, [], null), actions.slice(), [], true);
+    whole.run(feed, 0, feed.bid.length - 1);
+    expect(whole.fine.length).toBeGreaterThan(1000);
+    const r = rng(11);
+    for (let n = 0; n < 30; n++) {
+      // 覚えている範囲の中の時刻（1 本・数本戻るのと同じ）
+      const target = feed.bid[feed.bid.length - 1 - Math.floor(r() * 50_000)].t;
+      const ti = idxAt(feed, target);
+      const expected = replayAccount(spec, settings, baseline, actions, feed, 0, ti);
+      const cp = checkpointAtOrBefore(whole.fine, target);
+      expect(cp).not.toBeNull();
+      expect(target - cp!.time).toBeLessThanOrEqual(3_600_000 * 72); // 週末をまたいでも 3 日以内
+      const acts = actions.filter((a) => a.t <= target);
+      const runner = new Runner(restoreAccount(spec, settings, baseline, whole.account.history, cp), acts, [], false, whole.fine.filter((c) => c.time <= cp!.time));
+      runner.run(feed, idxAt(feed, cp!.time) + 1, ti);
+      expect(state(runner.account)).toEqual(state(expected.account));
+    }
+  });
+
   it('同じ足を 2 回渡しても二重に処理しない', () => {
     const runner = new Runner(restoreAccount(spec, settings, baseline, [], null), actions.slice(), [], true);
     const mid = Math.floor(feed.bid.length / 2);

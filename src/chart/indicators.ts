@@ -251,8 +251,12 @@ export class IndicatorLayer {
       this.rciCache = c.rci;
       this.from = Math.max(0, input.k - WINDOW);
     }
-    this.from = Math.max(input.offset, Math.min(this.from, Math.max(0, input.k - WINDOW)));
+    // 描き始めは、今の足まで WINDOW 本の所から。少し戻っただけ（半分以上残っている）なら動かさない
+    // （1 本戻るたびに動かすと、そのあとの描き直しも毎回全部渡し直すことになる）
+    if (this.from < input.offset || input.k < this.from || input.k - this.from < WINDOW / 2) this.from = Math.max(input.offset, Math.min(this.from, Math.max(0, input.k - WINDOW)));
+    if (input.k < this.from) this.from = Math.max(input.offset, input.k - WINDOW);
     const { k } = input;
+    // 戻るとき（k が前より小さい）も全部渡し直す（部品の pop で後ろの点を外すと、線が 10 本で 0.1 秒かかり、渡し直す 0.04 秒より遅かった）
     const full = this.shown.key !== input.key || this.shown.from !== this.from || k < this.shown.k;
     for (const l of this.lines) {
       const point = (j: number): LineData | WhitespaceData => {

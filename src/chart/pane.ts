@@ -76,6 +76,8 @@ export interface PaneHost {
  * 今の足から古い方へこの本数だけ渡す（左端まで動かすと、さらに古い足を足す）
  */
 const CHART_MAX_BARS = 30_000;
+/** 1 本ずつ戻るのが止まってから、インジケーターを描くまでの時間 */
+const IND_DEFER_MS = 120;
 const UP_COLOR = '#a5d6a7';
 const DOWN_COLOR = '#de7a7a';
 
@@ -132,6 +134,9 @@ export class ChartPane {
   /** 最後に描いた今の足（凡例に出す） */
   private lastBar: Bar | null = null;
   private shown = { tf: '' as Timeframe | '', k: -1, version: -1, start: -1, extraT: null as number | null, cursor: -1 };
+  /** 戻っている間に後回しにしたインジケーターの描き直し */
+  private indTimer: ReturnType<typeof setTimeout> | null = null;
+  private indPending: Parameters<IndicatorLayer['render']>[0] | null = null;
   /** 左端まで動かして足した、古い足の本数 */
   private extraBars = 0;
   /**
@@ -480,11 +485,18 @@ export class ChartPane {
     // 渡すのは今の足から古い方へ CHART_MAX_BARS 本（＋左へ動かして足した分）まで。再生中は始まりを動かさない
     let start = Math.max(0, k - CHART_MAX_BARS - this.extraBars);
     // 足した 1 本があるときは、その前の足を update で変えられない（部品は最後の足しか変えられない）ので、足や今の時刻が変わったら渡し直す
+    const sameData = !reset && this.shown.tf === this.tf && this.shown.version === version && this.shown.extraT === null && extraT === null;
     const same =
       !reset && this.shown.tf === this.tf && this.shown.version === version && k >= this.shown.k && this.shown.extraT === extraT && (extraT === null || (k === this.shown.k && cursor === this.shown.cursor));
-    if (same && this.shown.start >= 0 && start > this.shown.start) start = this.shown.start;
+    // 戻るとき（1 本・1 分戻る）は、後ろの足を外して今の足を描き直すだけにする（全部渡し直すと M1 では 1 回 0.1 秒かかり、続けて戻るとカクカクした）
+    const back = sameData && k < this.shown.k && this.shown.start >= 0 && this.shown.start <= k;
+    if ((same || back) && this.shown.start >= 0 && start !== this.shown.start && this.shown.start <= k) start = this.shown.start;
     this.mapper.offset = start;
-    if (!same || start !== this.shown.start) {
+    if (back) {
+      this.series.pop(this.shown.k - k + 1);
+      this.series.update(partial);
+      if (before) this.restoreView(before, k - start);
+    } else if (!same || start !== this.shown.start) {
       const keep = before && (keepView || (same && start !== this.shown.start));
       const list: CandlestickData[] = [];
       for (let j = start; j < k; j++) list.push(bar(j));
@@ -497,8 +509,9 @@ export class ChartPane {
       for (let j = this.shown.k; j < k; j++) this.series.update(bar(j));
       this.series.update(partial);
     }
+    const sameBar = !reset && k === this.shown.k && this.shown.tf === this.tf;
     this.shown = { tf: this.tf, k, version, start, extraT, cursor };
-    this.indicators.render({
+    const indInput = {
       key: `${this.tf}:${version}`,
       closes,
       times: chartTimes,
@@ -509,7 +522,25 @@ export class ChartPane {
       partialHigh: cur.h,
       partialLow: cur.l,
       point: 10 ** -this.host.digits(),
-    });
+    };
+    // 1 本ずつ戻っている間は、インジケーターを後回しにする（線を全部渡し直すのに 0.04 秒かかり、押しっぱなしで戻るとカクカクした）。
+    // 止まって IND_DEFER_MS たったら描く。その間の線は戻る前の位置のまま（もう見た足の値なので、先の値が見えるわけではない）。
+    // 同じ足の描き直し（戻った直後の refresh）も後回しのまま。それ以外（進む・時間足を変える・スクショ）はすぐ描く
+    if (back || (this.indTimer !== null && sameBar)) {
+      this.indPending = indInput;
+      if (this.indTimer !== null) clearTimeout(this.indTimer);
+      this.indTimer = setTimeout(() => {
+        this.indTimer = null;
+        const p = this.indPending;
+        this.indPending = null;
+        if (p) this.indicators.render(p);
+      }, IND_DEFER_MS);
+    } else {
+      if (this.indTimer !== null) clearTimeout(this.indTimer);
+      this.indTimer = null;
+      this.indPending = null;
+      this.indicators.render(indInput);
+    }
     this.drawings.refresh();
     this.updateHtf();
     if (!this.hovering) this.renderLegend(null);

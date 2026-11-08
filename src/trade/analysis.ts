@@ -38,6 +38,9 @@ export interface Bucket {
   longWins: number;
   shorts: number;
   shortWins: number;
+  /** R の合計と、R を出せた回数（S/L のある取引だけ） */
+  r: number;
+  rTrades: number;
 }
 
 export interface Summary {
@@ -95,6 +98,10 @@ export interface Summary {
   /** 決済時の S/L を 1R とした損益の平均（S/L のある取引だけ） */
   avgR: number;
   rTrades: number;
+  /** R の合計（全部の取引を同じリスク = 1R で建てたとしたときの損益。複利・ロットの大きさに左右されない手法そのものの成績） */
+  totalR: number;
+  /** R で数えた累積の山からの下げの最大 */
+  maxDrawdownR: number;
   avgMae: number;
   avgMfe: number;
   /** 取引した期間（最初のエントリー〜最後の決済、日） */
@@ -107,7 +114,8 @@ export interface Analysis {
   long: Summary;
   short: Summary;
   /** 決済ごとの残高（最初は初期資金） */
-  equity: { t: number; balance: number; drawdown: number }[];
+  /** r は R の累積（R を出せない取引では前と同じ値のまま） */
+  equity: { t: number; balance: number; drawdown: number; r: number }[];
   trades: TradeRecord[];
   byWeekday: Bucket[];
   /** 週別（月曜始まり。表示の時刻帯で、エントリーした日） */
@@ -184,6 +192,8 @@ function emptySummary(): Summary {
     rTrades: 0,
     avgMae: NaN,
     avgMfe: NaN,
+    totalR: 0,
+    maxDrawdownR: 0,
     days: 0,
     tradesPerDay: NaN,
   };
@@ -311,6 +321,14 @@ export function summarize(trades: readonly TradeRecord[], initialBalance: number
   const rs = list.map(rMultiple).filter((r): r is number => r !== null);
   s.rTrades = rs.length;
   s.avgR = avg(rs);
+  let cumR = 0;
+  let peakR = 0;
+  for (const r of rs) {
+    cumR += r;
+    peakR = Math.max(peakR, cumR);
+    s.maxDrawdownR = Math.max(s.maxDrawdownR, peakR - cumR);
+  }
+  s.totalR = cumR;
   s.avgMae = avg(list.filter((t) => t.mae !== null).map((t) => t.mae!));
   s.avgMfe = avg(list.filter((t) => t.mfe !== null).map((t) => t.mfe!));
 
@@ -322,7 +340,7 @@ export function summarize(trades: readonly TradeRecord[], initialBalance: number
 }
 
 function bucketize(trades: readonly TradeRecord[], labels: string[], keyOf: (t: TradeRecord) => number): Bucket[] {
-  const out: Bucket[] = labels.map((label) => ({ label, trades: 0, wins: 0, net: 0, pips: 0, winRate: NaN, longs: 0, longWins: 0, shorts: 0, shortWins: 0 }));
+  const out: Bucket[] = labels.map((label) => ({ label, trades: 0, wins: 0, net: 0, pips: 0, winRate: NaN, longs: 0, longWins: 0, shorts: 0, shortWins: 0, r: 0, rTrades: 0 }));
   for (const t of trades) {
     const b = out[keyOf(t)];
     if (!b) continue;
@@ -337,6 +355,11 @@ function bucketize(trades: readonly TradeRecord[], labels: string[], keyOf: (t: 
     }
     b.net += t.profit;
     b.pips += t.pips;
+    const r = rMultiple(t);
+    if (r !== null) {
+      b.r += r;
+      b.rTrades++;
+    }
   }
   for (const b of out) b.winRate = b.trades ? (b.wins / b.trades) * 100 : NaN;
   return out;
@@ -352,11 +375,13 @@ export function analyze(trades: readonly TradeRecord[], initialBalance: number, 
   const equity: Analysis['equity'] = [];
   let balance = initialBalance;
   let peak = initialBalance;
-  if (list.length) equity.push({ t: list[0].openTime, balance, drawdown: 0 });
+  let cumR = 0;
+  if (list.length) equity.push({ t: list[0].openTime, balance, drawdown: 0, r: 0 });
   for (const t of list) {
     balance += t.profit;
     peak = Math.max(peak, balance);
-    equity.push({ t: t.closeTime, balance, drawdown: peak - balance });
+    cumR += rMultiple(t) ?? 0;
+    equity.push({ t: t.closeTime, balance, drawdown: peak - balance, r: cumR });
   }
 
   const wall = (t: number) => new Date(toWall(t));

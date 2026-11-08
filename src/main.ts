@@ -44,12 +44,13 @@ import {
 import { Account, type Action, type FillEvent, type NewAction, type PendingType, type PriceFeed, type Side } from './trade/account';
 import { checkpointAtOrBefore, ledgerMatches, restoreAccount, Runner } from './trade/ledger';
 import { lossAt, lotsForRisk } from './trade/risk';
-import { analyze, excursionOf, tradesCsv, type Analysis, type TradeRecord } from './trade/analysis';
+import { analyze, excursionOf, rMultiple, tradesCsv, type Analysis, type TradeRecord } from './trade/analysis';
 import { renderHistory, renderMt4, renderTrade, type Mt4Row, type TerminalTab } from './ui/terminal';
 import { quickSummary, REPORT_CSS, reportBody, reportHtml } from './ui/report';
 import { loadAppSettings, saveAppSettings } from './appSettings';
 import { notebookFrom, setupQuickNotes, type NoteBook } from './ui/quickNotes';
-import { DEFAULT_LOSS_REASONS, DEFAULT_WIN_REASONS, isWin, missingReasons, newReasonId, tallyReasons, type LossReason } from './trade/lossReasons';
+import { simulateTp, summarizeTp, TP_MULTIPLES, type TpSimRow } from './trade/tpSim';
+import { DEFAULT_LOSS_REASONS, DEFAULT_WIN_REASONS, isWin, missingReasons, newReasonId, tallyByName, tallyReasons, type LossReason } from './trade/lossReasons';
 import { initSymbolMenu, orderSymbols } from './ui/symbolMenu';
 import { openTagPicker } from './ui/tagPicker';
 import './style.css';
@@ -409,7 +410,11 @@ async function travel(time: number, keepView = false, fromLive = false) {
       const saved = ledgerMatches(t.ledger, t.baseline.time, t.actions) ? t.ledger : null;
       const cps = runner ? runner.checkpoints : (saved?.checkpoints ?? []);
       const history = runner ? runner.account.history : (saved?.history ?? []);
-      const cp = checkpointAtOrBefore(cps, time);
+      // 1 時間ごとの区切り（計算中の runner が覚えている分）があれば、月の区切りより近い方から
+      const fine = runner ? runner.fine : [];
+      const cpMonth = checkpointAtOrBefore(cps, time);
+      const cpFine = checkpointAtOrBefore(fine, time);
+      const cp = cpFine && (!cpMonth || cpFine.time > cpMonth.time) ? cpFine : cpMonth;
       const usable = cp && cp.time >= t.baseline.time ? cp : null;
       const actions = t.actions.filter((a) => a.t <= time).sort((a, b) => a.t - b.t);
       runner = new Runner(
@@ -417,6 +422,7 @@ async function travel(time: number, keepView = false, fromLive = false) {
         actions,
         cps.filter((c) => usable && c.time <= usable.time),
         !usable,
+        fine.filter((c) => usable && c.time <= usable.time),
       );
       t.actions = runner.actions;
       account = runner.account;
@@ -439,12 +445,15 @@ async function travel(time: number, keepView = false, fromLive = false) {
     afterTravel(keepView);
   } finally {
     traveling = false;
+    // 計算している間に押された「1 本戻る」は、まとめて 1 回で戻る（捨てると、押しっぱなしで戻る速さがばらついた）
+    if (queuedBack > 0) requestAnimationFrame(flushBack);
   }
 }
 
 function afterTravel(keepView = false) {
-  // 見ている場所を保つときは、右端の時刻と足の幅で戻す（最新を見ていれば、戻した後の最新）
-  renderChart(true, keepView);
+  // 見ている場所を保つときは、右端の時刻と足の幅で戻す（最新を見ていれば、戻した後の最新）。
+  // 価格データが変わっていなければ、全部は渡し直さない（1 本戻るときは後ろの足を外すだけ。ChartPane.render）
+  renderChart(!keepView, keepView);
   if (!keepView) scrollToNow();
   refresh();
   updateStatus();
@@ -521,14 +530,37 @@ function goTo(target: number, pause = true, fromLive = false): boolean {
   return stopped;
 }
 
-/** 今の時間足で 1 本進む（作りかけの足なら、その足の終わりまで） */
-function stepBar(dir: 1 | -1) {
-  exitPeek();
+/** 戻る計算をしている間に押された「1 本戻る」の回数（終わったら flushBack でまとめて戻る） */
+let queuedBack = 0;
+
+function flushBack() {
+  if (traveling || queuedBack <= 0) return;
+  const n = queuedBack;
+  queuedBack = 0;
+  backBars(n);
+}
+
+/** 今の時間足で n 本戻る */
+function backBars(n: number) {
   const { agg } = getAgg(active.tf);
   const k = lastLE(agg.starts, cursor);
   const endOf = (j: number) => (j + 1 < agg.starts.length ? agg.starts[j + 1] - 1 : md.bid.length - 1);
-  if (dir > 0) goTo(cursor < endOf(k) ? endOf(k) : endOf(k + 1));
-  else goTo(k > 0 ? endOf(k - 1) : cursor);
+  goTo(k > 0 ? endOf(Math.max(0, k - n)) : cursor);
+}
+
+/** 今の時間足で 1 本進む（作りかけの足なら、その足の終わりまで） */
+function stepBar(dir: 1 | -1) {
+  exitPeek();
+  if (dir < 0) {
+    if (traveling) queuedBack++;
+    else backBars(1);
+    return;
+  }
+  queuedBack = 0;
+  const { agg } = getAgg(active.tf);
+  const k = lastLE(agg.starts, cursor);
+  const endOf = (j: number) => (j + 1 < agg.starts.length ? agg.starts[j + 1] - 1 : md.bid.length - 1);
+  goTo(cursor < endOf(k) ? endOf(k) : endOf(k + 1));
 }
 
 function setPlaying(on: boolean) {
@@ -969,7 +1001,66 @@ function renderStatsTab(): string {
     <span class="hint">MAE・MFE（含み損益の最大）は、今の銘柄で価格データがある取引だけ計算します</span></div>`;
   // 一番上は簡単な一覧。詳しい分析はその下（書き出したレポートと同じ内容）
   const detail = a.summary.trades ? `<h3 class="detail-head">詳しい分析</h3>${reportBody(a, statsInfo(source), initial)}` : reportBody(a, statsInfo(source), initial);
-  return bar + (a.summary.trades ? quickSummary(a.summary, statsInfo(source)) + reasonCard(a.trades, source, true) : '') + detail;
+  return bar + (a.summary.trades ? quickSummary(a.summary, statsInfo(source)) + reasonCard(a.trades, source, true) + `<div class="report">${tpSimCard()}</div>` : '') + detail;
+}
+
+// ---------------- T/P を変えたら（試算） ----------------
+// 今の銘柄の取引を、建値・S/L はそのまま T/P だけ S/L の幅 × 1〜3 に置き直して、1 分足でどちらに先に届くかを数える（src/trade/tpSim.ts）。
+// 昔の月も読むので、ボタンを押したときだけ計算する。リプレイの時刻より先の足は使わない
+
+let tpSim: { key: string; running: boolean; done: number; total: number; rows: TpSimRow[]; actual: TpSimRow | null; skipped: number; error?: string } | null = null;
+
+async function runTpSim() {
+  const { a } = currentAnalysis();
+  const key = statsCache!.key;
+  const list = a.trades.filter((t) => (t.symbol ?? md.symbol).toLowerCase() === md.symbol).sort((x, y) => x.openTime - y.openTime);
+  const spread = (state.test?.spreadPips?.[md.symbol] ?? DEFAULT_SPREAD_PIPS[md.symbol] ?? 0) * spec.pip;
+  const now = md.bid[cursor].t;
+  tpSim = { key, running: true, done: 0, total: list.length, rows: [], actual: null, skipped: 0 };
+  const results = TP_MULTIPLES.map(() => [] as (number | 'open' | null)[]);
+  // 建てた月から 3 か月分の足（同じ月に建てた取引は使い回す）
+  let win = { mi: -1, bars: [] as Bar[] };
+  try {
+    for (const t of list) {
+      const mi = md.monthIndexOf(t.openTime);
+      if (mi < 0) {
+        results.forEach((r) => r.push('open'));
+        continue;
+      }
+      if (win.mi !== mi) {
+        const parts: Bar[][] = await Promise.all(md.months.slice(mi, mi + 3).map(peekMonth));
+        win = { mi, bars: parts.flat().filter((b) => b.t <= now) };
+      }
+      TP_MULTIPLES.forEach((k, i) => results[i].push(simulateTp(t, win.bars, spread, k)));
+      tpSim.done++;
+      if (tpSim.done % 20 === 0 && state.terminalTab === 'stats') renderTerminal(true);
+    }
+    tpSim.rows = TP_MULTIPLES.map((k, i) => summarizeTp(k, results[i]));
+    tpSim.actual = summarizeTp(0, list.map(rMultiple));
+    tpSim.skipped = results[0].filter((x) => x === null).length;
+  } catch (e) {
+    tpSim.error = e instanceof Error ? e.message : String(e);
+  }
+  tpSim.running = false;
+  if (state.terminalTab === 'stats') renderTerminal(true);
+}
+
+function tpSimCard(): string {
+  const head = '<h3>T/P を変えたら（試算。建値・S/L はそのまま、T/P だけを S/L の幅 × 倍率に置き直す）</h3>';
+  const sim = tpSim && tpSim.key === statsCache?.key ? tpSim : null;
+  const hint =
+    '<p class="hint">今の銘柄の取引を 1 分足でたどり、S/L と新しい T/P のどちらに先に届くかを数えます。手で早く決済した取引も、どちらかに届くまで持っていたとみなします。約定の決まりは口座と同じ（売りは Ask・同じ足で両方なら陽線は安値が先）。S/L を建値や利益側に動かした取引は数えません。建てた月から 3 か月のうちに届かなかったものは「決まらず」。</p>';
+  if (!sim || (!sim.running && !sim.rows.length && !sim.error))
+    return `<section class="card wide">${head}<button type="button" data-action="tp-sim">試算する</button>${hint}</section>`;
+  if (sim.running) return `<section class="card wide">${head}<p>計算中… ${sim.done} / ${sim.total} 回</p></section>`;
+  if (sim.error) return `<section class="card wide">${head}<p class="neg">計算できませんでした: ${sim.error}</p><button type="button" data-action="tp-sim">もう一度</button></section>`;
+  const tone = (v: number) => (v < 0 ? 'neg' : v > 0 ? 'pos' : '');
+  const best = Math.max(...sim.rows.map((r) => r.totalR));
+  const row = (label: string, r: TpSimRow, strong = false) =>
+    `<tr${strong ? ' class="tp-best"' : ''}><td>${label}</td><td class="num">${r.trades}</td><td class="num">${r.wins}</td><td class="num">${r.losses}</td><td class="num">${r.winRate.toFixed(0)}%</td><td class="num ${tone(r.totalR)}">${r.totalR.toFixed(1)}</td><td class="num ${tone(r.avgR)}">${r.avgR.toFixed(2)}</td><td class="num neg">${r.maxDrawdownR.toFixed(1)}</td><td class="num">${r.open || ''}</td></tr>`;
+  const rows = [sim.actual ? row('実際（記録どおり）', sim.actual) : '', ...sim.rows.map((r) => row(`${r.k} 倍${r.k === 1 ? '（1:1）' : ''}`, r, r.totalR === best))].join('');
+  return `<section class="card wide">${head}<table class="report-table"><thead><tr><th>T/P</th><th>回数</th><th>勝ち</th><th>負け</th><th>勝率</th><th>合計 R</th><th>1 回あたり R</th><th>最大ドローダウン（R）</th><th>決まらず</th></tr></thead><tbody>${rows}</tbody></table>
+    <button type="button" data-action="tp-sim">計算し直す</button>${sim.skipped ? `<span class="hint">（S/L を動かした ${sim.skipped} 回は数えていません）</span>` : ''}${hint}</section>`;
 }
 
 // ---------------- 敗因・勝因の札 ----------------
@@ -1106,22 +1197,41 @@ function reasonCard(records: TradeRecord[], source: 'virtual' | 'mt4', links: bo
   const mt4 = source === 'mt4';
   const esc = (v: string) => v.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
   const money = (v: number) => `<td class="num ${v < 0 ? 'neg' : v > 0 ? 'pos' : ''}">${formatMoney(v)}</td>`;
+  const rCell = (list: TradeRecord[]) => {
+    const rs = list.map(rMultiple).filter((r): r is number => r !== null);
+    const sum = rs.reduce((a, b) => a + b, 0);
+    return rs.length ? `<td class="num ${sum < 0 ? 'neg' : sum > 0 ? 'pos' : ''}">${sum.toFixed(1)}</td>` : '<td class="num">—</td>';
+  };
   const section = (win: boolean) => {
     const { list, label } = reasonKind(win);
     const t = tallyReasons(records, list, (r) => tagsOf(tagKeyOf(mt4, r.ticket, r.openTime)), win);
     const ref = (r: TradeRecord, action: string) =>
       links ? `<a data-action="${action}" data-kind="${mt4 ? 'mt4' : 'history'}" data-ticket="${r.ticket}" data-close="${r.closeTime}" title="${action === 'reason-tag' ? `クリックでこの取引を表示して、${label}を付ける` : 'クリックでこの取引を表示'}">#${r.ticket}</a>` : `#${r.ticket}`;
     const rows = t.rows
-      .map((x) => `<tr${links ? ` class="reason-row" draggable="true" data-reason="${x.reason.id}" data-win="${win ? 1 : 0}" title="ドラッグで並びを変える"` : ''}><td>${esc(x.reason.name)}</td><td class="num">${x.count}</td>${money(x.profit)}<td class="num">${x.pips.toFixed(1)}</td>${money(x.profit / x.count)}<td class="tickets">${x.trades.map((r) => ref(r, 'reason-trade')).join(' ')}</td></tr>`)
+      .map((x) => `<tr${links ? ` class="reason-row" draggable="true" data-reason="${x.reason.id}" data-win="${win ? 1 : 0}" title="ドラッグで並びを変える"` : ''}><td>${esc(x.reason.name)}</td><td class="num">${x.count}</td>${rCell(x.trades)}${money(x.profit)}<td class="num">${x.pips.toFixed(1)}</td>${money(x.profit / x.count)}<td class="tickets">${x.trades.map((r) => ref(r, 'reason-trade')).join(' ')}</td></tr>`)
       .join('');
     const untagged = t.untagged.length ? `<p class="hint">${label}の無い${win ? '勝ち' : '負け'} ${t.untagged.length} 件: ${t.untagged.map((r) => ref(r, 'reason-tag')).join(' ')}</p>` : '';
     const body = t.rows.length
-      ? `<table class="report-table reason-table"><thead><tr><th>${label}</th><th>回数</th><th>損益</th><th>pips</th><th>1 回あたり</th><th>取引</th></tr></thead><tbody>${rows}</tbody></table>`
+      ? `<table class="report-table reason-table"><thead><tr><th>${label}</th><th>回数</th><th>R</th><th>損益</th><th>pips</th><th>1 回あたり</th><th>取引</th></tr></thead><tbody>${rows}</tbody></table>`
       : `<p class="hint">まだ${label}を付けた取引がありません</p>`;
     return `<section class="card wide reason-card"><h3>${label}別</h3>${body}${untagged}</section>`;
   };
+  // 勝因・敗因を同じ名前でまとめた勝ち負け（その条件が付いた取引は何勝何敗・何 R か。札の答え合わせに使う）
+  const ref2 = (r: TradeRecord) =>
+    links ? `<a data-action="reason-trade" data-kind="${mt4 ? 'mt4' : 'history'}" data-ticket="${r.ticket}" data-close="${r.closeTime}" title="クリックでこの取引を表示">#${r.ticket}</a>` : `#${r.ticket}`;
+  const byName = tallyByName(records, lossReasons, winReasons, (r) => tagsOf(tagKeyOf(mt4, r.ticket, r.openTime)), rMultiple);
+  const nameRows = byName
+    .map((x) => {
+      const avgR = x.rTrades ? x.r / x.rTrades : NaN;
+      const tone = (v: number) => (v < 0 ? 'neg' : v > 0 ? 'pos' : '');
+      return `<tr><td>${esc(x.name)}</td><td class="num">${x.trades}</td><td class="num">${x.wins}</td><td class="num">${x.losses}</td><td class="num">${((x.wins / x.trades) * 100).toFixed(0)}%</td><td class="num ${tone(x.r)}">${x.rTrades ? x.r.toFixed(1) : '—'}</td><td class="num ${tone(avgR)}">${x.rTrades ? avgR.toFixed(2) : '—'}</td><td class="tickets">${x.tickets.map((r) => ref2(r)).join(' ')}</td></tr>`;
+    })
+    .join('');
+  const nameCard = byName.length
+    ? `<section class="card wide reason-card"><h3>札ごとの勝ち負け（勝因・敗因を同じ名前でまとめる・R で比べる）</h3><table class="report-table reason-table"><thead><tr><th>札</th><th>回数</th><th>勝ち</th><th>負け</th><th>勝率</th><th>R</th><th>1 回あたり R</th><th>取引</th></tr></thead><tbody>${nameRows}</tbody></table><p class="hint">同じ名前の勝因と敗因を 1 つにまとめて、その札が付いた取引の勝ち負けを数えます。1 回あたり R がプラスなら、その条件の取引は勝ち越しています（円は複利で後半ほど大きくなるので R で比べます）。回数が 30 回くらいになるまでは偶然でも大きく動きます</p></section>`
+    : '';
   const how = links ? '<p class="hint reason-how">口座履歴・MT4 履歴の行か、チャートの矢印を右クリックすると札を付けられます（負けは敗因・勝ちは勝因。1〜9 のキーでも付け外し）。表の行をドラッグすると並びを変えられます</p>' : '';
-  return `<div class="report">${section(false)}${section(true)}</div>${how}`;
+  return `<div class="report">${nameCard}${section(false)}${section(true)}</div>${how}`;
 }
 
 function download(name: string, text: string, type: string) {
@@ -3350,6 +3460,7 @@ function setupControls() {
         if (action === 'reason-tag') openTagPickerFor(kind, ticket, close, x, y);
       });
     }
+    if (action === 'tp-sim' && !tpSim?.running) void runTpSim();
     if (action === 'export-csv') exportStats('csv');
     if (action === 'export-html') exportStats('html');
     if (action === 'mt4-auto') void startMt4Auto();

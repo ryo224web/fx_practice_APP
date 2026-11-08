@@ -82,3 +82,57 @@ export function missingReasons(list: LossReason[], other: LossReason[]): string[
   const have = new Set(list.map((r) => norm(r.name)));
   return other.filter((r) => !have.has(norm(r.name))).map((r) => r.name);
 }
+
+export interface NameRow {
+  name: string;
+  trades: number;
+  wins: number;
+  losses: number;
+  /** R の合計と、R を出せた回数 */
+  r: number;
+  rTrades: number;
+  tickets: TradeRecord[];
+}
+
+/** 区切りのための札（「-----」だけの名前）。数えない */
+export const isSeparatorReason = (name: string) => /^[\s\-–—ー_=]*$/.test(name);
+
+/**
+ * 勝因・敗因を同じ名前（空白の違いは同じとみなす）でまとめて、その札が付いた取引の勝ち負けと R を数える。
+ * 勝因と敗因に同じ項目（フィボの数値・エントリーの形・H4 の向きなど）を用意して付けているので、
+ * 名前ごとに「付いた取引は何勝何敗、何 R か」を見れば、その条件が効いているかが分かる。
+ * 円ではなく R で見るのは、複利で後半の取引ほど金額が大きくなり、後半に多い札ほど大きく出てしまうため。
+ * 並びは勝因の一覧の順、そのあとに敗因だけにある名前。区切りの札は数えない
+ */
+export function tallyByName(
+  records: TradeRecord[],
+  lossList: LossReason[],
+  winList: LossReason[],
+  tagsOf: (r: TradeRecord) => string[],
+  rOf: (r: TradeRecord) => number | null,
+): NameRow[] {
+  const norm = (n: string) => n.replace(/\s/g, '');
+  const nameOf = new Map<string, string>();
+  const rows = new Map<string, NameRow>();
+  for (const x of [...winList, ...lossList]) {
+    if (isSeparatorReason(x.name)) continue;
+    const k = norm(x.name);
+    nameOf.set(x.id, k);
+    if (!rows.has(k)) rows.set(k, { name: x.name, trades: 0, wins: 0, losses: 0, r: 0, rTrades: 0, tickets: [] });
+  }
+  for (const rec of records) {
+    for (const k of new Set(tagsOf(rec).map((id) => nameOf.get(id)).filter((k): k is string => !!k))) {
+      const row = rows.get(k)!;
+      row.trades++;
+      if (isWin(rec.profit)) row.wins++;
+      else row.losses++;
+      const r = rOf(rec);
+      if (r !== null) {
+        row.r += r;
+        row.rTrades++;
+      }
+      row.tickets.push(rec);
+    }
+  }
+  return [...rows.values()].filter((x) => x.trades);
+}
