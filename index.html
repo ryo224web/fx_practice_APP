@@ -29,8 +29,6 @@
         <button data-tool="rrsell" title="リスクリワード（売り）。エントリーしたい所をクリックして置き、つまみで利確・損切・終わりを動かす">RR売</button>
         <button id="shots-btn" title="スクショ: 今のチャートを選んだ時間足（初めは H1・M15・M5・M1）で撮って保存する（ダブルクリックで撮る時間足を選ぶ・右クリックで保存先のフォルダを開く）">📷</button>
         <button id="magnet-btn" aria-pressed="false" title="マグネット（M）。点を置く・動かすとき、近くの足の始値・高値・安値・終値に吸い付ける">🧲</button>
-        <button id="fibo-levels-btn" title="フィボナッチ・エクスパンションの水準を足す・消す・変える（図形のダブルクリックでも開く）">水準</button>
-        <button id="tf-colors-btn" title="図形の色（時間足ごと）と線の太さ（図形ごと）を決める">色</button>
         <button id="clear-drawings" title="この銘柄の図形をすべて削除">全消去</button>
       </div>
       <select id="layout" aria-label="チャートの並べ方" title="チャートの並べ方（時間足とインジケーターはチャートごと。クリックしたチャートが操作の対象）">
@@ -47,9 +45,6 @@
         <button id="toggle-history" title="決済した取引を矢印で表示" aria-pressed="true">矢印</button>
         <button id="toggle-oneclick" title="左上のワンクリック注文（SELL・BUY とロット）を出す・隠す" aria-pressed="true">1クリック</button>
       </div>
-      <button id="indicators-btn" title="移動平均・RCI の設定">インジケーター</button>
-      <button id="templates-btn" title="定型（並べ方・時間足・インジケーター・色などに名前を付けて保存し、どのプロジェクトにも当てられる。MT4 の定型チャートと同じ）">定型</button>
-      <button id="keys-btn" title="キーボードのショートカットを変える">キー</button>
       <button id="easyorder-btn" title="損切り幅と許容する損失からロットを計算して注文（O）" aria-pressed="false">EasyOrder</button>
       <button id="new-order" title="新規注文（F9）">新規注文</button>
       <label class="zone" title="表示する時刻（サーバー時間は MT4 と同じ NY+7）">
@@ -59,6 +54,7 @@
         </select>
       </label>
       <button id="quick-notes-btn" aria-pressed="false" title="簡易メモ（フォルダ分けした階層つきの箇条書き。全部のプロジェクトで共通）">📝 メモ</button>
+      <button id="settings-btn" title="設定: インジケーター（移動平均・RCI・ZigZag）／図形の色と線の太さ／フィボナッチの水準／定型／キー。上のタブで切り替える">⚙ 設定</button>
       <span id="status"></span>
     </header>
 
@@ -124,11 +120,14 @@
 
     <dialog id="color-dialog">
       <form method="dialog">
+        <nav class="set-tabs" aria-label="設定"><button type="button" data-set="ind" aria-pressed="false" title="移動平均・RCI・ZigZag（今のチャートの時間足）">インジケーター</button><button type="button" data-set="color" aria-pressed="true" title="図形の色（時間足ごと）と線の太さ（図形ごと）">図形の色・線の太さ</button><button type="button" data-set="levels" aria-pressed="false" title="フィボ・エクスパンションの水準を足す・消す・変える">フィボナッチの水準</button><button type="button" data-set="tpl" aria-pressed="false" title="並べ方・時間足・インジケーター・色などに名前を付けて保存し、どのプロジェクトにも当てる（MT4 の定型チャートと同じ）">定型</button><button type="button" data-set="keys" aria-pressed="false" title="キーボードのショートカットを変える">キー</button></nav>
+        <div class="set-body">
         <h2>図形の色と太さ</h2>
         <p class="hint">図形は描いたチャートの時間足の色になります。色・太さを変えると、描いてある図形も変わります。</p>
         <div class="color-cols">
           <div><h3>色（時間足ごと）</h3><table class="ind-table" id="color-table"></table></div>
           <div><h3>線の太さ（図形ごと）</h3><table class="ind-table" id="width-table"></table></div>
+        </div>
         </div>
         <div class="buttons">
           <button type="button" id="color-reset">初期設定に戻す</button>
@@ -140,6 +139,8 @@
 
     <dialog id="tpl-dialog">
       <form method="dialog">
+        <nav class="set-tabs" aria-label="設定"><button type="button" data-set="ind" aria-pressed="false" title="移動平均・RCI・ZigZag（今のチャートの時間足）">インジケーター</button><button type="button" data-set="color" aria-pressed="false" title="図形の色（時間足ごと）と線の太さ（図形ごと）">図形の色・線の太さ</button><button type="button" data-set="levels" aria-pressed="false" title="フィボ・エクスパンションの水準を足す・消す・変える">フィボナッチの水準</button><button type="button" data-set="tpl" aria-pressed="true" title="並べ方・時間足・インジケーター・色などに名前を付けて保存し、どのプロジェクトにも当てる（MT4 の定型チャートと同じ）">定型</button><button type="button" data-set="keys" aria-pressed="false" title="キーボードのショートカットを変える">キー</button></nav>
+        <div class="set-body">
         <h2>定型</h2>
         <p class="hint">チャートの並べ方・時間足・インジケーター・図形の色・フィボの水準・表示する時間足・右の余白・表示時刻をまとめて保存します（検証・図形・MT4 履歴は入りません）。「★」の定型は、新しいプロジェクトを作るときに使います。</p>
         <table class="ind-table" id="tpl-table"></table>
@@ -148,6 +149,7 @@
           <button type="button" id="tpl-save" class="primary">今のチャートを保存</button>
         </div>
         <p class="error" id="tpl-error"></p>
+        </div>
         <div class="buttons">
           <button value="cancel" formnovalidate>閉じる</button>
         </div>
@@ -156,10 +158,13 @@
 
     <dialog id="keys-dialog">
       <form method="dialog">
+        <nav class="set-tabs" aria-label="設定"><button type="button" data-set="ind" aria-pressed="false" title="移動平均・RCI・ZigZag（今のチャートの時間足）">インジケーター</button><button type="button" data-set="color" aria-pressed="false" title="図形の色（時間足ごと）と線の太さ（図形ごと）">図形の色・線の太さ</button><button type="button" data-set="levels" aria-pressed="false" title="フィボ・エクスパンションの水準を足す・消す・変える">フィボナッチの水準</button><button type="button" data-set="tpl" aria-pressed="false" title="並べ方・時間足・インジケーター・色などに名前を付けて保存し、どのプロジェクトにも当てる（MT4 の定型チャートと同じ）">定型</button><button type="button" data-set="keys" aria-pressed="true" title="キーボードのショートカットを変える">キー</button></nav>
+        <div class="set-body">
         <h2>キーボードのショートカット</h2>
         <p class="hint">枠をクリックしてからキーを押します（Shift・Ctrl・Alt と組み合わせられます）。Delete で空にする、Esc でやめる。1 つの働きに 2 つまで。Esc・Enter・Delete と ⌘ の付いたキーは使えません。</p>
-        <div class="keys-scroll"><table class="ind-table" id="keys-table"></table></div>
+        <table class="ind-table" id="keys-table"></table>
         <p class="hint" id="keys-note"></p>
+        </div>
         <div class="buttons">
           <button type="button" id="keys-reset">初期設定に戻す</button>
           <button value="cancel" formnovalidate>キャンセル</button>
@@ -170,6 +175,8 @@
 
     <dialog id="levels-dialog">
       <form method="dialog">
+        <nav class="set-tabs" aria-label="設定"><button type="button" data-set="ind" aria-pressed="false" title="移動平均・RCI・ZigZag（今のチャートの時間足）">インジケーター</button><button type="button" data-set="color" aria-pressed="false" title="図形の色（時間足ごと）と線の太さ（図形ごと）">図形の色・線の太さ</button><button type="button" data-set="levels" aria-pressed="true" title="フィボ・エクスパンションの水準を足す・消す・変える">フィボナッチの水準</button><button type="button" data-set="tpl" aria-pressed="false" title="並べ方・時間足・インジケーター・色などに名前を付けて保存し、どのプロジェクトにも当てる（MT4 の定型チャートと同じ）">定型</button><button type="button" data-set="keys" aria-pressed="false" title="キーボードのショートカットを変える">キー</button></nav>
+        <div class="set-body">
         <h2>フィボナッチの水準</h2>
         <p class="hint">% で入れます（61.8 など）。描いてあるすべての図形に使います。</p>
         <div class="levels-cols">
@@ -185,6 +192,7 @@
           </div>
         </div>
         <p class="error" id="levels-error"></p>
+        </div>
         <div class="buttons">
           <button type="button" id="levels-reset">初期設定に戻す</button>
           <button value="cancel" formnovalidate>キャンセル</button>
@@ -195,12 +203,16 @@
 
     <dialog id="ind-dialog">
       <form method="dialog">
+        <nav class="set-tabs" aria-label="設定"><button type="button" data-set="ind" aria-pressed="true" title="移動平均・RCI・ZigZag（今のチャートの時間足）">インジケーター</button><button type="button" data-set="color" aria-pressed="false" title="図形の色（時間足ごと）と線の太さ（図形ごと）">図形の色・線の太さ</button><button type="button" data-set="levels" aria-pressed="false" title="フィボ・エクスパンションの水準を足す・消す・変える">フィボナッチの水準</button><button type="button" data-set="tpl" aria-pressed="false" title="並べ方・時間足・インジケーター・色などに名前を付けて保存し、どのプロジェクトにも当てる（MT4 の定型チャートと同じ）">定型</button><button type="button" data-set="keys" aria-pressed="false" title="キーボードのショートカットを変える">キー</button></nav>
+        <div class="set-body">
         <h2 id="ind-title">インジケーター</h2>
         <h3>移動平均（メインチャート）</h3>
         <table class="ind-table" id="ind-ma"></table>
         <h3>ZigZag（メインチャート。MA の向き: MA が向きを変えるごとに、その間の一番高い・安い足を結ぶ。MT4: MT4 の標準と同じ）</h3>
         <table class="ind-table" id="ind-zz"></table>
         <div id="ind-rci-wrap"></div>
+        <div id="ind-zone"></div>
+        </div>
         <div class="buttons">
           <button type="button" id="ind-reset">初期設定に戻す</button>
           <button type="button" id="ind-copy-all" title="この設定を M1〜MN のすべての時間足に使う">全時間足にコピー</button>

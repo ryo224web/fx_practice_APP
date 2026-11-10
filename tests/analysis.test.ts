@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { analyze, summarize, tradesCsv, type TradeRecord } from '../src/trade/analysis';
+import { analyze, inHours, summarize, tradesCsv, type TradeRecord } from '../src/trade/analysis';
 
 const PIP = 0.01;
 const T0 = Date.UTC(2026, 9, 19, 0, 0); // 月曜 9:00（日本時間）
@@ -150,5 +150,15 @@ describe('毎月の振り返りの数字（銘柄別・週別・時間帯別）'
     expect(a.summary.returnToDrawdownPct).toBeCloseTo((4500 / 1000) * 100, 10);
     expect(a.summary.months).toBe(1); // どちらの週も 10 月
     expect(a.summary.maxLots).toBe(0.1);
+  });
+});
+
+describe('成績に数えるエントリー時刻', () => {
+  it('from 以上 to 未満。from > to は日をまたぐ。0〜24 と from = to は全部', () => {
+    const r = { from: 9, to: 24 };
+    expect([0, 8, 9, 15, 23].map((h) => inHours(h, r))).toEqual([false, false, true, true, true]);
+    const night = { from: 22, to: 6 };
+    expect([21, 22, 23, 0, 5, 6, 12].map((h) => inHours(h, night))).toEqual([false, true, true, true, true, false, false]);
+    expect([0, 12, 23].every((h) => inHours(h, { from: 0, to: 24 }) && inHours(h, { from: 5, to: 5 }))).toBe(true);
   });
 });

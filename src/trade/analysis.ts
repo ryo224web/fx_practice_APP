@@ -26,6 +26,22 @@ export interface TradeRecord {
   mfe: number | null;
 }
 
+/** 成績に数えるエントリー時刻の範囲（時。from 以上 to 未満。from > to なら日をまたぐ。0〜24 は全部） */
+export interface HourRange {
+  from: number;
+  to: number;
+}
+
+export const ALL_HOURS: HourRange = { from: 0, to: 24 };
+
+export const isAllHours = (r: HourRange) => r.from === r.to || (r.from === 0 && r.to === 24);
+
+/** hour（0〜23）が範囲に入るか */
+export function inHours(hour: number, r: HourRange): boolean {
+  if (isAllHours(r)) return true;
+  return r.from < r.to ? hour >= r.from && hour < r.to : hour >= r.from || hour < r.to;
+}
+
 export interface Bucket {
   label: string;
   trades: number;

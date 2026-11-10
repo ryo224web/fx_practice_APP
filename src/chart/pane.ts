@@ -12,6 +12,7 @@ import { formatWallWithWeekday } from '../core/format';
 import { TimeMapper } from './mapper';
 import { TradeOverlay } from './trades';
 import { HtfOverlay } from './htf';
+import { RciZoneOverlay, rciZoneSpans, type RciZoneConfig } from './rciZone';
 
 /** 時間足ごとに作った足（main.ts で作って全チャートで使い回す） */
 export interface AggEntry {
@@ -69,6 +70,8 @@ export interface PaneHost {
   /** 図形の色を変えるときに並べる色（全部のプロジェクトで共通） */
   palette(): string[];
   setPalette(colors: string[]): void;
+  /** RCI の 0 付近を背景で知らせる設定（全部のチャートで共通。src/chart/rciZone.ts） */
+  rciZone(): RciZoneConfig;
 }
 
 /**
@@ -122,6 +125,10 @@ export class ChartPane {
   readonly indicators: IndicatorLayer;
   /** 長い時間足の足を後ろに重ねる（キーを押している間だけ。src/chart/htf.ts） */
   private readonly htf: HtfOverlay;
+  /** RCI の 0 付近の時間を背景で塗る（src/chart/rciZone.ts） */
+  private readonly rciZone: RciZoneOverlay;
+  /** 終わった足の RCI（時間足・データ・期間ごと） */
+  private rciZoneCache: { key: string; arr: Float64Array } | null = null;
   private htfOn = false;
   private readonly legend: HTMLElement;
   /** ライブ: 今の足が終わるまでの残り時間（ドラッグで動かし、ホイールで大きさを変える） */
@@ -228,6 +235,8 @@ export class ChartPane {
     this.series.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0.08 } });
     this.htf = new HtfOverlay(this.mapper);
     this.series.attachPrimitive(this.htf);
+    this.rciZone = new RciZoneOverlay(this.mapper);
+    this.series.attachPrimitive(this.rciZone);
     // 注文の線のドラッグを図形より優先するため、先に登録する
     this.overlay = new TradeOverlay(box, this.mapper);
     this.series.attachPrimitive(this.overlay);
@@ -543,6 +552,7 @@ export class ChartPane {
     }
     this.drawings.refresh();
     this.updateHtf();
+    this.updateRciZone();
     if (!this.hovering) this.renderLegend(null);
   }
 
@@ -550,6 +560,22 @@ export class ChartPane {
   setHtf(on: boolean) {
     this.htfOn = on;
     this.updateHtf();
+  }
+
+  /** 決めた時間足の RCI が 0 付近にある時間を塗る（今の時刻まで） */
+  updateRciZone() {
+    const cfg = this.host.rciZone();
+    if (!cfg.enabled || this.el.hidden || !(cfg.tf in TIMEFRAMES)) return this.rciZone.set([]);
+    const tf = cfg.tf as Timeframe;
+    const { agg, times, closes } = this.host.agg(tf);
+    const cursor = this.host.cursor();
+    const k = lastLE(agg.starts, cursor);
+    if (k < 0) return this.rciZone.set([]);
+    const key = `${tf}:${this.host.dataVersion()}:${cfg.period}:${closes.length}`;
+    if (this.rciZoneCache?.key !== key) this.rciZoneCache = { key, arr: new Float64Array(closes.length).fill(NaN) };
+    const bid = this.host.bid();
+    const now = bid[cursor].t + 60_000;
+    this.rciZone.set(rciZoneSpans(times, closes, k, bid[cursor].c, now, TIMEFRAMES[tf] * 60_000, cfg, this.rciZoneCache.arr));
   }
 
   private updateHtf() {

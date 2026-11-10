@@ -1,6 +1,6 @@
 import { type CandlestickData, type Time, type UTCTimestamp } from 'lightweight-charts';
 import { commandIndex, KEY_COMMANDS, keyLabel, keyOf, resolveKeymap } from './ui/keys';
-import { defaultLineWidth, DEFAULT_PALETTE, DEFAULT_TF_COLORS, DRAWING_LABELS, FIBO_EXP_LEVELS, FIBO_LEVELS, levelsFromPercents, type Drawing, type DrawingKind } from './chart/drawings';
+import { defaultLineWidth, DEFAULT_PALETTE, DEFAULT_TF_COLORS, DRAWING_LABELS, FIBO_EXP_LEVELS, FIBO_LEVELS, levelsFromPercents, type Drawing, type DrawingKind, type LineKind } from './chart/drawings';
 import { DEFAULT_INDICATORS, normalizeIndicators, type IndicatorConfig, type ZigzagMode } from './chart/indicators';
 import { ChartPane, DEFAULT_COUNTDOWN, type CountdownStyle, type PaneHost } from './chart/pane';
 import { type ArrowRef, type LineEdit, type OrderPreview } from './chart/trades';
@@ -44,11 +44,12 @@ import {
 import { Account, type Action, type FillEvent, type NewAction, type PendingType, type PriceFeed, type Side } from './trade/account';
 import { checkpointAtOrBefore, ledgerMatches, restoreAccount, Runner } from './trade/ledger';
 import { lossAt, lotsForRisk } from './trade/risk';
-import { analyze, excursionOf, rMultiple, tradesCsv, type Analysis, type TradeRecord } from './trade/analysis';
+import { ALL_HOURS, analyze, excursionOf, inHours, isAllHours, rMultiple, tradesCsv, type Analysis, type HourRange, type TradeRecord } from './trade/analysis';
 import { renderHistory, renderMt4, renderTrade, type Mt4Row, type TerminalTab } from './ui/terminal';
 import { quickSummary, REPORT_CSS, reportBody, reportHtml } from './ui/report';
 import { loadAppSettings, saveAppSettings } from './appSettings';
 import { notebookFrom, setupQuickNotes, type NoteBook } from './ui/quickNotes';
+import { DEFAULT_RCI_ZONE, type RciZoneConfig } from './chart/rciZone';
 import { simulateTp, summarizeTp, TP_MULTIPLES, type TpSimRow } from './trade/tpSim';
 import { DEFAULT_LOSS_REASONS, DEFAULT_WIN_REASONS, isWin, missingReasons, newReasonId, tallyByName, tallyReasons, type LossReason } from './trade/lossReasons';
 import { initSymbolMenu, orderSymbols } from './ui/symbolMenu';
@@ -961,30 +962,37 @@ function statsRecords(source: 'virtual' | 'mt4'): TradeRecord[] {
   });
 }
 
-let statsCache: { key: string; a: Analysis } | null = null;
+let statsCache: { key: string; a: Analysis; total: number } | null = null;
+/** 成績に数えるエントリー時刻（表示の時刻帯。共通の設定の statsHours。初めは全部） */
+let statsHours: HourRange = ALL_HOURS;
 
-function currentAnalysis(): { a: Analysis; source: 'virtual' | 'mt4'; initial: number } {
+function currentAnalysis(): { a: Analysis; source: 'virtual' | 'mt4'; initial: number; total: number } {
   const source = state.statsSource === 'mt4' && state.mt4 ? 'mt4' : 'virtual';
   const initial = source === 'virtual' ? test().initialBalance : 0;
-  const key = `${source}:${mt4Mode()}:${shownAccount().history.length}:${mt4Rev}:${state.mt4?.month}:${mt4Offset().hours}:${state.zone}:${dataVersion}:${md.symbol}`;
+  const key = `${source}:${mt4Mode()}:${shownAccount().history.length}:${mt4Rev}:${state.mt4?.month}:${mt4Offset().hours}:${state.zone}:${dataVersion}:${md.symbol}:${statsHours.from}-${statsHours.to}`;
   if (statsCache?.key !== key) {
-    statsCache = { key, a: analyze(statsRecords(source), initial, spec.pip, (t) => toDisplay(t, state.zone, rule)) };
+    const toWall = (t: number) => toDisplay(t, state.zone, rule);
+    const all = statsRecords(source);
+    // エントリーした時刻（表示の時刻帯）で絞る
+    const records = all.filter((r) => inHours(new Date(toWall(r.openTime)).getUTCHours(), statsHours));
+    statsCache = { key, a: analyze(records, initial, spec.pip, toWall), total: all.length };
   }
-  return { a: statsCache.a, source, initial };
+  return { a: statsCache.a, source, initial, total: statsCache.total };
 }
 
 function statsInfo(source: 'virtual' | 'mt4') {
   return {
     sourceLabel:
       (source === 'mt4' ? `MT4 の履歴（${state.mt4?.fileName ?? ''}）` : mt4Mode() ? `MT4 の取引（この検証の口座。${state.mt4?.fileName ?? ''}）` : '仮想の取引') +
-      (source === 'mt4' || mt4Mode() ? monthLabel() : ''),
+      (source === 'mt4' || mt4Mode() ? monthLabel() : '') +
+      (isAllHours(statsHours) ? '' : `・エントリー ${statsHours.from}〜${statsHours.to} 時`),
     symbolLabel: md.symbol.toUpperCase(),
     hasBalance: source === 'virtual',
   };
 }
 
 function renderStatsTab(): string {
-  const { a, source, initial } = currentAnalysis();
+  const { a, source, initial, total } = currentAnalysis();
   const btn = (src: string, label: string, disabled = false) =>
     `<button type="button" data-action="stats-src" data-src="${src}" aria-pressed="${source === src}" ${disabled ? 'disabled title="MT4 履歴タブで読み込むと選べます"' : ''}>${label}</button>`;
   const months = mt4Months();
@@ -995,6 +1003,8 @@ function renderStatsTab(): string {
         </select>`
       : '';
   const bar = `<div class="mt4-bar">${btn('virtual', mt4Mode() ? 'この検証の口座（MT4）' : '仮想の取引')}${btn('mt4', 'MT4 の履歴', !state.mt4)}${month}
+    <span class="sep"></span>
+    ${hoursPicker(a.summary.trades, total)}
     <span class="sep"></span>
     <button type="button" data-action="export-csv" title="取引の一覧を CSV で保存（Excel で開ける）">CSV で書き出す</button>
     <button type="button" data-action="export-html" title="グラフ付きのレポートを 1 つの HTML ファイルで保存">レポートを書き出す</button>
@@ -1061,6 +1071,24 @@ function tpSimCard(): string {
   const rows = [sim.actual ? row('実際（記録どおり）', sim.actual) : '', ...sim.rows.map((r) => row(`${r.k} 倍${r.k === 1 ? '（1:1）' : ''}`, r, r.totalR === best))].join('');
   return `<section class="card wide">${head}<table class="report-table"><thead><tr><th>T/P</th><th>回数</th><th>勝ち</th><th>負け</th><th>勝率</th><th>合計 R</th><th>1 回あたり R</th><th>最大ドローダウン（R）</th><th>決まらず</th></tr></thead><tbody>${rows}</tbody></table>
     <button type="button" data-action="tp-sim">計算し直す</button>${sim.skipped ? `<span class="hint">（S/L を動かした ${sim.skipped} 回は数えていません）</span>` : ''}${hint}</section>`;
+}
+
+/** 成績に数えるエントリー時刻を選ぶ欄（〜時から〜時まで。全部なら「0 時〜24 時」） */
+function hoursPicker(shown: number, total: number): string {
+  const zone = state.zone === 'jst' ? '日本時間' : 'サーバー時間';
+  const opt = (h: number, sel: number) => `<option value="${h}" ${h === sel ? 'selected' : ''}>${h} 時</option>`;
+  const from = Array.from({ length: 24 }, (_, h) => opt(h, statsHours.from)).join('');
+  const to = Array.from({ length: 24 }, (_, h) => opt(h + 1, statsHours.to)).join('');
+  const note = isAllHours(statsHours) ? '全部' : `${total} 回中 ${shown} 回`;
+  return `<span class="stats-hours" title="この時間にエントリーした取引だけで成績を出します（${zone}。始まりの方が遅ければ日をまたぐ。0 時〜24 時で全部）。本番でエントリーできる時間の成績を見るため">エントリー
+    <select data-action="stats-hours" data-end="from">${from}</select>〜<select data-action="stats-hours" data-end="to">${to}</select>
+    <span class="hint">${note}</span>${isAllHours(statsHours) ? '' : ' <button type="button" data-action="stats-hours-all" title="全部の時間に戻す">全部</button>'}</span>`;
+}
+
+function setStatsHours(r: HourRange) {
+  statsHours = isAllHours(r) ? ALL_HOURS : r;
+  void saveAppSettings({ statsHours });
+  renderTerminal(true);
 }
 
 // ---------------- 敗因・勝因の札 ----------------
@@ -2344,7 +2372,7 @@ function openIndicatorDialog(cfg: IndicatorConfig = indicatorsFor(active.tf)) {
     <tr><td><input type="checkbox" data-zz="compare" ${z.compare ? 'checked' : ''} /></td><td colspan="11">A・B・C を重ねて比べる（<b style="color:#f0883e">A 橙の太線</b>・<b style="color:#db61a2">B ピンク</b>・<b style="color:#39c5cf">C 水色の破線</b>。区切り方・色・太さの欄は使わない）</td></tr>`;
   $('#ind-rci-wrap').innerHTML = cfg.rci
     .map(
-      (rp, k) => `<h3>RCI ${k + 1} 段目（サブウィンドウ）<label class="inline"><input class="ind-rci-on" data-k="${k}" type="checkbox" ${rp.enabled ? 'checked' : ''} /> 表示する</label></h3>
+      (rp, k) => `<h3>RCI ${k + 1} 段目（サブウィンドウ）<label class="inline"><input class="ind-rci-on" data-k="${k}" type="checkbox" ${rp.enabled ? 'checked' : ''} /> 表示する</label><label class="inline" title="RCI が 0 付近まで戻ったかを見やすくする"><input class="ind-rci-band" data-k="${k}" type="checkbox" ${rp.band !== false ? 'checked' : ''} /> -20〜+20 に灰色の帯</label></h3>
       <table class="ind-table" id="ind-rci-${k}"><tr><td></td><td>期間</td><td>色</td><td>太さ</td></tr>${rp.lines
         .map(
           (l, i) => `<tr><td><input type="checkbox" data-i="${i}" data-f="enabled" ${l.enabled ? 'checked' : ''} /></td>
@@ -2354,8 +2382,35 @@ function openIndicatorDialog(cfg: IndicatorConfig = indicatorsFor(active.tf)) {
         .join('')}</table>`,
     )
     .join('');
+  const z2 = rciZoneCfg;
+  $('#ind-zone').innerHTML = `<h3>RCI の 0 付近を背景で知らせる（全部の時間足・全部のチャートで共通）<label class="inline"><input id="zone-on" type="checkbox" ${z2.enabled ? 'checked' : ''} /> 知らせる</label></h3>
+    <p class="hint">決めた時間足の RCI が ±の内側にある時間だけ、どの時間足のチャートでも背景をうっすら青く塗ります（M1 を見たまま、M15 の RCI25 が 0 付近まで戻ったのに気づけるように）。</p>
+    <table class="ind-table"><tr><td>時間足</td><td>RCI の期間</td><td>± の幅</td></tr>
+    <tr><td><select id="zone-tf">${(Object.keys(TIMEFRAMES) as Timeframe[]).map((tf) => `<option value="${tf}" ${tf === z2.tf ? 'selected' : ''}>${tf}</option>`).join('')}</select></td>
+    <td><input id="zone-period" type="number" min="2" step="1" value="${z2.period}" /></td>
+    <td><input id="zone-level" type="number" min="1" max="100" step="1" value="${z2.level}" /></td></tr></table>`;
   const dlg = $<HTMLDialogElement>('#ind-dialog');
   if (!dlg.open) dlg.showModal();
+}
+
+/** 設定の画面から「RCI の 0 付近を背景で知らせる」を読んで、全部のチャートに使う */
+function applyRciZoneFromDialog() {
+  const on = document.querySelector<HTMLInputElement>('#zone-on');
+  if (!on) return;
+  const num = (id: string, min: number, max: number, fb: number) => {
+    const v = Math.round(Number($<HTMLInputElement>(id).value));
+    return Number.isFinite(v) ? Math.max(min, Math.min(max, v)) : fb;
+  };
+  const next: RciZoneConfig = {
+    enabled: on.checked,
+    tf: $<HTMLSelectElement>('#zone-tf').value,
+    period: num('#zone-period', 2, 500, rciZoneCfg.period),
+    level: num('#zone-level', 1, 100, rciZoneCfg.level),
+  };
+  if (JSON.stringify(next) === JSON.stringify(rciZoneCfg)) return;
+  rciZoneCfg = next;
+  void saveAppSettings({ rciZone: next });
+  for (const p of visiblePanes()) p.updateRciZone();
 }
 
 function readIndicatorDialog(): IndicatorConfig {
@@ -2405,6 +2460,7 @@ function readIndicatorDialog(): IndicatorConfig {
     ma: rows('#ind-ma', cur.ma),
     rci: cur.rci.map((rp, k) => ({
       enabled: document.querySelector<HTMLInputElement>(`.ind-rci-on[data-k="${k}"]`)!.checked,
+      band: document.querySelector<HTMLInputElement>(`.ind-rci-band[data-k="${k}"]`)!.checked,
       lines: rows(`#ind-rci-${k}`, rp.lines),
     })),
   };
@@ -2438,6 +2494,41 @@ const levelsOf = (k: FiboKind) => state.fiboLevels?.[k] ?? DEFAULT_LEVELS[k];
 
 function levelRow(v: number | '') {
   return `<tr><td><input type="number" step="any" value="${v}" /></td><td><button type="button" title="この水準を消す">✕</button></td></tr>`;
+}
+
+// ---------------- 設定（5 つの画面をタブで切り替える） ----------------
+type SettingsTab = 'ind' | 'color' | 'levels' | 'tpl' | 'keys';
+const SETTINGS_DIALOG: Record<SettingsTab, { dialog: string; apply: string }> = {
+  ind: { dialog: '#ind-dialog', apply: '#ind-apply' },
+  color: { dialog: '#color-dialog', apply: '#color-apply' },
+  levels: { dialog: '#levels-dialog', apply: '#levels-apply' },
+  // 定型は保存・当てるをその場でするので、適用するものが無い（移るときは閉じるだけ）
+  tpl: { dialog: '#tpl-dialog', apply: '' },
+  keys: { dialog: '#keys-dialog', apply: '#keys-apply' },
+};
+/** 最後に開いた設定のタブ（ツールバーの ⚙ で、そこから開く） */
+let lastSettingsTab: SettingsTab = 'ind';
+
+function openSettings(tab: SettingsTab) {
+  lastSettingsTab = tab;
+  if (tab === 'ind') openIndicatorDialog();
+  else if (tab === 'color') openColorDialog(state.tfColors ?? {});
+  else if (tab === 'levels') openLevelsDialog();
+  else if (tab === 'tpl') void openTemplates();
+  else openKeysDialog();
+}
+
+/** タブを押したとき: 今の画面の変更を適用してから、ほかの画面を開く（適用できなければ移らない） */
+function switchSettings(tab: SettingsTab) {
+  const now = (Object.keys(SETTINGS_DIALOG) as SettingsTab[]).find((k) => $<HTMLDialogElement>(SETTINGS_DIALOG[k].dialog).open);
+  if (now === tab) return;
+  if (now) {
+    if (SETTINGS_DIALOG[now].apply) {
+      $<HTMLButtonElement>(SETTINGS_DIALOG[now].apply).click();
+      if ($<HTMLDialogElement>(SETTINGS_DIALOG[now].dialog).open) return;
+    } else $<HTMLDialogElement>(SETTINGS_DIALOG[now].dialog).close();
+  }
+  openSettings(tab);
 }
 
 function openLevelsDialog(levels: (k: FiboKind) => readonly number[] = levelsOf) {
@@ -2776,7 +2867,6 @@ async function openTemplates() {
 
 function setupTemplates() {
   void loadTemplates().then((v) => (templatesCache = v));
-  $('#templates-btn').addEventListener('click', () => void openTemplates());
   const fail = (e: unknown) => ($('#tpl-error').textContent = e instanceof Error ? e.message : String(e));
   $('#tpl-save').addEventListener('click', async () => {
     const name = $<HTMLInputElement>('#tpl-name').value.trim();
@@ -3118,6 +3208,7 @@ function setLayout(layout: Layout) {
 /** チャートを 4 枚作る（表示するのは並べ方の枚数だけ） */
 function createPanes() {
   const host: PaneHost = {
+    rciZone: () => rciZoneCfg,
     agg: getAgg,
     dataVersion: () => dataVersion,
     cursor: () => (peek ? peek.bid.length - 1 : cursor),
@@ -3174,7 +3265,7 @@ function createPanes() {
     p.drawings.levelsOf = levelsOf;
     p.drawings.widthOf = (k) => state.lineWidths?.[k] ?? defaultLineWidth(k);
     p.drawings.timeLabel = (t) => formatTimeWithWeekday(t, state.zone, rule);
-    p.drawings.onEditLevels = () => openLevelsDialog();
+    p.drawings.onEditLevels = () => openSettings('levels');
     p.setRightOffset(state.rightOffset ?? 12);
     return p;
   });
@@ -3461,6 +3552,7 @@ function setupControls() {
       });
     }
     if (action === 'tp-sim' && !tpSim?.running) void runTpSim();
+    if (action === 'stats-hours-all') setStatsHours(ALL_HOURS);
     if (action === 'export-csv') exportStats('csv');
     if (action === 'export-html') exportStats('html');
     if (action === 'mt4-auto') void startMt4Auto();
@@ -3478,6 +3570,7 @@ function setupControls() {
   });
   termBody.addEventListener('change', (e) => {
     const el = e.target as HTMLSelectElement;
+    if (el.dataset.action === 'stats-hours') setStatsHours({ ...statsHours, [el.dataset.end === 'to' ? 'to' : 'from']: Number(el.value) });
     if (el.dataset.action === 'mt4-month' && state.mt4) {
       state.mt4.month = el.value || undefined;
       mt4Changed();
@@ -3495,8 +3588,12 @@ function setupControls() {
     if (file) loadMt4File(file).catch((err) => toast(`読み込めませんでした: ${err instanceof Error ? err.message : err}`));
   });
 
-  $('#indicators-btn').addEventListener('click', () => openIndicatorDialog());
-  $('#tf-colors-btn').addEventListener('click', () => openColorDialog(state.tfColors ?? {}));
+  // 設定（インジケーター・図形の色と線の太さ・フィボの水準・定型・キー）は 1 つのボタンにまとめ、画面の上のタブで切り替える
+  $('#settings-btn').addEventListener('click', () => openSettings(lastSettingsTab));
+  document.addEventListener('click', (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLButtonElement>('.set-tabs [data-set]');
+    if (b) switchSettings(b.dataset.set as SettingsTab);
+  });
   $('#color-reset').addEventListener('click', () => openColorDialog({}, {}));
   $('#color-apply').addEventListener('click', () => {
     const colors: Record<string, string> = {};
@@ -3509,7 +3606,6 @@ function setupControls() {
     $<HTMLDialogElement>('#color-dialog').close();
     save();
   });
-  $('#keys-btn').addEventListener('click', () => openKeysDialog());
   $('#keys-reset').addEventListener('click', () => openKeysDialog(resolveKeymap(undefined)));
   $('#keys-apply').addEventListener('click', () => {
     keymap = keyDraft;
@@ -3548,7 +3644,6 @@ function setupControls() {
   keysDlg.addEventListener('cancel', (e) => {
     if (keyWaiting) e.preventDefault();
   });
-  $('#fibo-levels-btn').addEventListener('click', () => openLevelsDialog());
   $('#levels-reset').addEventListener('click', () => openLevelsDialog((k) => DEFAULT_LEVELS[k]));
   $('#levels-apply').addEventListener('click', applyLevelsDialog);
   // 入力中の Enter は「適用」（何もしないとキャンセルで閉じてしまう）
@@ -3568,11 +3663,13 @@ function setupControls() {
   });
   $('#ind-reset').addEventListener('click', () => openIndicatorDialog(structuredClone(DEFAULT_INDICATORS)));
   $('#ind-apply').addEventListener('click', () => {
+    applyRciZoneFromDialog();
     applyIndicators([active.tf], readIndicatorDialog());
     $<HTMLDialogElement>('#ind-dialog').close();
   });
   $('#ind-copy-all').addEventListener('click', () => {
     if (!confirm(`この設定を M1〜MN のすべての時間足に使いますか？（ほかの時間足の今の設定は上書きされます）`)) return;
+    applyRciZoneFromDialog();
     applyIndicators(Object.keys(TIMEFRAMES), readIndicatorDialog());
     $<HTMLDialogElement>('#ind-dialog').close();
   });
@@ -3684,10 +3781,13 @@ let styleBarPos: { right: number; top: number } | null = null;
 /** 札を付ける欄の大きさ（全部のプロジェクトで共通） */
 let tagPickerSize: { w: number; h: number } | null = null;
 let countdownStyle: CountdownStyle = DEFAULT_COUNTDOWN;
+/** RCI の 0 付近を背景で知らせる設定（全部のプロジェクトで共通） */
+let rciZoneCfg: RciZoneConfig = DEFAULT_RCI_ZONE;
 let keyIndex = commandIndex(resolveKeymap(undefined));
 
 function runCommand(id: string) {
   if (id.startsWith('tf:')) return setTf(id.slice(3) as Timeframe);
+  if (id === 'tool:trend-dotted') return toggleTool('trend', 'dotted');
   if (id.startsWith('tool:')) return toggleTool(id.slice(5) as DrawingKind);
   switch (id) {
     case 'play':
@@ -3732,9 +3832,11 @@ function runCommand(id: string) {
 }
 
 /** 描画ツールを選ぶ。もう一度押すとやめる */
-function toggleTool(tool: DrawingKind) {
-  const next = panes[0].drawings.tool === tool ? null : tool;
-  for (const p of panes) p.drawings.setTool(next);
+/** ツールを選ぶ・やめる。style を渡すと、その線の種類で描く（「トレンドライン（点線）」のコマンド） */
+function toggleTool(tool: DrawingKind, style: LineKind | null = null) {
+  const d = panes[0].drawings;
+  const next = d.tool === tool && d.toolStyle === style ? null : tool;
+  for (const p of panes) p.drawings.setTool(next, style);
 }
 
 /** 長い時間足を重ねているときの、押しているキー（離すとやめる） */
@@ -4006,6 +4108,8 @@ async function start() {
   tagPickerSize = settings.tagPickerSize ?? null;
   countdownStyle = settings.countdown ?? DEFAULT_COUNTDOWN;
   tradeRR = settings.tradeRR ?? true;
+  statsHours = settings.statsHours ?? ALL_HOURS;
+  rciZoneCfg = { ...DEFAULT_RCI_ZONE, ...settings.rciZone };
   $<HTMLInputElement>('#trade-rr').checked = tradeRR;
   for (const p of panes) p.applyCountdownStyle();
   palette = settings.palette ?? DEFAULT_PALETTE;

@@ -4,6 +4,7 @@
 
 import type { NoteBook, NoteItem } from './ui/quickNotes';
 import type { LossReason } from './trade/lossReasons';
+import type { RciZoneConfig } from './chart/rciZone';
 
 export interface AppSettings {
   /** キーボードのショートカット（働き → キー。無ければ初期値。src/ui/keys.ts） */
@@ -31,6 +32,13 @@ export interface AppSettings {
   countdown?: { right: number; top: number; size: number };
   /** 行のダブルクリックで指定した取引を、リスクリワードの形（建値・S/L・T/P）でも見せるか。無ければ見せる */
   tradeRR?: boolean;
+  /**
+   * 成績タブで数える取引のエントリー時刻（表示の時刻帯の時。from 以上 to 未満。from > to なら日をまたぐ。無ければ全部）。
+   * 検証は時間に関係なくして（場面を多く見て目を鍛える）、本番でエントリーできる時間の成績も見るため
+   */
+  statsHours?: { from: number; to: number };
+  /** RCI の 0 付近を背景で知らせる（決めた時間足の RCI が ±level の内側の時間を、全部のチャートで塗る。src/chart/rciZone.ts） */
+  rciZone?: RciZoneConfig;
   /** 敗因の一覧（成績タブの「敗因別」。src/trade/lossReasons.ts） */
   lossReasons?: LossReason[];
   /** 勝因の一覧（勝った取引に付ける。成績タブの「勝因別」） */

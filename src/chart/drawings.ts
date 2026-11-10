@@ -202,6 +202,58 @@ const COLORS: Record<DrawingKind, string> = {
 };
 
 /** リスクリワードの図形か */
+/** ダブルクリックでロックを切り替える図形（フィボ・テキスト・チャネルはダブルクリックに別の働きがある） */
+const LOCK_ON_DOUBLE = new Set<DrawingKind>(['hline', 'vline', 'trend', 'poly', 'rect', 'rrbuy', 'rrsell']);
+
+/** ロックの印を置く所（線の右端のすぐ上）。テキストは出さない */
+function lockMarkAt(d: Drawing, a: Px, pts: Px[], w: number): Px | null {
+  const b = pts[1];
+  const up = (p: Px) => ({ x: p.x - 6, y: p.y - 8 });
+  switch (d.kind) {
+    case 'hline':
+      return up({ x: w - 2, y: a.y });
+    case 'vline':
+      return { x: a.x + 8, y: 10 };
+    case 'trend':
+    case 'channel': {
+      const end = rayOn(d) ? rayEnd(a, b, w) : b;
+      return up(end.x >= a.x ? end : a);
+    }
+    case 'poly':
+      return up(pts.reduce((m, p) => (p.x > m.x ? p : m), a));
+    case 'rect':
+      return { x: Math.max(a.x, b.x) - 6, y: Math.min(a.y, b.y) - 8 };
+    case 'rrbuy':
+    case 'rrsell':
+      return up({ x: b.x, y: a.y });
+    case 'fibo':
+      return up({ x: Math.max(a.x, b.x), y: b.y });
+    case 'fiboexp':
+      return up(pts[2] ?? b);
+    default:
+      return null;
+  }
+}
+
+/** 小さな白い錠前（幅 8px・高さ 9px。(x, y) が真ん中） */
+function drawLockMark(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  ctx.save();
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 0.9;
+  ctx.fillStyle = '#fff';
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1.3;
+  ctx.beginPath();
+  ctx.arc(x, y - 1, 2.6, Math.PI, 0);
+  ctx.moveTo(x - 2.6, y - 1);
+  ctx.lineTo(x - 2.6, y + 0.5);
+  ctx.moveTo(x + 2.6, y - 1);
+  ctx.lineTo(x + 2.6, y + 0.5);
+  ctx.stroke();
+  ctx.fillRect(x - 4, y + 0.5, 8, 5);
+  ctx.restore();
+}
+
 export const isRR = (kind: DrawingKind) => kind === 'rrbuy' || kind === 'rrsell';
 /** リスクリワードの利益側・損失側の塗りと文字の札の色（TradingView のロング・ショートポジションに近い色） */
 const RR_PROFIT = '38, 166, 154';
@@ -461,6 +513,13 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       this.onChange();
       this.refresh();
     }
+    // ダブルクリックが空いている図形（水平線・垂直線・トレンドライン・長方形・リスクリワード）は、ロックを切り替える（2026-11-10）
+    if (d && LOCK_ON_DOUBLE.has(d.kind)) {
+      e.stopPropagation();
+      d.locked = !d.locked;
+      this.onChange();
+      this.refresh();
+    }
   }
 
   // ---- ISeriesPrimitive ----
@@ -557,9 +616,13 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     this.refresh();
   }
 
-  setTool(tool: DrawingKind | null) {
+  /** 次に描く図形の線の種類（「トレンドライン（点線）」のコマンドのとき dotted。無ければ実線） */
+  toolStyle: LineKind | null = null;
+
+  setTool(tool: DrawingKind | null, style: LineKind | null = null) {
     if (this.polyId) this.endPoly();
     this.tool = tool;
+    this.toolStyle = tool ? style : null;
     this.placing = null;
     this.el.style.cursor = tool ? 'crosshair' : '';
     this.onToolChange(tool);
@@ -1310,6 +1373,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         created: Date.now(),
         // テキストは初めから吹き出し（右上の欄の 💬 でふつうの文字にできる）
         ...(this.tool === 'text' ? { callout: true } : {}),
+        ...(this.toolStyle ? { style: this.toolStyle } : {}),
       };
       this.drawings.push(d);
       this.selectedId = d.id;
@@ -1708,6 +1772,11 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         }
         break;
       }
+    }
+    // ロックした図形は、線の右端に小さな白い錠前の印を出す（MT4 と同じく、ロックしているのがひと目で分かるように。2026-11-10）
+    if (d.locked) {
+      const at = lockMarkAt(d, a, pts, w);
+      if (at) drawLockMark(ctx, Math.min(at.x, w - 8), at.y);
     }
     // ロックした図形には、つまみを出さない（動かせないので）
     if (sel && !onePoint(d.kind) && !d.locked) {

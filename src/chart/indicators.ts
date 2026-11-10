@@ -2,7 +2,20 @@
 // 確定した足の値は一度計算したら使い回し、作りかけの足（リプレイの最後の足）だけ毎回計算し直す。
 // RCI は重いので、表示している辺りだけ計算する。
 
-import { LineSeries, LineStyle, type IChartApi, type ISeriesApi, type LineData, type Time, type WhitespaceData } from 'lightweight-charts';
+import {
+  LineSeries,
+  LineStyle,
+  type IChartApi,
+  type IPrimitivePaneRenderer,
+  type IPrimitivePaneView,
+  type ISeriesApi,
+  type ISeriesPrimitive,
+  type LineData,
+  type SeriesAttachedParameter,
+  type SeriesType,
+  type Time,
+  type WhitespaceData,
+} from 'lightweight-charts';
 import { atr, ema, emaNext, rciAt, sma, zigzag, zigzagByMa, type ZigzagPoint } from '../indicators/calc';
 import type { Bar } from '../core/candles';
 
@@ -27,6 +40,8 @@ export interface RciLine {
 export interface RciPane {
   enabled: boolean;
   lines: RciLine[];
+  /** -20〜+20 に灰色の帯を出すか（2 波の戻しで RCI25 が 0 付近まで戻ったかを見るため。無ければ出す） */
+  band?: boolean;
 }
 
 /** ZigZag（MT4 の標準と同じ。Depth・Deviation（ポイント）・Backstep） */
@@ -111,6 +126,40 @@ export function normalizeIndicators(cfg: IndicatorConfig | (Omit<IndicatorConfig
 
 /** 線の太さ（1〜4。チャートの部品が受け付ける形にする） */
 const lineWidth = (w: number | undefined) => Math.max(1, Math.min(4, Math.round(w ?? 1))) as 1 | 2 | 3 | 4;
+
+/** RCI の 0 付近の帯（-20〜+20） */
+const RCI_BAND = 20;
+
+/** RCI のサブウィンドウの -20〜+20 を灰色に塗る（線の後ろに描く） */
+class RciBand implements ISeriesPrimitive<Time> {
+  private series: ISeriesApi<SeriesType> | null = null;
+  attached(param: SeriesAttachedParameter<Time>) {
+    this.series = param.series as ISeriesApi<SeriesType>;
+  }
+  detached() {
+    this.series = null;
+  }
+  paneViews(): readonly IPrimitivePaneView[] {
+    return [
+      {
+        zOrder: () => 'bottom',
+        renderer: (): IPrimitivePaneRenderer => ({
+          draw: (target) => {
+            const s = this.series;
+            if (!s) return;
+            const y0 = s.priceToCoordinate(RCI_BAND);
+            const y1 = s.priceToCoordinate(-RCI_BAND);
+            if (y0 === null || y1 === null) return;
+            target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
+              ctx.fillStyle = 'rgba(139, 148, 158, 0.16)';
+              ctx.fillRect(0, Math.min(y0, y1), mediaSize.width, Math.abs(y1 - y0));
+            });
+          },
+        }),
+      },
+    ];
+  }
+}
 
 /** RCI の目安の線 */
 const RCI_LEVELS = [95, 80, 0, -80, -95];
@@ -220,6 +269,7 @@ export class IndicatorLayer {
           paneIndex,
         );
         if (n === 0) {
+          if (rp.band !== false) series.attachPrimitive(new RciBand());
           // MT4 と同じく、目安の線はすべて点線
           for (const p of RCI_LEVELS) series.createPriceLine({ price: p, color: '#8d96a0', lineStyle: LineStyle.Dotted, lineWidth: 1, axisLabelVisible: false, title: '' });
           // 目盛りは -100〜100。100 と -100 の数字が切れない程度の、ごくわずかな余白だけ付ける

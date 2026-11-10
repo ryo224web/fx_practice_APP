@@ -1580,3 +1580,34 @@ th.sortable:hover {
 #terminal .reason-table tr.rs-drop-after td {
   box-shadow: inset 0 -2px 0 var(--accent);
 }
+
+/* 設定（インジケーター・図形の色と線の太さ・フィボの水準・定型・キー）のタブ */
+.set-tabs { display: flex; gap: 4px; margin: -4px 0 12px; border-bottom: 1px solid var(--border, #30363d); }
+.set-tabs button { border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; background: transparent; padding: 6px 14px; margin-bottom: -1px; color: var(--muted, #8b949e); }
+.set-tabs button[aria-pressed='true'] { border-color: var(--border, #30363d); background: var(--panel, #161b22); color: inherit; font-weight: 600; }
+/* 設定の 5 つの画面は同じ大きさにする（タブで切り替えたときに大きさが変わらないように）。中身が多ければ、ボタンの上までを中でスクロール */
+#ind-dialog,
+#color-dialog,
+#levels-dialog,
+#tpl-dialog,
+#keys-dialog {
+  width: min(1000px, 94vw);
+  height: min(780px, 90vh);
+  box-sizing: border-box;
+  padding: 16px 20px;
+}
+#ind-dialog[open] > form,
+#color-dialog[open] > form,
+#levels-dialog[open] > form,
+#tpl-dialog[open] > form,
+#keys-dialog[open] > form {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.set-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.set-tabs button:focus:not(:focus-visible) { outline: none; }
