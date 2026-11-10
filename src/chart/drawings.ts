@@ -1724,6 +1724,16 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         break;
       }
     }
+    // 水平線・垂直線も、選んでいて動かせるときは白いつまみを出す（トレンドラインと同じく、ロックしていなければ出る）。
+    // 置いた点ではなく、水平線は一番右・垂直線は一番下に固定する（2026-11-10）
+    if (sel && !d.locked && (d.kind === 'hline' || d.kind === 'vline')) {
+      const p = d.kind === 'hline' ? { x: w - HANDLE - 2, y: a.y } : { x: a.x, y: h - HANDLE - 2 };
+      ctx.setLineDash([]);
+      ctx.lineWidth = 1;
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(p.x - HANDLE, p.y - HANDLE, HANDLE * 2, HANDLE * 2);
+      ctx.strokeRect(p.x - HANDLE, p.y - HANDLE, HANDLE * 2, HANDLE * 2);
+    }
     // ロックした図形には、つまみを出さない（動かせないので）
     if (sel && !onePoint(d.kind) && !d.locked) {
       ctx.setLineDash([]);
