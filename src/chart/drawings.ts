@@ -358,6 +358,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     el.addEventListener('mouseleave', () => {
       this.setHover(null);
       this.setTradeHover(false);
+      this.setRRHover(null);
     });
     window.addEventListener('mouseup', (e) => this.onUp(e));
     el.addEventListener('contextmenu', (e) => !inEditor(e) && this.onContext(e), true);
@@ -386,8 +387,33 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     this.requestUpdate();
   }
 
+  /** マウスを乗せている、自分で置いたリスクリワード（札はそのときと選んでいるときだけ出す。2026-11-11） */
+  private rrHoverId: string | null = null;
+
+  private setRRHover(id: string | null) {
+    if (id === this.rrHoverId) return;
+    this.rrHoverId = id;
+    this.requestUpdate();
+  }
+
+  /** px が乗っている、自分で置いたリスクリワード（上に描いたものを先に見る） */
+  private rrAt(px: Px): string | null {
+    for (let i = this.drawings.length - 1; i >= 0; i--) {
+      const d = this.drawings[i];
+      if (!isRR(d.kind)) continue;
+      const pts = d.points.map((pt) => this.toPx(pt));
+      if (pts.length < 3 || pts.some((p) => !p)) continue;
+      const [a, b, c] = pts as Px[];
+      const x0 = Math.min(a.x, b.x);
+      const x1 = Math.max(a.x, b.x);
+      if (px.x >= x0 - HIT && px.x <= x1 + HIT && px.y >= Math.min(a.y, b.y, c.y) - HIT && px.y <= Math.max(a.y, b.y, c.y) + HIT) return d.id;
+    }
+    return null;
+  }
+
   private onHover(e: MouseEvent) {
     const r = this.el.getBoundingClientRect();
+    this.setRRHover(this.rrAt({ x: e.clientX - r.left, y: e.clientY - r.top }));
     const tb = this.tradeBox;
     if (tb) {
       const pts = tb.d.points.map((pt) => this.toPx(pt));
@@ -1086,6 +1112,8 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       left(info, outside(tpY, hasTp ? 1 : 0), bg, n, n - 1);
       return;
     }
+    // 自分で置いたものも、札はマウスを乗せているときと選んでいるときだけ（いつも出すと足に重なる。2026-11-11）
+    if (!sel && this.rrHoverId !== d.id) return;
     const mx = x1;
     const out = (y: number, away: number) => y + (away < y ? -14 : 14);
     if (hasTp) tag(`利確 ${fmt(tp)}  +${pips(reward)} pips`, mx, out(b.y, a.y), `rgba(${RR_PROFIT}, 0.85)`);
