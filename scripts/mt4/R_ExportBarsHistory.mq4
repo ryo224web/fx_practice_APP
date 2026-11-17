@@ -36,6 +36,12 @@
 //| While sending fails, every minute it writes the last LiveMinutes  |
 //| finished M1 bars to fxp_bars\USDJPY\USDJPY_live.csv instead.      |
 //|                                                                    |
+//| Every 10 minutes (every 2 minutes for the first 10 minutes) it also|
+//| sends how many M1 bars MT4 has in each hour of the last CountDays |
+//| days. The Mac answers with the hours it has fewer bars of, and the|
+//| next send carries those bars, so the gaps from while T580 / MT4 / |
+//| the Mac was off fill by themselves.                                |
+//|                                                                    |
 //| Also writes the account history (closed trades and open positions)|
 //| to MQL4\Files\fx_practice_history.csv (same format as           |
 //| R_ExportHistory) when the EA starts and whenever a trade opens or |
@@ -44,13 +50,14 @@
 //| set it to "All History" once (right click -> All History).        |
 //+------------------------------------------------------------------+
 #property strict
-#property version     "1.13"
+#property version     "1.14"
 #property copyright   "R（FX Practice 用の自作ツール）"
 #property description "FX Practice 用に、チャート（1 分足）を書き出す EA です。注文は一切出しません。"
 #property description "1 分足を MQL4\\Files\\fxp_bars\\銘柄\\ に書きます（時刻はサーバー時刻）。月ごとのファイル（銘柄_年.月.csv）は"
 #property description "1 日 1 回（昨日まで）、今日のファイル（銘柄_年.月.日.csv）は 1 時間ごと。古い月のファイルはそのまま残します。"
 #property description "このフォルダは Dropbox にあるので、Mac の FX Practice が自動で取り込みます。"
 #property description "0.25 秒ごと（SendEveryMs）に今の価格を Mac の FX Practice へ直接送ります（ライブ用。LiveUrl を「WebRequest を許可する URL」に入れる）。"
+#property description "10 分ごとに、直近 7 日の 1 時間ごとの 1 分足の数を Mac に送り、Mac に足りない時間の足を送ります（止めていた間の抜けを自動で埋める）。"
 #property description "取引履歴も、起動したときと取引を建てた・決済したときに MQL4\\Files\\fx_practice_history.csv に書きます（口座履歴タブを「全履歴」にしておく）。"
 
 input string Symbols       = "USDJPY,EURUSD,GBPUSD,AUDUSD,USDCHF,USDCAD,NZDUSD,EURJPY,GBPJPY,XAUUSD,BTCUSD,JPN225"; // Symbols (comma separated)
@@ -59,6 +66,7 @@ input int    InitialMonths = 12;         // Also write this many past months (if
 input int    CheckEveryMin = 1;          // Check for a new hour every N minutes
 input string LiveUrl       = "http://192.168.40.227/fxp/tick"; // Send the prices to FX Practice on the Mac (empty = off)
 input int    SendEveryMs   = 250;        // Send the prices every N milliseconds (only when they changed)
+input int    CountDays     = 7;          // Compare the M1 bars of the last N days with the Mac and send the hours it is missing (0 = off)
 input int    LiveMinutes   = 120;        // While sending fails, write the last N finished M1 bars to <symbol>_live.csv every minute (0 = off)
 input string Folder        = "fxp_bars"; // Output folder (in MQL4\Files)
 input string HistoryFile   = "fx_practice_history.csv"; // Account history file (in MQL4\Files). Empty = do not write
@@ -78,6 +86,9 @@ uint     catchUpUntil = 0;  // for 10 minutes after sending starts (again), toda
 uint     catchUpAt = 0;     // GetTickCount of the last catch-up send
 uint     retryAt = 0;       // after a failed send, try again at this GetTickCount
 uint     minuteAt = 0;      // GetTickCount of the last check (new hour, new trades)
+uint     countAt = 0;       // GetTickCount of the last send of the bar counts (0 = at the next send)
+string   fillSym[];         // hours the Mac asked for (sent with the next send)
+datetime fillHour[];
 bool     urlWarned = false;
 
 int OnInit()
@@ -102,6 +113,9 @@ int OnInit()
    sendOk = false;
    sentBody = "";
    retryAt = 0;
+   countAt = 0;
+   ArrayResize(fillSym, 0);
+   ArrayResize(fillHour, 0);
    startedAt = GetTickCount();
    sendCount = 0;
    sendMs = 0;
@@ -143,7 +157,11 @@ void OnTimer()
 // For 10 minutes after sending starts (when the EA starts, or the Mac answers again), once a minute all of
 // today's bars are sent instead of the last 3, so that the bars from while T580 / MT4 / the Mac was off reach
 // the Mac at once (MT4 downloads them from the broker a little after it starts, so this is repeated).
-// Nothing is sent while the prices do not change (e.g. on weekends).
+//   C,<symbol>,<hour start>,<bars>   every 10 minutes: how many finished M1 bars MT4 has in each hour of the last
+//                                    CountDays days (hours with no bars are left out). The Mac answers
+//                                    "G,<symbol>,<hour start>" for each hour it has fewer bars of
+//   F,<symbol>,<bar time>,<open>,<high>,<low>,<close>   the finished bars of those hours, in the next send
+// Nothing is sent while the prices do not change (e.g. on weekends), except the counts and the asked bars.
 // (TimeCurrent is not used for this: inside the EA it does not move every second.)
 void SendLive()
 {
@@ -151,6 +169,10 @@ void SendLive()
    if(!sendOk && retryAt != 0 && GetTickCount() < retryAt) return;
    RefreshRates();
    bool catchUp = catchUpUntil != 0 && GetTickCount() < catchUpUntil && GetTickCount() - catchUpAt >= 60000;
+   // the counts: every 2 minutes for the first 10 minutes after sending starts (MT4 is still downloading), then every 10 minutes
+   uint countEvery = (catchUpUntil != 0 && GetTickCount() < catchUpUntil) ? 120000 : 600000;
+   bool counting = CountDays > 0 && sendOk && (countAt == 0 || GetTickCount() - countAt >= countEvery);
+   bool filling = ArraySize(fillSym) > 0;
    datetime today = DayOf(TimeCurrent());
    // The text is written straight into data (today's bars are about 1 MB: adding them to a string one line
    // at a time would copy the whole string every time). body keeps the small text of a normal send, to
@@ -179,14 +201,18 @@ void SendLive()
          if(!catchUp) body += b;
          AddText(data, pos, b);
       }
+      if(counting) AddCounts(sym, data, pos);
    }
-   if(pos == 0 || (body == sentBody && sendOk && !catchUp)) return;
+   for(int k = 0; k < ArraySize(fillSym); k++) AddFill(fillSym[k], fillHour[k], data, pos);
+   ArrayResize(fillSym, 0);
+   ArrayResize(fillHour, 0);
+   if(pos == 0 || (body == sentBody && sendOk && !catchUp && !counting && !filling)) return;
    ArrayResize(data, pos);
    char result[];
    string headers;
    ResetLastError();
    uint t0 = GetTickCount();
-   int code = WebRequest("POST", LiveUrl, "Content-Type: text/plain\r\n", catchUp ? 5000 : 500, data, result, headers);
+   int code = WebRequest("POST", LiveUrl, "Content-Type: text/plain\r\n", (catchUp || counting || filling) ? 5000 : 500, data, result, headers);
    uint ms = GetTickCount() - t0;
    bool ok = code == 200;
    if(ok)
@@ -211,10 +237,81 @@ void SendLive()
       Print("R_ExportBarsHistory: sending prices to ", LiveUrl);
       catchUpUntil = GetTickCount() + 10 * 60000;
       catchUpAt = 0;   // today's bars at the next send
+      countAt = 0;     // and the counts
    }
    if(ok && catchUp) catchUpAt = GetTickCount();
+   if(ok && counting)
+   {
+      countAt = GetTickCount();
+      ReadRequests(result);
+   }
    sendOk = ok;
-   sentBody = catchUp ? "" : body;
+   sentBody = (catchUp || counting || filling) ? "" : body;
+}
+
+// C lines: how many finished M1 bars MT4 has in each hour of the last CountDays days.
+// (Asking MT4 for the bars also makes it download history it does not have yet.)
+void AddCounts(string sym, char &buf[], int &pos)
+{
+   datetime now = TimeCurrent();
+   datetime to = now - now % 60;   // bars before the current minute are finished
+   MqlRates r[];
+   ArraySetAsSeries(r, false);
+   int n = CopyRates(sym, PERIOD_M1, to - CountDays * 86400, to - 1, r);
+   datetime h = 0;
+   int c = 0;
+   for(int j = 0; j < n; j++)
+   {
+      if(r[j].time >= to) break;
+      datetime hh = r[j].time - r[j].time % 3600;
+      if(hh != h)
+      {
+         if(c > 0) AddText(buf, pos, "C," + sym + "," + IntegerToString((long)h) + "," + IntegerToString(c) + "\n");
+         h = hh;
+         c = 0;
+      }
+      c++;
+   }
+   if(c > 0) AddText(buf, pos, "C," + sym + "," + IntegerToString((long)h) + "," + IntegerToString(c) + "\n");
+}
+
+// F lines: the finished M1 bars of one hour the Mac asked for
+void AddFill(string sym, datetime hour, char &buf[], int &pos)
+{
+   int digits = (int)MarketInfo(sym, MODE_DIGITS);
+   if(digits <= 0) digits = 5;
+   datetime now = TimeCurrent();
+   datetime to = (datetime)MathMin(hour + 3600, now - now % 60);
+   MqlRates r[];
+   ArraySetAsSeries(r, false);
+   int n = CopyRates(sym, PERIOD_M1, hour, to - 1, r);
+   for(int j = 0; j < n; j++)
+   {
+      if(r[j].time < hour || r[j].time >= to) continue;
+      AddText(buf, pos, "F," + sym + "," + IntegerToString((long)r[j].time) + "," + DoubleToString(r[j].open, digits) + "," +
+                        DoubleToString(r[j].high, digits) + "," + DoubleToString(r[j].low, digits) + "," + DoubleToString(r[j].close, digits) + "\n");
+   }
+}
+
+// The Mac's answer to the counts: "G,<symbol>,<hour start>" for each hour it is missing bars of
+void ReadRequests(char &res[])
+{
+   string text = CharArrayToString(res, 0, WHOLE_ARRAY, CP_UTF8);
+   string lines[];
+   int n = StringSplit(text, '\n', lines);
+   int got = 0;
+   for(int i = 0; i < n; i++)
+   {
+      string f[];
+      if(StringSplit(lines[i], ',', f) < 3 || f[0] != "G") continue;
+      int k = ArraySize(fillSym);
+      ArrayResize(fillSym, k + 1);
+      ArrayResize(fillHour, k + 1);
+      fillSym[k] = f[1];
+      fillHour[k] = (datetime)StringToInteger(f[2]);
+      got++;
+   }
+   if(got > 0) Print("R_ExportBarsHistory: the Mac is missing M1 bars of ", got, " hours, sending them");
 }
 
 // Appends s to buf at pos (the array grows by 1 MB at a time)

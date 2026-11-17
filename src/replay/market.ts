@@ -168,6 +168,33 @@ export class MarketData {
     return added;
   }
 
+  /**
+   * [from, to)（UTC）にかかる、読み込み済みの月を読み直す（開発サーバーが MT4 の抜けを埋めたとき）。
+   * 足が途中に入るだけで、口座は時刻で処理済みの足を飛ばすので計算はずれない。増えた本数を返す
+   */
+  async refill(from: number, to: number): Promise<number> {
+    while (this.loading) await this.loading;
+    if (this.lo < 0 || !this.bid.length) return 0;
+    const keys = this.loadedMonths.filter((m) => monthEnd(m) > from && monthStart(m) < to);
+    if (!keys.length) return 0;
+    let added = 0;
+    this.loading = (async () => {
+      const { bid, ask } = await loadMonths(this.symbol, keys, this.digits);
+      const start = monthStart(keys[0]);
+      const end = monthEnd(keys[keys.length - 1]);
+      const a = this.firstAtOrAfter(start);
+      const b = this.firstAtOrAfter(end);
+      added = bid.length - (b - a);
+      this.setData([...this.bid.slice(0, a), ...bid, ...this.bid.slice(b)], [...this.rawAsk.slice(0, a), ...ask, ...this.rawAsk.slice(b)]);
+    })();
+    try {
+      await this.loading;
+    } finally {
+      this.loading = null;
+    }
+    return added;
+  }
+
   /** 前の months 個の月を足す */
   async loadEarlier(count: number): Promise<boolean> {
     if (!this.hasEarlier) return false;

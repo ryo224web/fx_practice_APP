@@ -6,7 +6,7 @@ import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { decodeMonth } from '../src/core/binfmt';
 import { mergeSources } from '../src/data/store';
-import { BarsSync, decodeBars, encodeBars, mergeFiles, parseBarCsv, parseBarFileName, parseLiveFileName, parseTickBody, rangeUtc, type RawBar } from '../server/mt4Bars';
+import { BarsSync, decodeBars, encodeBars, mergeFiles, missingHours, parseBarCsv, parseBarFileName, parseCounts, parseLiveFileName, parseTickBody, rangeUtc, type RawBar } from '../server/mt4Bars';
 
 const H = 3_600_000;
 const M = 60_000;
@@ -253,6 +253,39 @@ describe('共有フォルダからの取り込み（BarsSync）', () => {
     const nov3 = decodeBars(await readFile(path.join(data, 'usdjpy/titan/2026-11.bin')), 3);
     expect(nov3.length).toBe(182);
     expect(nov3.filter((b) => b.o === 155).length).toBe(60);
+  });
+
+  it('抜けの修復: EA の 1 時間ごとの足の数と比べて足りない時間を頼み、届いた足（F）で途中を埋めて fills に残す', async () => {
+    const sec = (t: number) => Math.round(t / 1000);
+    const day = Date.UTC(2026, 10, 2); // サーバー時刻 11/2 0:00（UTC 11/1 22:00）
+    const shared = await mkdtemp(path.join(os.tmpdir(), 'fxp-bars-'));
+    const data = await mkdtemp(path.join(os.tmpdir(), 'fxp-data-'));
+    dirs.push(shared, data);
+    const sync = new BarsSync(shared, data);
+    const q = `Q,BTCUSD,${sec(day + 5 * H)},64000,64020`;
+    // 取り込み済み: サーバー 0:00〜1:00 と 3:00〜5:00（1:00〜3:00 が抜け）。2:00 台は 30 本だけ持っている、とする
+    const bars = (from: number, n: number, o: number) => Array.from({ length: n }, (_, i) => `B,BTCUSD,${sec(from + i * M)},${o},${o + 1},${o - 1},${o}`);
+    await sync.receive([q, ...bars(day, 60, 100), ...bars(day + 2 * H, 30, 101), ...bars(day + 3 * H, 121, 102)].join('\n'));
+    expect(decodeBars(await readFile(path.join(data, 'btcusd/titan/2026-11.bin')), 2).length).toBe(60 + 30 + 120);
+
+    // MT4 は 0:00〜5:00 を全部持っている（5:00 台はできかけの前まで 0 本 = 送らない）
+    const counts = [0, 1, 2, 3, 4].map((h) => `C,BTCUSD,${sec(day + h * H)},60`).join('\n');
+    expect(parseCounts(counts).get('btcusd')?.hours.size).toBe(5);
+    const reply = await sync.requests(`${q}\n${counts}`);
+    expect(reply.split('\n')).toEqual([`G,BTCUSD,${sec(day + 2 * H)}`, `G,BTCUSD,${sec(day + 1 * H)}`]); // 新しい時間から
+    expect(sync.status.asked?.hours).toEqual({ btcusd: 2 });
+    expect(sync.status.fills.btcusd).toBeUndefined();
+
+    // EA が頼まれた時間の足を F で送る（ふつうの直近 3 本も一緒）
+    await sync.receive([q, ...bars(day + 5 * H - 2 * M, 3, 102), ...bars(day + H, 120, 99).map((l) => l.replace(/^B/, 'F'))].join('\n'));
+    const all = decodeBars(await readFile(path.join(data, 'btcusd/titan/2026-11.bin')), 2);
+    expect(all.length).toBe(300);
+    expect(all.filter((b) => b.o === 99).length).toBe(120);
+    expect(sync.status.fills.btcusd).toEqual([{ at: expect.any(Number), from: Date.UTC(2026, 10, 1, 23), to: Date.UTC(2026, 10, 2, 1) }]);
+    // もう頼むものは無い
+    expect(await sync.requests(`${q}\n${counts}`)).toBe('');
+    // 休みの時間（MT4 も 0 本）は頼まない
+    expect(missingHours(new Map([[day + 9 * H, 0]]), [])).toEqual([]);
   });
 
   it('共有フォルダが無くても止まらない', async () => {

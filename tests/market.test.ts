@@ -68,3 +68,37 @@ describe('読み込む月の範囲（ウィンドウ）', () => {
     }
   });
 });
+
+describe('抜けを埋めた月の読み直し（refill）', () => {
+  it('かかる月だけ読み直して入れ替え、ほかの月はそのまま。増えた本数を返す', async () => {
+    // @ts-expect-error 型定義のない .mjs
+    const { encodeMonth } = await import('../scripts/lib/binfmt.mjs');
+    const months = ['2026-09', '2026-10', '2026-11'];
+    /** 11 月は 1 回目に読むと 2 本（間が抜けている）、2 回目は 4 本 */
+    let novReads = 0;
+    const file = (key: string) => {
+      const [y, m] = key.split('-').map(Number);
+      const t0 = Date.UTC(y, m - 1, 1);
+      const idx = key === '2026-11' ? (novReads++ === 0 ? [0, 3] : [0, 1, 2, 3]) : [0, 1];
+      return encodeMonth(idx.map((i) => [t0 + i * 60_000, m, m, m, m + i / 10]), [], 3);
+    };
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => {
+      const bytes: Uint8Array = file(/\/(\d{4}-\d{2})\.bin$/.exec(url)![1]);
+      return { ok: true, headers: new Headers({ 'content-type': 'application/octet-stream' }), arrayBuffer: async () => bytes.slice().buffer } as Response;
+    }) as typeof fetch;
+    try {
+      const md = new MarketData('usdjpy', 3, months);
+      await md.setWindow(1, 2);
+      expect(md.bid.map((b) => b.c)).toEqual([10, 10.1, 11, 11.3]);
+      // 9 月（読み込んでいない）だけにかかるなら何もしない
+      expect(await md.refill(Date.UTC(2026, 8, 5), Date.UTC(2026, 8, 6))).toBe(0);
+      expect(await md.refill(Date.UTC(2026, 10, 1, 0, 1), Date.UTC(2026, 10, 1, 0, 3))).toBe(2);
+      expect(md.bid.map((b) => b.c)).toEqual([10, 10.1, 11, 11.1, 11.2, 11.3]);
+      expect(md.ask.length).toBe(6);
+      expect(md.indexAtOrBefore(Date.UTC(2026, 10, 1, 0, 2))).toBe(4);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+});

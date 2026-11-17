@@ -4191,6 +4191,14 @@ function updateStatus(ms = firstPaintMs) {
     tips.push(`MT4 の足の共有フォルダ: ${barsStatus.dir}${barsStatus.found ? '' : '（見つかりません）'}`);
     if (barsStatus.error) tips.push(`取り込みのエラー: ${barsStatus.error}`);
     if (barsStatus.liveAt && Date.now() - barsStatus.liveAt < 60_000) tips.push('MT4 から価格が直接届いています（ライブ）');
+    // 抜けの修復（EA 1.14 から。10 分ごとに MT4 と足の数を比べる）
+    const asked = barsStatus.asked;
+    if (asked && Date.now() - asked.at < 30 * 60_000) {
+      const n = asked.hours[md.symbol] ?? 0;
+      tips.push(n ? `${n} 時間分の 1 分足が抜けていたので、T580 の MT4 に頼みました（${formatTime(asked.at, 'jst', rule).slice(11)}）` : `T580 の MT4 と 1 分足の数を比べて、抜けは無し（${formatTime(asked.at, 'jst', rule).slice(11)}）`);
+    }
+    const fill = barsStatus.fills?.[md.symbol]?.at(-1);
+    if (fill) tips.push(`抜けを埋めました: ${formatTime(fill.from, state.zone, rule).slice(5)}〜${formatTime(fill.to - 60_000, state.zone, rule).slice(5)}（${formatTime(fill.at, 'jst', rule).slice(11)}）`);
     const off = barsStatus.offset;
     if (off && off.mt4 !== off.app) {
       statusEl.textContent += ' ⚠ サーバー時刻';
@@ -4210,8 +4218,45 @@ interface BarsStatus {
   latest: Record<string, number>;
   offset: { mt4: number; app: number; at: number } | null;
   liveAt?: number | null;
+  /** 開発サーバーが途中に足を入れた範囲（MT4 の抜けを埋めた。server/mt4Bars.ts） */
+  fills?: Record<string, { at: number; from: number; to: number }[]>;
+  /** 最後に EA へ頼んだ抜け（銘柄 → 時間の数） */
+  asked?: { at: number; hours: Record<string, number> } | null;
 }
 let barsStatus: BarsStatus | null = null;
+/** 銘柄 → 反映した埋め直しの時刻（Mac の時計）。開いたときのものは、もう読み込んだ足に入っている */
+const fillSeen = new Map<string, number>();
+
+/** 開発サーバーが MT4 の抜けを埋めたら、開いたままのチャートの、その月を読み直す（⌘R しなくてよい） */
+async function applyFills() {
+  const fills = barsStatus?.fills ?? {};
+  const pending = (sym: string) => {
+    const list = fills[sym] ?? [];
+    const seen = fillSeen.get(sym);
+    const last = list.reduce((m, f) => Math.max(m, f.at), 0);
+    if (seen === undefined) {
+      fillSeen.set(sym, last);
+      return [];
+    }
+    fillSeen.set(sym, Math.max(seen, last));
+    return list.filter((f) => f.at > seen);
+  };
+  const mdNow = md;
+  const mine = pending(md.symbol);
+  const forUsd = usd && usd !== md ? pending('usdjpy') : [];
+  if (!mine.length && !forUsd.length) return;
+  const m = await loadManifest();
+  if (!m || md !== mdNow) return;
+  manifest = m;
+  let added = 0;
+  for (const f of mine) added += await md.refill(f.from, f.to);
+  if (usd && usd !== md) for (const f of forUsd) await usd.refill(f.from, f.to);
+  if (added > 0 && md === mdNow) {
+    dataChanged();
+    renderChart(false, true);
+    refresh();
+  }
+}
 
 async function pollBars() {
   try {
@@ -4238,6 +4283,7 @@ async function pollBars() {
       if (live) void followLatest();
     }
   }
+  await applyFills();
   updateStatus();
 }
 

@@ -7,6 +7,10 @@
 // EA は 1 秒ごとに今の価格と直近の 1 分足を、Dropbox を通さず直接ここへ送る（startTickReceiver。ライブ用）。
 // 送れない間は、1 分ごとに直近 2 時間の 1 分足だけを <dir>/USDJPY/USDJPY_live.csv に書く。
 // 月・日のファイルは最初の足〜最後の足の範囲を、直近のファイルと直接届いた足はその足の範囲を、届いたものどおりに置き換える。
+// 抜けの修復（EA 1.14 から。2026-11-17）: EA は 10 分ごとに、直近 7 日の「1 時間ごとの足の数」を送ってくる（C の行）。
+// ここで取り込み済みの数と比べ、MT4 の方が多い時間を返事で頼み（G の行。requests）、EA は次の送りでその時間の足を送る（F の行）。
+// T580・MT4・Mac が止まっていた間や、日をまたいだ所の抜けが、手を動かさなくても埋まる。
+// 途中に足を入れたときは status.fills に残し、開いたままの FP がその月を読み直す。
 // ここではフォルダを 15 秒ごとに見て、変わったファイルを
 //   public/data/<銘柄>/titan/<YYYY-MM>.bin   （UTC の月ごと。形式は Dukascopy と同じ。Ask は無し = 0）
 // に入れ、manifest.json の titan に範囲を書く。共有フォルダから消えたファイルも、取り込んだ分は残る。
@@ -41,6 +45,10 @@ export const SYMBOL_DIGITS: Record<string, number> = {
 
 const FIELDS = 9;
 const DAY = 86_400_000;
+const HOUR = 3_600_000;
+/** 1 回の返事で頼む時間の数（銘柄ごと・全部）。残りは次の回（10 分後）に頼む */
+const ASK_PER_SYMBOL = 48;
+const ASK_TOTAL = 200;
 const rule = DEFAULT_SERVER_RULE;
 
 export interface RawBar {
@@ -155,19 +163,23 @@ export interface LiveTick {
   bar: RawBar | null;
   /** 終わった 1 分足（古い順） */
   done: RawBar[];
+  /** 抜けを埋めるために頼んで届いた足（F の行。古い順） */
+  fill: RawBar[];
 }
 
 /**
  * EA が送る本文を読む（時刻はサーバー時刻の秒）
  *   Q,<銘柄>,<時刻>,<Bid>,<Ask>
  *   B,<銘柄>,<足の時刻>,<始値>,<高値>,<安値>,<終値>   直近 3 本。最後の 1 本はできかけ
+ *   F,<銘柄>,<足の時刻>,<始値>,<高値>,<安値>,<終値>   頼んだ時間の終わった足（抜けを埋める）
+ *   C,<銘柄>,<時の初め>,<本数>                         MT4 が持っている 1 時間ごとの足の数（requests で読む）
  */
 export function parseTickBody(text: string, at: number): Map<string, LiveTick> {
   const out = new Map<string, LiveTick>();
   const get = (raw: string) => {
     const symbol = normalizeSymbol(raw).toLowerCase();
     if (!(symbol in SYMBOL_DIGITS)) return null;
-    if (!out.has(symbol)) out.set(symbol, { at, time: 0, bid: 0, ask: 0, bar: null, done: [] });
+    if (!out.has(symbol)) out.set(symbol, { at, time: 0, bid: 0, ask: 0, bar: null, done: [], fill: [] });
     return out.get(symbol)!;
   };
   const bars = new Map<string, RawBar[]>();
@@ -187,8 +199,14 @@ export function parseTickBody(text: string, at: number): Map<string, LiveTick> {
       const sym = normalizeSymbol(f[1]).toLowerCase();
       if (!bars.has(sym)) bars.set(sym, []);
       bars.get(sym)!.push({ t: serverToUtc(t * 1000, rule), o, h, l, c });
+    } else if (f[0] === 'F' && f.length >= 7) {
+      const e = get(f[1]);
+      const [t, o, h, l, c] = f.slice(2, 7).map(Number);
+      if (!e || !(t > 0 && o > 0 && h >= l)) continue;
+      e.fill.push({ t: serverToUtc(t * 1000, rule), o, h, l, c });
     }
   }
+  for (const e of out.values()) e.fill.sort((a, b) => a.t - b.t);
   for (const [sym, list] of bars) {
     const e = out.get(sym)!;
     list.sort((a, b) => a.t - b.t);
@@ -197,6 +215,49 @@ export function parseTickBody(text: string, at: number): Map<string, LiveTick> {
   }
   for (const [sym, e] of out) if (!e.bid) out.delete(sym);
   return out;
+}
+
+/** C の行を読む: 銘柄 → EA の銘柄名と、サーバー時刻の時の初め（UTC 形式のミリ秒）→ 本数 */
+export function parseCounts(text: string): Map<string, { raw: string; hours: Map<number, number> }> {
+  const out = new Map<string, { raw: string; hours: Map<number, number> }>();
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.startsWith('C,')) continue;
+    const f = line.split(',');
+    const symbol = normalizeSymbol(f[1] ?? '').toLowerCase();
+    const [h, n] = [Number(f[2]), Number(f[3])];
+    if (!(symbol in SYMBOL_DIGITS) || !(h > 0 && n > 0)) continue;
+    if (!out.has(symbol)) out.set(symbol, { raw: f[1], hours: new Map() });
+    out.get(symbol)!.hours.set(h * 1000, n);
+  }
+  return out;
+}
+
+/**
+ * MT4 の方が足を多く持っている時間（サーバー時刻の時の初め。古い順）。own は取り込み済みの足（UTC）。
+ * 休みの時間は MT4 も 0 本（C の行が無い）なので、抜けと間違えない
+ */
+export function missingHours(mt4: ReadonlyMap<number, number>, own: readonly RawBar[]): number[] {
+  const offsets = new Map<number, number>();
+  const mine = new Map<number, number>();
+  for (const b of own) {
+    const hu = Math.floor(b.t / HOUR);
+    let off = offsets.get(hu);
+    if (off === undefined) offsets.set(hu, (off = serverOffsetMinutes(rule, b.t) * 60_000));
+    const h = Math.floor((b.t + off) / HOUR) * HOUR;
+    mine.set(h, (mine.get(h) ?? 0) + 1);
+  }
+  return [...mt4]
+    .filter(([h, n]) => n > (mine.get(h) ?? 0))
+    .map(([h]) => h)
+    .sort((a, b) => a - b);
+}
+
+/** 途中に足を入れた範囲（UTC）。FP はこれを見て、開いたままのチャートのその月を読み直す */
+export interface FillRecord {
+  /** Mac の時計 */
+  at: number;
+  from: number;
+  to: number;
 }
 
 interface TitanInfo {
@@ -222,6 +283,10 @@ export interface BarsStatus {
   offset: { mt4: number; app: number; at: number } | null;
   /** 最後に価格が直接届いた時刻（Mac の時計） */
   liveAt: number | null;
+  /** 銘柄ごとの、途中に足を入れた範囲（新しい 20 個） */
+  fills: Record<string, FillRecord[]>;
+  /** 最後に EA へ頼んだ抜け（銘柄 → 時間の数）。頼むものが無ければ空 */
+  asked: { at: number; hours: Record<string, number> } | null;
 }
 
 async function exists(p: string) {
@@ -258,7 +323,7 @@ export class BarsSync {
     readonly dir: string,
     readonly dataDir: string,
   ) {
-    this.status = { dir, found: false, lastSync: null, error: null, latest: {}, offset: null, liveAt: null };
+    this.status = { dir, found: false, lastSync: null, error: null, latest: {}, offset: null, liveAt: null, fills: {}, asked: null };
   }
 
   private serial<T>(fn: () => Promise<T>): Promise<T> {
@@ -282,6 +347,8 @@ export class BarsSync {
       // 範囲は続いている足ごとに分ける（今日の足をまとめて送ってきたとき、MT4 がまだ取ってきていない分の足を、取り込み済みの足から消さないように）
       for (const run of runsOf(tick.done)) fresh.push([symbol, { range: [run[0].t, run[run.length - 1].t + 60_000], bars: run }]);
     }
+    // 頼んだ抜けの足（取り込み済みの時刻より前でも入れる）
+    for (const [symbol, tick] of got) for (const run of runsOf(tick.fill)) fresh.push([symbol, { range: [run[0].t, run[run.length - 1].t + 60_000], bars: run }]);
     if (!fresh.length) return;
     await this.serial(async () => {
       const manifest = await this.readManifest();
@@ -295,6 +362,42 @@ export class BarsSync {
     });
     // 終わった足を足したことも知らせる（FP がすぐ読み込む）
     for (const symbol of new Set(fresh.map(([s]) => s))) for (const l of this.listeners) l(symbol);
+  }
+
+  /**
+   * EA が送ってきた 1 時間ごとの足の数（C の行）と、取り込み済みの足を比べ、MT4 の方が多い時間を頼む返事を作る
+   * （G,<EA の銘柄名>,<時の初め（サーバー時刻の秒）>。新しい時間から）。C の行が無ければ空
+   */
+  async requests(text: string): Promise<string> {
+    const counts = parseCounts(text);
+    if (!counts.size) return '';
+    const lines: string[] = [];
+    const asked: Record<string, number> = {};
+    for (const [symbol, { raw, hours }] of counts) {
+      const keys = [...hours.keys()];
+      const from = serverToUtc(Math.min(...keys), rule);
+      const to = serverToUtc(Math.max(...keys), rule) + HOUR;
+      const own = await this.readTitan(symbol, from - HOUR, to + HOUR);
+      const miss = missingHours(hours, own).slice(-ASK_PER_SYMBOL).reverse();
+      for (const h of miss) lines.push(`G,${raw},${h / 1000}`);
+      if (miss.length) asked[symbol] = miss.length;
+    }
+    this.status.asked = { at: Date.now(), hours: asked };
+    return lines.slice(0, ASK_TOTAL).join('\n');
+  }
+
+  /** 取り込み済みの TitanFX の足のうち [from, to)（UTC） */
+  private async readTitan(symbol: string, from: number, to: number): Promise<RawBar[]> {
+    const digits = SYMBOL_DIGITS[symbol];
+    const keys = new Set<string>();
+    for (let t = from; t < to + DAY; t += DAY) keys.add(monthKey(Math.min(t, to - 1)));
+    const out: RawBar[] = [];
+    for (const key of [...keys].sort()) {
+      const file = path.join(this.dataDir, symbol, 'titan', `${key}.bin`);
+      if (!(await exists(file))) continue;
+      for (const b of decodeBars(await readFile(file), digits)) if (b.t >= from && b.t < to) out.push(b);
+    }
+    return out;
   }
 
   async sync(): Promise<void> {
@@ -394,11 +497,21 @@ export class BarsSync {
     await mkdir(outDir, { recursive: true });
     const entry = (manifest.symbols[symbol] ??= { digits, months: [] });
     const info: TitanInfo = entry.titan ?? { months: [], from: Infinity, to: -Infinity };
+    /** 前に取り込んでいた最後の足。これより前に新しく入った足は「抜けを埋めた」 */
+    const oldTo = info.to;
+    let fillFrom = Infinity;
+    let fillTo = -Infinity;
     for (const key of months) {
       const file = path.join(outDir, `${key}.bin`);
       const old = (await exists(file)) ? decodeBars(await readFile(file), digits) : [];
       const merged = mergeFiles(old, parsed).filter((b) => monthKey(b.t) === key);
       if (!merged.length) continue;
+      const had = new Set(old.map((b) => b.t));
+      for (const b of merged)
+        if (b.t < oldTo && !had.has(b.t)) {
+          fillFrom = Math.min(fillFrom, b.t);
+          fillTo = Math.max(fillTo, b.t);
+        }
       const bytes = encodeBars(merged, digits);
       const prev = (await exists(file)) ? await readFile(file) : null;
       if (!prev || Buffer.compare(prev, bytes) !== 0) await writeAtomic(file, bytes);
@@ -410,6 +523,7 @@ export class BarsSync {
     info.months.sort();
     entry.titan = info;
     this.status.latest[symbol] = info.to;
+    if (fillFrom <= fillTo) this.status.fills[symbol] = [...(this.status.fills[symbol] ?? []), { at: Date.now(), from: fillFrom, to: fillTo + 60_000 }].slice(-20);
   }
 
   private async readStatus(names: string[]) {
@@ -517,9 +631,12 @@ export function startTickReceiver(sync: BarsSync, port = Number(process.env.FXP_
       if (size > 8 * 1024 * 1024) req.destroy();
       else chunks.push(c);
     });
-    req.on('end', () => {
-      res.end('ok');
-      void sync.receive(Buffer.concat(chunks).toString('utf8')).catch((e) => (sync.status.error = e instanceof Error ? e.message : String(e)));
+    req.on('end', async () => {
+      const text = Buffer.concat(chunks).toString('utf8');
+      // 足の数（C の行）が来たら、抜けている時間を頼む返事にする（ふつうの送りは待たせない）
+      const ask = /^C,/m.test(text) ? await sync.requests(text).catch(() => '') : '';
+      res.end(ask ? `ok\n${ask}\n` : 'ok');
+      void sync.receive(text).catch((e) => (sync.status.error = e instanceof Error ? e.message : String(e)));
     });
   });
   // 開発サーバーが自分で起動し直したとき（server/ のファイルを変えたときなど）は、前の受け口が閉じる前にここへ来るので、
