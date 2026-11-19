@@ -3210,6 +3210,8 @@ function setTf(tf: Timeframe) {
   active.indicators.setConfig(indicatorsFor(tf));
   syncTfButtons();
   active.renderAt(anchor);
+  // 行のダブルクリックや矢印で取引を見ているときは、時間足を変えてもその取引（エントリー〜決済）が真ん中に収まるようにする
+  if (highlightRange) active.fitTimeRange(highlightRange.from, highlightRange.to);
   renderQuotes();
   save();
   void ensureIndicatorHistory();

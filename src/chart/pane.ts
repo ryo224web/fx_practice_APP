@@ -687,6 +687,8 @@ export class ChartPane {
     const right = Math.min((a + b) / 2 + bars / 2, last + ts.options().rightOffset);
     ts.setVisibleLogicalRange({ from: right - bars, to: right });
     this.spacing = w / bars;
+    // restoreView で決めた見え方は使わない（この位置が後から戻されないように）
+    this.pendingView = null;
   }
 
   /** 最新の足が右端（右の余白の手前）に来るようにする。動かす途中で止まらないよう、動きは付けない */
