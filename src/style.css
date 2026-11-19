@@ -164,12 +164,46 @@ td.sell {
   user-select: none;
 }
 
-#peek-banner {
+/* チャートの上の真ん中の帯（過去の取引を見ている・成績の並びを順に見る） */
+#chart-banners {
   position: absolute;
   top: 6px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+}
+
+#chart-banners > * {
+  pointer-events: auto;
+}
+
+#review-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 12px;
+  border-radius: 6px;
+  background: rgba(68, 147, 248, 0.92);
+  color: #fff;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+#review-bar[hidden] {
+  display: none;
+}
+
+#review-bar button {
+  font-weight: 600;
+  min-width: 28px;
+}
+
+#peek-banner {
   display: flex;
   align-items: center;
   gap: 10px;

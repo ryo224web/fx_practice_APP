@@ -3452,6 +3452,9 @@ function setupControls() {
 
   playBtn.addEventListener('click', () => setPlaying(!playing));
   $('#peek-exit').addEventListener('click', () => clearTradeHighlight());
+  $('#review-prev').addEventListener('click', () => stepReview(-1));
+  $('#review-next').addEventListener('click', () => stepReview(1));
+  $('#review-close').addEventListener('click', closeReview);
   $<HTMLInputElement>('#trade-rr').addEventListener('change', (e) => {
     tradeRR = (e.target as HTMLInputElement).checked;
     applyTradeRR();
@@ -3570,6 +3573,8 @@ function setupControls() {
       save();
     }
     if (action === 'reason-trade' || action === 'reason-tag') {
+      // 同じ行（札の行・「札の無い負け」の行）の注文番号の並びを覚えて、チャートの上の帯で順に見られるようにする
+      startReview(target!);
       const kind = target!.dataset.kind as 'history' | 'mt4';
       const ticket = Number(target!.dataset.ticket);
       const close = Number(target!.dataset.close);
@@ -3812,6 +3817,70 @@ let countdownStyle: CountdownStyle = DEFAULT_COUNTDOWN;
 let rciZoneCfg: RciZoneConfig = DEFAULT_RCI_ZONE;
 let keyIndex = commandIndex(resolveKeymap(undefined));
 
+// ---------------- 成績の並びを順に見る ----------------
+// 成績タブの札の行の注文番号を押すと、その行の注文番号を全部覚え、チャートの上の帯（◀ 3 / 34 ▶）とキー（, .）で
+// 前後の取引へ動く（1 つ見るたびに成績タブへ戻って次の番号を押さなくてよいように。2026-11-19）
+interface ReviewItem {
+  action: string;
+  kind: 'history' | 'mt4';
+  ticket: number;
+  close: number;
+}
+let review: { label: string; items: ReviewItem[]; i: number } | null = null;
+
+function startReview(link: HTMLElement) {
+  const box = link.closest('td.tickets, p.hint');
+  if (!box) return;
+  const items = [...box.querySelectorAll<HTMLElement>('a[data-action]')].map((a) => ({
+    action: a.dataset.action!,
+    kind: a.dataset.kind as 'history' | 'mt4',
+    ticket: Number(a.dataset.ticket),
+    close: Number(a.dataset.close),
+  }));
+  const i = items.findIndex((x) => x.ticket === Number(link.dataset.ticket) && x.close === Number(link.dataset.close));
+  if (i < 0 || items.length < 2) {
+    closeReview();
+    return;
+  }
+  // 名前: 札の行なら「敗因 23.6」、「札の無い負け」なら説明の文の頭
+  const row = box.closest('tr');
+  const card = box.closest('section')?.querySelector('h3')?.textContent?.replace(/別$/, '').replace(/（.*$/, '') ?? '';
+  const label = row ? `${card} ${row.querySelector('td')?.textContent ?? ''}` : (box.textContent ?? '').replace(/:.*$/s, '');
+  review = { label: label.trim(), items, i };
+  renderReview();
+}
+
+function renderReview() {
+  const bar = $('#review-bar');
+  bar.hidden = !review;
+  if (!review) return;
+  $('#review-label').textContent = review.label;
+  $('#review-pos').textContent = `#${review.items[review.i].ticket}（${review.i + 1} / ${review.items.length}）`;
+  $<HTMLButtonElement>('#review-prev').disabled = review.i === 0;
+  $<HTMLButtonElement>('#review-next').disabled = review.i === review.items.length - 1;
+}
+
+function closeReview() {
+  review = null;
+  renderReview();
+}
+
+function stepReview(d: number) {
+  if (!review) return;
+  const i = review.i + d;
+  if (i < 0 || i >= review.items.length) return;
+  review.i = i;
+  renderReview();
+  const it = review.items[i];
+  void openArrowTrade(it.kind === 'mt4' ? { kind: it.kind, ticket: it.ticket } : { kind: it.kind, ticket: it.ticket, close: it.close }).then(() => {
+    // 「札の無い負け」の並びなら、続けて札を付ける欄も開く（帯のすぐ下に）
+    if (it.action === 'reason-tag' && review?.items[review.i] === it) {
+      const r = $('#review-bar').getBoundingClientRect();
+      openTagPickerFor(it.kind, it.ticket, it.close, r.left, r.bottom + 8);
+    }
+  });
+}
+
 function runCommand(id: string) {
   if (id.startsWith('tf:')) return setTf(id.slice(3) as Timeframe);
   if (id === 'tool:trend-dotted') return toggleTool('trend', 'dotted');
@@ -3819,6 +3888,10 @@ function runCommand(id: string) {
   switch (id) {
     case 'play':
       return setPlaying(!playing);
+    case 'reviewPrev':
+      return stepReview(-1);
+    case 'reviewNext':
+      return stepReview(1);
     case 'fwd':
       return stepBar(1);
     case 'back':

@@ -60,7 +60,10 @@
 
     <main id="chart-area">
       <div id="charts" class="layout-1"></div>
-      <div id="peek-banner" hidden><span></span><button type="button" id="peek-exit">今の時刻に戻る（Esc）</button></div>
+      <div id="chart-banners">
+        <div id="peek-banner" hidden><span></span><button type="button" id="peek-exit">今の時刻に戻る（Esc）</button></div>
+        <div id="review-bar" hidden title="成績タブで押した注文番号の並びを、ここで順に見る（キーは初め , と .）"><span id="review-label"></span><button type="button" id="review-prev" title="前の取引（,）">◀</button><b id="review-pos"></b><button type="button" id="review-next" title="次の取引（.）">▶</button><button type="button" id="review-close" title="この並びを閉じる">✕</button></div>
+      </div>
       <div id="oneclick">
         <button id="sell-btn" class="sell" title="成行で売り（Bid）"><span>SELL</span><b id="bid-big">—</b></button>
         <div class="lots">

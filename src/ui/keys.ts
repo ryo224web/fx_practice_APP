@@ -42,6 +42,8 @@ export const KEY_COMMANDS: KeyCommand[] = [
   { id: 'tool:rrbuy', label: 'リスクリワード（買い）', group: '描画' },
   { id: 'tool:rrsell', label: 'リスクリワード（売り）', group: '描画' },
   { id: 'magnet', label: 'マグネットを入れる・切る', group: '描画' },
+  { id: 'reviewPrev', label: '成績の並びの前の取引', group: '振り返り' },
+  { id: 'reviewNext', label: '成績の並びの次の取引', group: '振り返り' },
   { id: 'shots', label: 'スクショ（H1・M15・M5・M1 の 4 枚）', group: 'チャート' },
   { id: 'newOrder', label: '新規注文', group: '注文' },
   { id: 'easyOrder', label: 'EasyOrder を開く・閉じる', group: '注文' },
@@ -69,6 +71,8 @@ export const DEFAULT_KEYMAP: Record<string, string[]> = {
   magnet: ['KeyM'],
   newOrder: ['F9'],
   easyOrder: ['KeyO'],
+  reviewPrev: [','],
+  reviewNext: ['.'],
 };
 
 /** 割り当てられないキー（決まった働きがある） */
