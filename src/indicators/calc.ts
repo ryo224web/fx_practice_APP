@@ -30,6 +30,30 @@ export function emaNext(prev: number, close: number, period: number): number {
 }
 
 /**
+ * MACD。macd = EMA(fast) − EMA(slow)、signal = macd の EMA(signal)、hist = macd − signal。
+ * signal は macd が出始めた所から数える（最初の値は単純平均。EMA と同じ）
+ */
+export function macd(closes: ArrayLike<number>, fast: number, slow: number, signal: number) {
+  const f = ema(closes, fast);
+  const s = ema(closes, slow);
+  const n = closes.length;
+  const line = new Float64Array(n).fill(NaN);
+  const sig = new Float64Array(n).fill(NaN);
+  const hist = new Float64Array(n).fill(NaN);
+  const start = Math.max(fast, slow) - 1;
+  for (let i = start; i < n; i++) line[i] = f[i] - s[i];
+  const first = start + signal - 1;
+  if (first < n) {
+    let sum = 0;
+    for (let i = start; i <= first; i++) sum += line[i];
+    sig[first] = sum / signal;
+    for (let i = first + 1; i < n; i++) sig[i] = emaNext(sig[i - 1], line[i], signal);
+    for (let i = first; i < n; i++) hist[i] = line[i] - sig[i];
+  }
+  return { fast: f, slow: s, line, signal: sig, hist };
+}
+
+/**
  * RCI（順位相関指数）。closes[end-period+1..end] で計算し、-100〜100 を返す。
  * 日付の順位は新しい足を 1 位、価格の順位は高い方を 1 位とする（同値は平均順位）。
  */

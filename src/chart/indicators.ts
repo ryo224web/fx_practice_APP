@@ -1,8 +1,9 @@
-// チャートのインジケーター（移動平均と RCI）。
+// チャートのインジケーター（移動平均・RCI・ZigZag・MACD）。
 // 確定した足の値は一度計算したら使い回し、作りかけの足（リプレイの最後の足）だけ毎回計算し直す。
 // RCI は重いので、表示している辺りだけ計算する。
 
 import {
+  HistogramSeries,
   LineSeries,
   LineStyle,
   type IChartApi,
@@ -16,7 +17,7 @@ import {
   type Time,
   type WhitespaceData,
 } from 'lightweight-charts';
-import { atr, ema, emaNext, rciAt, sma, zigzag, zigzagByMa, type ZigzagPoint } from '../indicators/calc';
+import { atr, ema, emaNext, macd, rciAt, sma, zigzag, zigzagByMa, type ZigzagPoint } from '../indicators/calc';
 import type { Bar } from '../core/candles';
 
 export interface MaConfig {
@@ -75,6 +76,22 @@ export interface ZigzagConfig {
   width?: number;
 }
 
+/** MACD（サブウィンドウ。RCI の下）。初めは出さない（2026-11-19） */
+export interface MacdConfig {
+  enabled: boolean;
+  fast: number;
+  slow: number;
+  signal: number;
+  /** MACD の線・シグナルの線の色 */
+  macdColor: string;
+  signalColor: string;
+  /** MACD − シグナルを棒で出すか */
+  histogram: boolean;
+  width?: number;
+}
+
+export const DEFAULT_MACD: MacdConfig = { enabled: false, fast: 12, slow: 26, signal: 9, macdColor: '#4493f8', signalColor: '#f0883e', histogram: true, width: 1 };
+
 export type ZigzagMode = 'ma' | 'ma-atr' | 'ma-cross' | 'mt4';
 
 /** 比べるときの A・B・C の見た目 */
@@ -90,6 +107,8 @@ export interface IndicatorConfig {
   rci: RciPane[];
   /** 無ければ初めの設定（以前の保存） */
   zigzag?: ZigzagConfig;
+  /** 無ければ出さない（以前の保存） */
+  macd?: MacdConfig;
 }
 
 export const DEFAULT_ZIGZAG: ZigzagConfig = { enabled: false, mode: 'ma-atr', maPeriod: 20, maType: 'sma', atrMult: 0.2, atrPeriod: 100, stallBars: 10, compare: false, depth: 12, deviation: 5, backstep: 3, color: '#f0883e', width: 2 };
@@ -109,6 +128,7 @@ export const DEFAULT_INDICATORS: IndicatorConfig = {
     { enabled: true, lines: rciLines([9, 26, 52, 78]) },
   ],
   zigzag: DEFAULT_ZIGZAG,
+  macd: DEFAULT_MACD,
 };
 
 /** RCI の段の数 */
@@ -121,7 +141,8 @@ export function normalizeIndicators(cfg: IndicatorConfig | (Omit<IndicatorConfig
   const zigzag = { ...DEFAULT_ZIGZAG, ...(cfg as IndicatorConfig).zigzag };
   // 止まりの初期値は 12 本で始め、同じ日（2026-11-05）に 10 本へ変えた。12 は前の初期値がそのまま保存されたものなので 10 にする
   if (zigzag.stallBars === 12) zigzag.stallBars = 10;
-  return { ma: cfg.ma, rci: rci.slice(0, RCI_PANES), zigzag };
+  const macdCfg = { ...DEFAULT_MACD, ...(cfg as IndicatorConfig).macd };
+  return { ma: cfg.ma, rci: rci.slice(0, RCI_PANES), zigzag, macd: macdCfg };
 }
 
 /** 線の太さ（1〜4。チャートの部品が受け付ける形にする） */
@@ -186,9 +207,16 @@ export interface IndicatorInput {
 }
 
 interface Line {
-  series: ISeriesApi<'Line'>;
+  series: ISeriesApi<'Line'> | ISeriesApi<'Histogram'>;
   values: (input: IndicatorInput, j: number) => number;
+  /** 棒の色（値ごとに変える。MACD の棒） */
+  color?: (v: number) => string;
 }
+
+/** MACD の棒の色（プラスは緑、マイナスは赤。線が見えるように薄く） */
+const histColor = (v: number) => (v >= 0 ? 'rgba(63,185,80,0.55)' : 'rgba(248,81,73,0.55)');
+
+type MacdArrays = ReturnType<typeof macd>;
 
 export class IndicatorLayer {
   private config: IndicatorConfig = DEFAULT_INDICATORS;
@@ -197,8 +225,9 @@ export class IndicatorLayer {
   private cacheKey = '';
   private maCache = new Map<string, Float64Array>();
   private rciCache = new Map<number, Float64Array>();
+  private macdCache = new Map<string, MacdArrays>();
   /** 時間足ごとの計算済みの値（時間足を行き来しても計算し直さない。データが変わると key が変わる） */
-  private saved = new Map<string, { ma: Map<string, Float64Array>; rci: Map<number, Float64Array> }>();
+  private saved = new Map<string, { ma: Map<string, Float64Array>; rci: Map<number, Float64Array>; macd: Map<string, MacdArrays> }>();
   private shown = { key: '', k: -1, from: -1 };
   private from = 0;
   private last: IndicatorInput | null = null;
@@ -278,6 +307,21 @@ export class IndicatorLayer {
         this.lines.push({ series, values: (inp, j) => this.rciValue(inp, j, l.period) });
       });
     }
+    // MACD は RCI の下にサブウィンドウを 1 つ使う
+    const mc = normalizeIndicators(config).macd!;
+    if (mc.enabled && mc.fast >= 1 && mc.slow >= 1 && mc.signal >= 1) {
+      paneIndex++;
+      const w = lineWidth(mc.width);
+      if (mc.histogram) {
+        const hist = this.chart.addSeries(HistogramSeries, { lastValueVisible: false, priceLineVisible: false }, paneIndex);
+        this.lines.push({ series: hist, values: (inp, j) => this.macdValue(inp, j, mc).hist, color: histColor });
+      }
+      const line = this.chart.addSeries(LineSeries, { ...common, color: mc.macdColor, lineWidth: w }, paneIndex);
+      line.createPriceLine({ price: 0, color: '#8d96a0', lineStyle: LineStyle.Dotted, lineWidth: 1, axisLabelVisible: false, title: '' });
+      this.lines.push({ series: line, values: (inp, j) => this.macdValue(inp, j, mc).line });
+      const sig = this.chart.addSeries(LineSeries, { ...common, color: mc.signalColor, lineWidth: w }, paneIndex);
+      this.lines.push({ series: sig, values: (inp, j) => this.macdValue(inp, j, mc).signal });
+    }
     // 高さは比率で決める（隠れているチャートは大きさが 0 なので、ピクセルでは決められない）。
     // ローソク足 3 : RCI 1 段ずつ 1。境目の線をドラッグすれば変えられる
     this.chart.panes()[0]?.setStretchFactor(3);
@@ -292,13 +336,14 @@ export class IndicatorLayer {
       this.cacheKey = input.key;
       let c = this.saved.get(input.key);
       if (!c) {
-        c = { ma: new Map(), rci: new Map() };
+        c = { ma: new Map(), rci: new Map(), macd: new Map() };
         this.saved.set(input.key, c);
         // 持っておくのは最近の数個だけ
         while (this.saved.size > 6) this.saved.delete(this.saved.keys().next().value!);
       }
       this.maCache = c.ma;
       this.rciCache = c.rci;
+      this.macdCache = c.macd;
       this.from = Math.max(0, input.k - WINDOW);
     }
     // 描き始めは、今の足まで WINDOW 本の所から。少し戻っただけ（半分以上残っている）なら動かさない
@@ -311,7 +356,8 @@ export class IndicatorLayer {
     for (const l of this.lines) {
       const point = (j: number): LineData | WhitespaceData => {
         const v = l.values(input, j);
-        return Number.isFinite(v) ? { time: input.times[j], value: v } : { time: input.times[j] };
+        if (!Number.isFinite(v)) return { time: input.times[j] };
+        return l.color ? { time: input.times[j], value: v, color: l.color(v) } : { time: input.times[j], value: v };
       };
       if (full) {
         const data: (LineData | WhitespaceData)[] = [];
@@ -396,6 +442,22 @@ export class IndicatorLayer {
     let sum = inp.partialClose;
     for (let q = j - m.period + 1; q < j; q++) sum += inp.closes[q];
     return sum / m.period;
+  }
+
+  /** MACD の 1 本分（作りかけの足は、その時点の終値で前の足の EMA から計算する） */
+  private macdValue(inp: IndicatorInput, j: number, c: MacdConfig): { line: number; signal: number; hist: number } {
+    const id = `${c.fast},${c.slow},${c.signal}`;
+    let a = this.macdCache.get(id);
+    if (!a) {
+      a = macd(inp.closes, c.fast, c.slow, c.signal);
+      this.macdCache.set(id, a);
+    }
+    if (j < inp.k) return { line: a.line[j], signal: a.signal[j], hist: a.hist[j] };
+    const f = emaNext(a.fast[j - 1], inp.partialClose, c.fast);
+    const s = emaNext(a.slow[j - 1], inp.partialClose, c.slow);
+    const line = f - s;
+    const signal = emaNext(a.signal[j - 1], line, c.signal);
+    return { line, signal, hist: line - signal };
   }
 
   private rciValue(inp: IndicatorInput, j: number, period: number): number {

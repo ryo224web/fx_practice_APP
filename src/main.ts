@@ -1793,6 +1793,7 @@ async function ensureIndicatorHistory() {
       0,
       ...cfg.ma.filter((m) => m.enabled).map((m) => (m.type === 'ema' ? m.period * 3 : m.period)),
       ...cfg.rci.flatMap((r) => (r.enabled ? r.lines.filter((l) => l.enabled).map((l) => l.period) : [])),
+      cfg.macd?.enabled ? Math.max(cfg.macd.fast, cfg.macd.slow) * 3 + cfg.macd.signal : 0,
     );
     const span = (bars + 20) * TIMEFRAMES[p.tf] * 60_000 * 1.5;
     if (TIMEFRAMES[p.tf] < 60) needMinute = Math.max(needMinute, span);
@@ -2382,6 +2383,15 @@ function openIndicatorDialog(cfg: IndicatorConfig = indicatorsFor(active.tf)) {
         .join('')}</table>`,
     )
     .join('');
+  const mc = cfg.macd!;
+  $('#ind-macd').innerHTML = `<h3>MACD（サブウィンドウ。RCI の下）<label class="inline"><input id="macd-on" type="checkbox" ${mc.enabled ? 'checked' : ''} /> 表示する</label><label class="inline" title="MACD − シグナルを棒で出す（プラスは緑、マイナスは赤）"><input id="macd-hist" type="checkbox" ${mc.histogram ? 'checked' : ''} /> 棒（MACD − シグナル）</label></h3>
+    <table class="ind-table"><tr><td title="短い方の EMA">短期 EMA</td><td title="長い方の EMA">長期 EMA</td><td title="MACD の EMA">シグナル</td><td>MACD の色</td><td>シグナルの色</td><td>太さ</td></tr>
+    <tr><td><input id="macd-fast" type="number" min="1" step="1" value="${mc.fast}" /></td>
+    <td><input id="macd-slow" type="number" min="1" step="1" value="${mc.slow}" /></td>
+    <td><input id="macd-signal" type="number" min="1" step="1" value="${mc.signal}" /></td>
+    <td><input id="macd-color" type="color" value="${mc.macdColor}" /></td>
+    <td><input id="macd-sigcolor" type="color" value="${mc.signalColor}" /></td>
+    <td><select id="macd-width">${[1, 2, 3, 4].map((n) => `<option value="${n}" ${n === (mc.width ?? 1) ? 'selected' : ''}>${n}</option>`).join('')}</select></td></tr></table>`;
   const z2 = rciZoneCfg;
   $('#ind-zone').innerHTML = `<h3>RCI の 0 付近を背景で知らせる（全部の時間足・全部のチャートで共通）<label class="inline"><input id="zone-on" type="checkbox" ${z2.enabled ? 'checked' : ''} /> 知らせる</label></h3>
     <p class="hint">決めた時間足の RCI が ±の内側にある時間だけ、どの時間足のチャートでも背景をうっすら青く塗ります（M1 を見たまま、M15 の RCI25 が 0 付近まで戻ったのに気づけるように）。</p>
@@ -2437,7 +2447,22 @@ function readIndicatorDialog(): IndicatorConfig {
     return Number.isFinite(v) ? Math.max(min, v) : fallback;
   };
   const z0 = cur.zigzag!;
+  const m0 = cur.macd!;
+  const mn = (id: string, fallback: number) => {
+    const v = Math.round(Number($<HTMLInputElement>(id).value));
+    return Number.isFinite(v) && v >= 1 ? Math.min(500, v) : fallback;
+  };
   return {
+    macd: {
+      enabled: $<HTMLInputElement>('#macd-on').checked,
+      histogram: $<HTMLInputElement>('#macd-hist').checked,
+      fast: mn('#macd-fast', m0.fast),
+      slow: mn('#macd-slow', m0.slow),
+      signal: mn('#macd-signal', m0.signal),
+      macdColor: $<HTMLInputElement>('#macd-color').value,
+      signalColor: $<HTMLInputElement>('#macd-sigcolor').value,
+      width: Math.max(1, Math.min(4, Number($<HTMLSelectElement>('#macd-width').value))),
+    },
     zigzag: {
       // 「重ねて比べる」に入れたら、左のチェックが無くても出す
       enabled: (zv('enabled') as HTMLInputElement).checked || (zv('compare') as HTMLInputElement).checked,

@@ -26,8 +26,10 @@ export interface Span {
 }
 
 /**
- * 塗る時間を求める。starts・barTimes は決めた時間足の足の始まり（1 分足の添字と時刻）、closes はその足の終値、
- * k は今の足、partialClose は今の足の今の終値、now は今の時刻の終わり（塗るのはここまで）。from 本前の足から見る
+ * 塗る時間を求める。barTimes は決めた時間足の足の始まりの時刻、closes はその足の終値、
+ * k は今の足、partialClose は今の足の今の終値、now は今の時刻の終わり（塗るのはここまで）。
+ * 見るのは [start, end] 番目の足だけ（画面に見えている所。過去の取引を振り返るときも塗るため。2026-11-17。
+ * それまでは今の足から 800 本前までだけで、何週間も前の取引の所は塗らなかった）。end は k より先にしない
  */
 export function rciZoneSpans(
   barTimes: ArrayLike<number>,
@@ -38,11 +40,12 @@ export function rciZoneSpans(
   size: number,
   cfg: RciZoneConfig,
   cache: Float64Array | null,
-  back = 800,
+  start = k - 800,
+  end = k,
 ): Span[] {
   const out: Span[] = [];
-  const from = Math.max(cfg.period - 1, k - back);
-  for (let j = from; j <= k; j++) {
+  const from = Math.max(cfg.period - 1, start);
+  for (let j = from; j <= Math.min(k, end); j++) {
     let r: number;
     if (j < k) {
       if (cache && !Number.isNaN(cache[j])) r = cache[j];

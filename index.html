@@ -54,7 +54,7 @@
         </select>
       </label>
       <button id="quick-notes-btn" aria-pressed="false" title="簡易メモ（フォルダ分けした階層つきの箇条書き。全部のプロジェクトで共通）">📝 メモ</button>
-      <button id="settings-btn" title="設定: インジケーター（移動平均・RCI・ZigZag）／図形の色と線の太さ／フィボナッチの水準／定型／キー。上のタブで切り替える">⚙ 設定</button>
+      <button id="settings-btn" title="設定: インジケーター（移動平均・RCI・ZigZag・MACD）／図形の色と線の太さ／フィボナッチの水準／定型／キー。上のタブで切り替える">⚙ 設定</button>
       <span id="status"></span>
     </header>
 
@@ -120,7 +120,7 @@
 
     <dialog id="color-dialog">
       <form method="dialog">
-        <nav class="set-tabs" aria-label="設定"><button type="button" data-set="ind" aria-pressed="false" title="移動平均・RCI・ZigZag（今のチャートの時間足）">インジケーター</button><button type="button" data-set="color" aria-pressed="true" title="図形の色（時間足ごと）と線の太さ（図形ごと）">図形の色・線の太さ</button><button type="button" data-set="levels" aria-pressed="false" title="フィボ・エクスパンションの水準を足す・消す・変える">フィボナッチの水準</button><button type="button" data-set="tpl" aria-pressed="false" title="並べ方・時間足・インジケーター・色などに名前を付けて保存し、どのプロジェクトにも当てる（MT4 の定型チャートと同じ）">定型</button><button type="button" data-set="keys" aria-pressed="false" title="キーボードのショートカットを変える">キー</button></nav>
+        <nav class="set-tabs" aria-label="設定"><button type="button" data-set="ind" aria-pressed="false" title="移動平均・RCI・ZigZag・MACD（今のチャートの時間足）">インジケーター</button><button type="button" data-set="color" aria-pressed="true" title="図形の色（時間足ごと）と線の太さ（図形ごと）">図形の色・線の太さ</button><button type="button" data-set="levels" aria-pressed="false" title="フィボ・エクスパンションの水準を足す・消す・変える">フィボナッチの水準</button><button type="button" data-set="tpl" aria-pressed="false" title="並べ方・時間足・インジケーター・色などに名前を付けて保存し、どのプロジェクトにも当てる（MT4 の定型チャートと同じ）">定型</button><button type="button" data-set="keys" aria-pressed="false" title="キーボードのショートカットを変える">キー</button></nav>
         <div class="set-body">
         <h2>図形の色と太さ</h2>
         <p class="hint">図形は描いたチャートの時間足の色になります。色・太さを変えると、描いてある図形も変わります。</p>
@@ -211,6 +211,7 @@
         <h3>ZigZag（メインチャート。MA の向き: MA が向きを変えるごとに、その間の一番高い・安い足を結ぶ。MT4: MT4 の標準と同じ）</h3>
         <table class="ind-table" id="ind-zz"></table>
         <div id="ind-rci-wrap"></div>
+        <div id="ind-macd"></div>
         <div id="ind-zone"></div>
         </div>
         <div class="buttons">

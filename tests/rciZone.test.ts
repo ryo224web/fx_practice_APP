@@ -32,4 +32,17 @@ describe('RCI の 0 付近を背景で知らせる', () => {
     const covered = spans2.some((s) => s.t0 <= times[k] && times[k] < s.t1);
     expect(covered).toBe(Math.abs(r) <= 20);
   });
+
+  it('見る範囲（start〜end 番目）だけを塗る。今の足より先は見ない', () => {
+    const k = closes.length - 1;
+    const all = rciZoneSpans(times, closes, k, closes[k], times[k] + M, M, cfg, null, 0, k);
+    const part = rciZoneSpans(times, closes, k, closes[k], times[k] + M, M, cfg, null, 35, 50);
+    for (let j = 8; j <= k; j++) {
+      const inAll = all.some((s) => s.t0 <= times[j] && times[j] < s.t1);
+      const inPart = part.some((s) => s.t0 <= times[j] && times[j] < s.t1);
+      expect(inPart).toBe(inAll && j >= 35 && j <= 50);
+    }
+    const ahead = rciZoneSpans(times, closes, 40, closes[40], times[40] + M, M, cfg, null, 30, 80);
+    expect(Math.max(...ahead.map((s) => s.t1))).toBeLessThanOrEqual(times[40] + M);
+  });
 });

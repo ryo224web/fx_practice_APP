@@ -81,6 +81,8 @@ export interface PaneHost {
 const CHART_MAX_BARS = 30_000;
 /** 1 本ずつ戻るのが止まってから、インジケーターを描くまでの時間 */
 const IND_DEFER_MS = 120;
+/** RCI の背景を一度に計算する足の数の上限（決めた時間足で。M15 なら約 2 か月） */
+const ZONE_MAX_BARS = 6000;
 const UP_COLOR = '#a5d6a7';
 const DOWN_COLOR = '#de7a7a';
 
@@ -385,6 +387,7 @@ export class ChartPane {
       { capture: true, passive: false },
     );
     let edgeCheck = 0;
+    let zoneFrame = 0;
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
       // 左端に来たかは次のフレームで、その時の範囲で見る（描き直した直後は、古い時間足の位置のまま一瞬だけ
       // 遠い過去を指すことがあり、それに反応すると要らない足やデータを読み込んで重くなる）
@@ -404,6 +407,11 @@ export class ChartPane {
       const w = this.chart.timeScale().width();
       if (r && r.to > r.from && w > 0) this.spacing = w / (r.to - r.from);
       host.rangeChanged(this);
+      // 動かして見えた所の RCI の背景（1 コマに 1 回）
+      if (!zoneFrame) zoneFrame = requestAnimationFrame(() => {
+        zoneFrame = 0;
+        this.updateRciZone();
+      });
     });
     this.shiftHandle.addEventListener('mousedown', (e) => {
       e.preventDefault();
@@ -575,7 +583,15 @@ export class ChartPane {
     if (this.rciZoneCache?.key !== key) this.rciZoneCache = { key, arr: new Float64Array(closes.length).fill(NaN) };
     const bid = this.host.bid();
     const now = bid[cursor].t + 60_000;
-    this.rciZone.set(rciZoneSpans(times, closes, k, bid[cursor].c, now, TIMEFRAMES[tf] * 60_000, cfg, this.rciZoneCache.arr));
+    // 画面に見えている所だけ計算する（左右 1 本ずつ広げる。長い時間足で何か月も見えているときは右端から ZONE_MAX_BARS 本まで）
+    let start = k - 800;
+    let end = k;
+    const r = this.chart.timeScale().getVisibleLogicalRange();
+    if (r) {
+      end = Math.min(k, lastLE(times, this.mapper.toTime(r.to)) + 1);
+      start = Math.max(lastLE(times, this.mapper.toTime(r.from)) - 1, end - ZONE_MAX_BARS);
+    }
+    this.rciZone.set(rciZoneSpans(times, closes, k, bid[cursor].c, now, TIMEFRAMES[tf] * 60_000, cfg, this.rciZoneCache.arr, start, end));
   }
 
   private updateHtf() {
