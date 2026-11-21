@@ -3452,6 +3452,25 @@ function setupControls() {
 
   playBtn.addEventListener('click', () => setPlaying(!playing));
   $('#peek-exit').addEventListener('click', () => clearTradeHighlight());
+  // 画面（設定・注文・新しい検証など）は、外の暗い所をクリックすると閉じる（キャンセルと同じ。Esc と同じく、変えた所は適用しない。2026-11-21）。
+  // 押した所と離した所の両方が外のときだけ（入力欄の文字を選んでいて外で離したときは閉じない）
+  let backdropDown: HTMLDialogElement | null = null;
+  const outside = (d: HTMLDialogElement, e: MouseEvent) => {
+    if (e.target !== d) return false;
+    const r = d.getBoundingClientRect();
+    return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+  };
+  document.addEventListener('mousedown', (e) => {
+    const d = e.target instanceof HTMLDialogElement && e.target.open ? e.target : null;
+    backdropDown = d && outside(d, e) ? d : null;
+  });
+  document.addEventListener('click', (e) => {
+    const d = backdropDown;
+    backdropDown = null;
+    if (!d || !d.open || !outside(d, e)) return;
+    // Esc と同じ「cancel」を出す（キーを待っている間など、止めている画面は閉じない）
+    if (d.dispatchEvent(new Event('cancel', { cancelable: true }))) d.close('cancel');
+  });
   $('#review-prev').addEventListener('click', () => stepReview(-1));
   $('#review-next').addEventListener('click', () => stepReview(1));
   $('#review-close').addEventListener('click', closeReview);
