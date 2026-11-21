@@ -1497,6 +1497,30 @@ th.sortable:hover {
   font-size: 15px;
   font-weight: 700;
 }
+/* Markdown の見出しと番号（2026-11-21） */
+.quick-notes .qn-row.qn-k-h1 input {
+  font-size: 20px;
+  font-weight: 700;
+}
+.quick-notes .qn-row.qn-k-h2 input {
+  font-size: 17px;
+  font-weight: 700;
+}
+.quick-notes .qn-row.qn-k-h3 input {
+  font-size: 15px;
+  font-weight: 700;
+}
+.quick-notes .qn-row.qn-k-h1,
+.quick-notes .qn-row.qn-k-h2 {
+  margin-top: 6px;
+}
+.quick-notes .qn-num {
+  flex: none;
+  min-width: 18px;
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
 .quick-notes .qn-menu {
   position: absolute;
   z-index: 2;

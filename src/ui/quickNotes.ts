@@ -3,13 +3,20 @@
 // - フォルダ: 左の列。「すべて」と、フォルダの木（中にフォルダを作れる。▾ でたたむ）。右クリックで名前を変える・中にフォルダ・削除
 //   （削除しても中のメモとフォルダは 1 つ上へ移す。消えない）。メモやフォルダをドラッグしてフォルダに落とすと移る（「すべて」に落とすとフォルダの外）
 // - メモの一覧: 真ん中の列。並べ方はドラッグで変える（メモの上半分に落とすとその上、下半分なら下。新しいメモは一番上）。1 行目が題名。＋ で今のフォルダに新しいメモ。右クリックで削除。空のまま離れたメモは消す
-// - 本文: 右の列。階層つきの箇条書き。Enter で次の行、Tab で字下げ、Shift+Tab で戻す、空の行で Backspace を押すと消す、↑↓ で行を移る。
-//   下に階層がある行は、左の ▾ でたたむ
+// - 本文: 右の列。階層つきの行。Enter で次の行、Tab で字下げ、Shift+Tab で戻す、空の行で Backspace を押すと消す、↑↓ で行を移る。
+//   下に階層がある行は、左の ▾ でたたむ。
+//   行の頭に Markdown の印を打つと、その行の種類が変わる（印は消える。2026-11-21）: 「- 」「* 」箇条書き・「1. 」番号・「# 」「## 」「### 」見出し。
+//   行の頭で Backspace を押すと、ふつうの文に戻す。箇条書き・番号の空の行で Enter を押すと 1 段戻す（一番上ならふつうの文）。
+//   以前の行（種類なし）は箇条書き
 // 欄の外をクリックするか Esc で閉じる。プロジェクトごとのメモは、ターミナルの「メモ」タブ（state.note）
+
+/** 行の種類。無ければ箇条書き（以前の行） */
+export type NoteKind = 'bullet' | 'num' | 'h1' | 'h2' | 'h3' | 'text';
 
 export interface NoteItem {
   id: string;
   text: string;
+  kind?: NoteKind;
   /** 字下げの段（0 が一番上） */
   level: number;
   /** 下の階層をたたんでいるか */
@@ -45,8 +52,38 @@ export interface NoteBook {
 }
 
 const INDENT = 18;
-const newItem = (level = 0, text = ''): NoteItem => ({ id: crypto.randomUUID(), text, level });
-const newNote = (folder: string | null, items?: NoteItem[]): Note => ({ id: crypto.randomUUID(), folder, items: items ?? [newItem()], updated: Date.now() });
+const newItem = (level = 0, text = '', kind: NoteKind = 'bullet'): NoteItem => ({ id: crypto.randomUUID(), text, level, kind });
+// 新しいメモの 1 行目（題名）はふつうの文
+const newNote = (folder: string | null, items?: NoteItem[]): Note => ({ id: crypto.randomUUID(), folder, items: items ?? [newItem(0, '', 'text')], updated: Date.now() });
+
+const kindOf = (it: NoteItem): NoteKind => it.kind ?? 'bullet';
+const isList = (k: NoteKind) => k === 'bullet' || k === 'num';
+
+/** 行の頭の Markdown の印（「## 」など）。印が無ければ null */
+export function parseMarker(text: string): { kind: NoteKind; rest: string } | null {
+  const m = /^(#{1,3}|[-*]|\d+[.)])\s(.*)$/s.exec(text);
+  if (!m) return null;
+  const mk = m[1];
+  const kind: NoteKind = mk[0] === '#' ? (`h${mk.length}` as NoteKind) : mk === '-' || mk === '*' ? 'bullet' : 'num';
+  return { kind, rest: m[2] };
+}
+
+/** 番号の行の番号（同じ段で続いている番号の行を 1 から数える。間に同じ段か浅い段の別の種類の行が入ったら数え直す） */
+export function listNumbers(items: readonly NoteItem[]): number[] {
+  const out: number[] = [];
+  const count: number[] = [];
+  for (const it of items) {
+    count.length = Math.min(count.length, it.level + 1);
+    if (kindOf(it) === 'num') {
+      count[it.level] = (count[it.level] ?? 0) + 1;
+      out.push(count[it.level]);
+    } else {
+      count[it.level] = 0;
+      out.push(0);
+    }
+  }
+  return out;
+}
 
 /** 以前の 1 枚だけのメモ（quickNotes）から作る */
 export function notebookFrom(book: NoteBook | undefined, old: NoteItem[] | undefined): NoteBook {
@@ -147,6 +184,7 @@ export function setupQuickNotes(button: HTMLElement, load: () => NoteBook, save:
     const folderName = folder === null ? 'すべてのメモ' : (book.folders.find((f) => f.id === folder)?.name ?? '');
     const items = note?.items ?? [];
     const hidden = hiddenRows(items);
+    const nums = listNumbers(items);
     panel.innerHTML = `
       <div class="qn-cols">
         <div class="qn-folders">
@@ -165,14 +203,18 @@ export function setupQuickNotes(button: HTMLElement, load: () => NoteBook, save:
               .join('') || '<div class="qn-empty">メモがありません。＋ で作る</div>'
           }
         </div>
-        <div class="qn-body" title="Enter 次の行・Tab 字下げ・Shift+Tab 戻す・▾ でたたむ（全プロジェクト共通）">
+        <div class="qn-body" title="Enter 次の行・Tab 字下げ・Shift+Tab 戻す・▾ でたたむ。行の頭に「- 」「1. 」「## 」「### 」で箇条書き・番号・見出し、行の頭で Backspace でふつうの文（全プロジェクト共通）">
           ${
             note
               ? items
                   .map((it, i) => {
                     if (hidden.has(i)) return '';
-                    const fold = hasChildren(items, i) ? `<button type="button" class="qn-fold" data-i="${i}" title="${it.collapsed ? '開く' : 'たたむ'}">${it.collapsed ? '▸' : '▾'}</button>` : '<span class="qn-dot">•</span>';
-                    return `<div class="qn-row${i === 0 ? ' qn-first' : ''}" style="padding-left:${it.level * INDENT}px">${fold}<input data-i="${i}" value="${esc(it.text)}" spellcheck="false" /></div>`;
+                    const k = kindOf(it);
+                    const fold = hasChildren(items, i)
+                      ? `<button type="button" class="qn-fold" data-i="${i}" title="${it.collapsed ? '開く' : 'たたむ'}">${it.collapsed ? '▸' : '▾'}</button>`
+                      : `<span class="qn-dot">${k === 'bullet' ? '•' : ''}</span>`;
+                    const num = k === 'num' ? `<span class="qn-num">${nums[i]}.</span>` : '';
+                    return `<div class="qn-row qn-k-${k}${i === 0 ? ' qn-first' : ''}" style="padding-left:${it.level * INDENT}px">${fold}${num}<input data-i="${i}" value="${esc(it.text)}" spellcheck="false" /></div>`;
                   })
                   .join('')
               : '<div class="qn-empty">左でメモを選ぶか、＋ で作る</div>'
@@ -410,7 +452,17 @@ export function setupQuickNotes(button: HTMLElement, load: () => NoteBook, save:
   panel.addEventListener('input', (e) => {
     const input = e.target as HTMLInputElement;
     if (!note || input.dataset.i === undefined) return;
-    note.items[Number(input.dataset.i)].text = input.value;
+    const it = note.items[Number(input.dataset.i)];
+    // 行の頭に Markdown の印を打ったら、その行の種類にして印を消す
+    const mk = parseMarker(input.value);
+    if (mk) {
+      const caret = Math.max(0, (input.selectionStart ?? input.value.length) - (input.value.length - mk.rest.length));
+      it.kind = mk.kind;
+      it.text = mk.rest;
+      touched();
+      return render(it.id, caret);
+    }
+    it.text = input.value;
     touched();
   });
 
@@ -430,14 +482,29 @@ export function setupQuickNotes(button: HTMLElement, load: () => NoteBook, save:
     const it = items[i];
     const visible = [...panel.querySelectorAll<HTMLInputElement>('.qn-body input[data-i]')].map((x) => Number(x.dataset.i));
     const pos = visible.indexOf(i);
-    if (e.key === 'Enter') {
+    const k = kindOf(it);
+    if (e.key === 'Enter' && input.value === '' && isList(k)) {
+      // 空の箇条書き・番号の行で Enter: 1 段戻す（一番上ならふつうの文にする）
+      e.preventDefault();
+      if (it.level > 0) for (let j = i; j < subtreeEnd(items, i); j++) items[j].level--;
+      else it.kind = 'text';
+      touched();
+      render(it.id, 0);
+    } else if (e.key === 'Backspace' && k !== 'text' && input.selectionStart === 0 && input.selectionEnd === 0) {
+      // 行の頭で Backspace: 印を外してふつうの文にする（もう一度押すと、空の行なら消す）
+      e.preventDefault();
+      it.kind = 'text';
+      touched();
+      render(it.id, 0);
+    } else if (e.key === 'Enter') {
       e.preventDefault();
       // カーソルより後ろの文字は次の行へ。下の階層が開いていれば、その最初の子として入れる
       const rest = input.value.slice(input.selectionStart ?? input.value.length);
       it.text = input.value.slice(0, input.selectionStart ?? input.value.length);
       const child = hasChildren(items, i) && !it.collapsed;
       const at = child ? i + 1 : subtreeEnd(items, i);
-      const n = newItem(child ? it.level + 1 : it.level, rest);
+      // 次の行は同じ種類（見出しの次はふつうの文）
+      const n = newItem(child ? it.level + 1 : it.level, rest, k[0] === 'h' ? 'text' : k);
       items.splice(at, 0, n);
       touched();
       render(n.id, 0);
