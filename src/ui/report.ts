@@ -180,6 +180,7 @@ export function reportBody(a: Analysis, info: ReportInfo, initialBalance: number
     ${card(`時間帯別（エントリーした時刻${rNote}）`, barChart(toBars(a.bySession, useR), barOpts(useR, 1)) + sideBucketTable(a.bySession, '時間帯'), true)}
     ${card(`時刻別の損益（エントリーした時刻・1 時間ごと${rNote}）`, barChart(toBars(a.byHour, useR), barOpts(useR, 3)), true)}
     ${card(`保有時間別の損益${useR ? '（棒は R の合計）' : ''}`, barChart(toBars(a.byHold, useR), barOpts(useR, 1)) + bucketTable(a.byHold, '保有時間'))}
+    ${card(`年別（決済した年${rNote}）`, barChart(toBars(a.byYear, useR), barOpts(useR, 1)) + bucketTable(a.byYear, '年'))}
     ${card('月別', bucketTable(a.byMonth, '月'))}
   </div>`;
 }

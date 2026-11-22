@@ -141,6 +141,8 @@ export interface Analysis {
   byHour: Bucket[];
   bySession: Bucket[];
   byMonth: Bucket[];
+  /** 年別（決済した年。表示の時刻帯） */
+  byYear: Bucket[];
   byHold: Bucket[];
   /** pips の分布（10 pips 刻み） */
   pipsHistogram: Bucket[];
@@ -438,6 +440,8 @@ export function analyze(trades: readonly TradeRecord[], initialBalance: number, 
   ).sort((a, b) => b.net - a.net);
   const months = [...new Set(list.map((t) => wall(t.closeTime).toISOString().slice(0, 7)))].sort();
   const byMonth = bucketize(list, months, (t) => months.indexOf(wall(t.closeTime).toISOString().slice(0, 7)));
+  const years = [...new Set(months.map((m) => m.slice(0, 4)))];
+  const byYear = bucketize(list, years, (t) => years.indexOf(wall(t.closeTime).toISOString().slice(0, 4)));
   const byHold = bucketize(
     list,
     HOLD_BUCKETS.map((b) => b.label),
@@ -474,6 +478,7 @@ export function analyze(trades: readonly TradeRecord[], initialBalance: number, 
     byHour,
     bySession,
     byMonth,
+    byYear,
     byHold,
     pipsHistogram,
     insights: insights(list, summary, { byWeekday, bySession, byHold }),

@@ -145,7 +145,7 @@ describe('成績の内訳', () => {
     });
     const a = analyze(list, 1_000_000, 0.01, (t) => t + 9 * 3_600_000);
     const total = list.reduce((s, t) => s + t.profit, 0);
-    for (const bs of [a.byWeekday, a.byHour, a.bySession, a.byMonth, a.byHold, a.pipsHistogram]) {
+    for (const bs of [a.byWeekday, a.byHour, a.bySession, a.byMonth, a.byYear, a.byHold, a.pipsHistogram]) {
       expect(bs.reduce((s, b) => s + b.trades, 0)).toBe(list.length);
       expect(bs.reduce((s, b) => s + b.net, 0)).toBeCloseTo(total, 6);
     }
