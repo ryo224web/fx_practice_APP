@@ -186,8 +186,8 @@ export function reportBody(a: Analysis, info: ReportInfo, initialBalance: number
 }
 
 export const REPORT_CSS = `
-.report { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; padding: 10px; }
-.report .card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--bg); min-width: 0; }
+.report { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 470px), 1fr)); gap: 12px; padding: 10px; }
+.report .card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--bg); min-width: 0; overflow-x: auto; }
 .report .card.wide { grid-column: 1 / -1; }
 .report h3 { margin: 0 0 8px; font-size: 13px; }
 .report h4 { margin: 0 0 4px; font-size: 12px; color: var(--muted); font-weight: 500; }
@@ -203,7 +203,7 @@ export const REPORT_CSS = `
 .report-table th { color: var(--muted); font-weight: 500; }
 .report-table td.num { text-align: right; white-space: nowrap; }
 .report-table.explained td:first-child { white-space: nowrap; }
-.report-table.explained td.note { color: var(--muted); }
+.report-table.explained td.note { color: var(--muted); white-space: normal; min-width: 12em; }
 .report-table tr.section th { padding-top: 10px; color: var(--fg); font-weight: 600; }
 .badge { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; white-space: nowrap; background: var(--grid); color: var(--muted); }
 .badge.high { color: var(--pos); }
