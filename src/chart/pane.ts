@@ -635,6 +635,18 @@ export class ChartPane {
     return r ? this.mapper.toTime(r.to + 1) : null;
   }
 
+  /** 最新の足の右から画面の右端までの空き（足の本数。最新の足が画面の右端より先にあればマイナス） */
+  scrollPos(): number {
+    return this.chart.timeScale().scrollPosition();
+  }
+
+  /** 最新の足の右に pos 本分の空きを置く（拡大率はそのまま） */
+  setScrollPos(pos: number) {
+    const ts = this.chart.timeScale();
+    if (Math.abs(ts.scrollPosition() - pos) < 0.01) return;
+    ts.scrollToPosition(pos, false);
+  }
+
   /** 目印の時刻が画面の右端に来るように動かす（表示する本数＝拡大率はそのまま） */
   alignTo(time: number) {
     const ts = this.chart.timeScale();

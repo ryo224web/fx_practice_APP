@@ -3270,6 +3270,14 @@ function createPanes() {
     rangeChanged: (p) => {
       // チャートはいつも連動する。マウスで動かしているチャートにだけ、ほかを合わせる（合わせた側の動きでは何もしない）
       if (p !== leader || p.el.hidden) return;
+      // 最新の足の右に空き（右の余白）が見えているときは、ほかのチャートにも同じ本数の空きを置く。
+      // 右端の時刻でそろえると、短い時間足の余白（M1 の 12 本 = 12 分）は長い時間足では 1 本にも満たないので、
+      // M15 などの最新の足が画面の右端にくっついて余白が無くなった（2026-11-23）
+      const pos = p.scrollPos();
+      if (pos > 0) {
+        for (const x of visiblePanes()) if (x !== p) x.setScrollPos(pos);
+        return;
+      }
       const t = p.anchorTime();
       if (t === null) return;
       for (const x of visiblePanes()) if (x !== p) x.alignTo(t);
