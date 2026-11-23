@@ -526,6 +526,12 @@ td.sell {
 }
 
 /* ---- ターミナル ---- */
+/* チャートの上では、ブラウザに指（iPad はマウスのドラッグも）の動きでスクロール・拡大をさせない。
+   動かす・拡大はチャートの部品が touch の合図で自分でする。これが無いと Safari が途中で pointercancel を出す */
+.pane {
+  touch-action: none;
+}
+
 #splitter {
   position: relative;
   height: 5px;

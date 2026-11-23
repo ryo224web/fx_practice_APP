@@ -1,6 +1,7 @@
 // チャート 1 枚（画面を分けたときの 1 区画）。
 // 時間足とインジケーターはチャートごと。リプレイの時刻・注文・図形はすべてのチャートで共通。
 
+import { bridgeTouchToMouse } from './touchMouse';
 import { CandlestickSeries, CrosshairMode, createChart, type CandlestickData, type IChartApi, type ISeriesApi, type Time } from 'lightweight-charts';
 import { mergeBars, periodStartUtc, TIMEFRAMES, type Aggregated, type Bar, type Timeframe } from '../core/candles';
 import { DrawingManager, hasRay, LINE_KINDS, lineDash, rayOn, TEXT_SIZES, type LineKind } from './drawings';
@@ -243,6 +244,8 @@ export class ChartPane {
     this.overlay = new TradeOverlay(box, this.mapper);
     this.series.attachPrimitive(this.overlay);
     this.drawings = new DrawingManager(box, this.mapper);
+    // iPad の Safari は、チャートの上の押す・ドラッグを touch で送るので、マウスの合図に直して図形・注文の線に送る（touchMouse.ts）
+    bridgeTouchToMouse(box);
     this.series.attachPrimitive(this.drawings);
     // 図形を選んでいる間だけ、右上（価格の目盛りの手前）に線の太さ（1〜4）と種類（実線・点線・破線）の欄を出す
     this.styleBar = document.createElement('div');

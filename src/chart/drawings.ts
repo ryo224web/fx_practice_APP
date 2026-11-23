@@ -351,7 +351,27 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     // テキストを打つ欄の中のクリック・ダブルクリック・右クリックは、欄にそのまま任せる（図形をつかむ処理に回すと、
     // 既定の動きが止まって、欄の中にカーソルを置けなくなる）
     const inEditor = (e: Event) => !!(e.target as Element | null)?.closest?.('.draw-text-edit');
-    el.addEventListener('mousedown', (e) => !inEditor(e) && this.onDown(e), true);
+    // ダブルクリックは、押した間隔と位置でも自分で見分ける。iPad の Safari（マウス）は dblclick を出さないことがあり、
+    // 水平線のロックなどがダブルクリックで切り替わらなかった（2026-11-23）。
+    // dblclick が届く所（Mac）では、自分で見分けた分と 2 回にならないよう、dblclick が届いたらそちらだけを使う
+    let lastDown = { t: 0, x: 0, y: 0 };
+    let ownDoubleAt = 0;
+    let nativeDouble = false;
+    el.addEventListener(
+      'mousedown',
+      (e) => {
+        if (inEditor(e)) return;
+        const now = performance.now();
+        const double = e.button === 0 && now - lastDown.t < 450 && Math.hypot(e.clientX - lastDown.x, e.clientY - lastDown.y) < 8;
+        lastDown = double || e.button !== 0 ? { t: 0, x: 0, y: 0 } : { t: now, x: e.clientX, y: e.clientY };
+        this.onDown(e);
+        if (double && !nativeDouble) {
+          ownDoubleAt = now;
+          this.onDouble(e);
+        }
+      },
+      true,
+    );
     window.addEventListener('mousemove', (e) => this.onMove(e));
     // テキストにマウスを乗せている間は、描いた日付を出す
     el.addEventListener('mousemove', (e) => this.onHover(e));
@@ -362,7 +382,16 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     });
     window.addEventListener('mouseup', (e) => this.onUp(e));
     el.addEventListener('contextmenu', (e) => !inEditor(e) && this.onContext(e), true);
-    el.addEventListener('dblclick', (e) => !inEditor(e) && this.onDouble(e), true);
+    el.addEventListener(
+      'dblclick',
+      (e) => {
+        if (inEditor(e)) return;
+        nativeDouble = true;
+        if (performance.now() - ownDoubleAt < 800) return;
+        this.onDouble(e);
+      },
+      true,
+    );
   }
 
   /** マウスを乗せているテキスト（描いた日付を出す） */
