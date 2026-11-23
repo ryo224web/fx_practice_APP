@@ -119,8 +119,17 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
   const locks = path.join(projects, '.locks');
   const indexFile = path.join(dir, 'index.json');
   const host = os.hostname();
+  /**
+   * 開いている機器の名前。Tailscale（tailscale serve）を通して iPad などから開いたときは、サーバーは同じ Mac なので
+   * 名前だけでは見分けられない。中継が付ける送り元のアドレスを足して、Mac mini で開いているのと別の機器として扱う
+   */
+  const hostOf = (req: IncomingMessage) => {
+    const from = req.headers['x-forwarded-for'];
+    const ip = (Array.isArray(from) ? from[0] : from)?.split(',')[0].trim();
+    return ip ? `Tailscale の機器（${ip}）` : host;
+  };
   const lockOf = (id: string) => path.join(locks, `${id}.json`);
-  const touchLock = (id: string) => writeJson(lockOf(id), { host, time: Date.now() });
+  const touchLock = (id: string, req: IncomingMessage) => writeJson(lockOf(id), { host: hostOf(req), time: Date.now() });
   /** ID → ファイル（projects からの相対パス。"/" 区切り）。毎回フォルダ中のファイルを読まないように覚えておく */
   const files = new Map<string, string>();
   const abs = (rel: string) => path.join(projects, ...rel.split('/'));
@@ -268,7 +277,7 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
     // 一覧
     if (parts.length === 0 && req.method === 'GET') {
       const list = await scan();
-      return send(res, 200, { dir, host, index: await readJson(indexFile), projects: list, folders: await walkDirs() });
+      return send(res, 200, { dir, host: hostOf(req), index: await readJson(indexFile), projects: list, folders: await walkDirs() });
     }
 
     // フォルダ
@@ -313,7 +322,7 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
       const p = file && (await readJson<ProjectFile>(abs(file)));
       if (!p) return send(res, 404, { error: 'not found' });
       const lock = await readJson<{ host: string; time: number }>(lockOf(id));
-      await touchLock(id);
+      await touchLock(id, req);
       return send(res, 200, { ...p, lock });
     }
     if (req.method === 'PUT' && parts[1] === 'rename') {
@@ -335,7 +344,7 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
     if (req.method === 'PUT') {
       const { name, state, updated, folder } = (await body(req)) as { name: string; state: unknown; updated: number; folder?: string };
       await put(id, { name, updated, state }, folder);
-      await touchLock(id);
+      await touchLock(id, req);
       return send(res, 200, { ok: true, file: files.get(id) });
     }
     if (req.method === 'DELETE') {

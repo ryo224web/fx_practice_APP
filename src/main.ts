@@ -3760,22 +3760,43 @@ function setupControls() {
     if (!ctxMenu.contains(e.target as Node)) ctxMenu.hidden = true;
   });
 
-  // ターミナルの高さ
+  // ターミナルの高さ。この機器（Mac・iPad）ごとに覚える（プロジェクトの値は、この機器でまだ決めていないときの初めの値）。
+  // 画面の小さい iPad で Mac と同じ高さにすると、チャートが半分ほどになった（2026-11-23）
   const term = $('#terminal');
-  term.style.height = `${state.terminalHeight}px`;
-  $('#splitter').addEventListener('mousedown', (e) => {
+  const TERM_KEY = 'fxp.terminalHeight';
+  const termMax = () => Math.max(60, window.innerHeight - 200);
+  let termHeight = (() => {
+    try {
+      return Number(localStorage.getItem(TERM_KEY)) || state.terminalHeight;
+    } catch {
+      return state.terminalHeight;
+    }
+  })();
+  const applyTermHeight = () => (term.style.height = `${Math.max(60, Math.min(termMax(), termHeight))}px`);
+  applyTermHeight();
+  window.addEventListener('resize', applyTermHeight);
+  // マウスでも指でも動かせるように pointer で受ける（iPad の Safari は、mousedown のままだとドラッグを画面のスクロールに取られた）
+  const splitter = $('#splitter');
+  splitter.addEventListener('pointerdown', (e) => {
     e.preventDefault();
-    const move = (ev: MouseEvent) => {
-      state.terminalHeight = Math.max(60, Math.min(window.innerHeight - 200, window.innerHeight - ev.clientY - 5));
-      term.style.height = `${state.terminalHeight}px`;
+    splitter.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => {
+      termHeight = Math.max(60, Math.min(termMax(), window.innerHeight - ev.clientY - 5));
+      applyTermHeight();
     };
     const up = () => {
-      window.removeEventListener('mousemove', move);
-      window.removeEventListener('mouseup', up);
-      save();
+      splitter.removeEventListener('pointermove', move);
+      splitter.removeEventListener('pointerup', up);
+      splitter.removeEventListener('pointercancel', up);
+      try {
+        localStorage.setItem(TERM_KEY, String(Math.round(termHeight)));
+      } catch {
+        /* 覚えられなくても、今の画面では効いている */
+      }
     };
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', up);
+    splitter.addEventListener('pointermove', move);
+    splitter.addEventListener('pointerup', up);
+    splitter.addEventListener('pointercancel', up);
   });
 
   document.addEventListener('keydown', onKey);
@@ -4293,7 +4314,7 @@ async function start() {
   updateStatus(Math.round(performance.now()));
   // 表示が出てから、インジケーターに必要な過去のデータを裏で読み込む（R1 の 1 秒を守るため後回し）
   setTimeout(() => void ensureIndicatorHistory(), 0);
-  if (store.lockedBy) toast(`このプロジェクトは別の Mac（${store.lockedBy}）でも開いているようです。同時に使うと Dropbox で競合コピーができます`);
+  if (store.lockedBy) toast(`このプロジェクトは別の機器（${store.lockedBy}）でも開いているようです。同時に使うと保存がぶつかります（Dropbox の競合コピーや、片方の変更が消えることがあります）`);
   else if (!store.remote) toast('保存先のフォルダに届かないため、ブラウザの中だけに保存しています');
 }
 

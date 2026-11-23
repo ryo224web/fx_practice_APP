@@ -527,9 +527,19 @@ td.sell {
 
 /* ---- ターミナル ---- */
 #splitter {
+  position: relative;
   height: 5px;
   cursor: ns-resize;
   background: var(--border);
+  touch-action: none;
+}
+
+/* つかめる所は線の上下 6px まで広げる（iPad のカーソルや指でもつかみやすいように） */
+#splitter::before {
+  content: '';
+  position: absolute;
+  inset: -6px 0;
+  z-index: 5;
 }
 
 #terminal {

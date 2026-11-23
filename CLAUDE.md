@@ -77,7 +77,7 @@
   - 保存先は `/Users/ryo/Library/CloudStorage/Dropbox/Claude/fx_practice`（`index.json` と `projects/<フォルダ…>/<名前>.fxp.json`）。開発サーバーが書く（`server/projectStore.ts`。環境変数 `FXP_PROJECT_DIR` で変更可）
   - ブラウザの localStorage にも控えを入れ、閉じる直前などでファイルに届かなかった分は次に開いたとき新しい方を使う。サーバーに届かなければ控えだけで動く
   - Dropbox が同期し続けないよう、ファイルへの書き込みは 3 秒に 1 回まで（一時停止・切り替え・ほかのアプリへ移ったときはすぐ）
-  - 開いた Mac の名前を `projects/<id>.lock.json` に書き、2 分以内に別の Mac が開いていたら警告する（同時に使うと Dropbox の競合コピーができる）
+  - 開いた Mac の名前を `projects/<id>.lock.json` に書き、2 分以内に別の Mac が開いていたら警告する（同時に使うと Dropbox の競合コピーができる）。Tailscale を通して開いた機器は「Tailscale の機器（100.x.x.x）」と書くので、Mac mini と iPad で同時に開いても警告が出る
   - 価格データ（`public/data/`）は大きいので Dropbox に入れない。各 Mac で `npm run import-data` する
 - まだ無いもの: スワップ・手数料（仮想取引）。複数銘柄の同時保有は不要（2026-10-21 に確認）
 
@@ -164,6 +164,7 @@ R_ExportHistory.mq4 の使い方（**Windows 機（MSI か T580）の MT4**）:
 - 「FX Practice」（2026-10-26 から。`scripts/mac/app/FXPractice.swift`）: 開くとサーバー（vite、5173 番）を起動し、自分のウィンドウに FP を出す（WebKit = Safari と同じ部品。Chrome より軽い）。サーバーがもう動いていればそれを使う。閉じる・⌘Q で、書きかけの保存（`window.__fxpFlush`）を済ませてから、自分で起動したサーバーだけを止める（前から動いていたサーバーは止めない）。FP の確認・名前の入力・ファイルを選ぶ画面・書き出し（保存先を聞く）は Mac の画面で出す。ウィンドウの大きさと位置を覚える。⌘R で読み直し、右クリック →「要素の詳細を表示」で開発者ツール。アイコンは `scripts/mac/app/icon.swift` で描く。記録は `~/Library/Logs/fx-practice.log`
   - 動作確認は別の番号と設定で作る（本物のサーバーにつながって同じプロジェクトを 2 つ開かないように）: `FXP_APP_DEST=<作る場所> FXP_PORT=5184 FXP_VITE_ARGS="--config <テスト用の設定>" zsh scripts/mac/make-app.sh`
 - ブラウザでも今までどおり使える（サーバーが動いている間に `http://localhost:5173`。`scripts/mac/launch.sh` は Chrome のアプリのウィンドウで開く）。同じプロジェクトをアプリとブラウザで同時に開くと保存がぶつかるので、どちらか一方で使う。ブラウザの控え（localStorage）はアプリとブラウザで別（プロジェクト本体は Dropbox なので困らない）
+- iPad などから使う（Tailscale。2026-11-23）: Mac mini（`rs-mini`）と iPad Pro 10.5（`ipad-pro-10-5`）に Tailscale を入れ、Mac mini で `tailscale serve --bg "http://[::1]:5173"` を設定済み（vite は [::1] だけで待つので、127.0.0.1 ではなく [::1] へ中継する）。iPad の Safari で `https://rs-mini.tailabd60d.ts.net` を開く。開けるのは自分の Tailscale の機器だけ（Funnel は使わない）。vite の `server.allowedHosts` に `.ts.net` を入れてある。Mac mini で FP のサーバーが動いている間だけ開ける（FX Practice のアプリを閉じるとサーバーも止まる）。止めるときは `tailscale serve --https=443 off`。ターミナルの高さは機器ごとに覚える（localStorage の `fxp.terminalHeight`。プロジェクトの `terminalHeight` はまだ決めていない機器の初めの値）。チャートとターミナルの境目は pointer で受け、`touch-action: none`（iPad の Safari で mousedown のままだとつかめなかった）
 - 「FX Practice を終了」は、ブラウザで使っていたときなどに裏で動いているサーバーを止める（`stop.sh`）
 - 保存データ（localStorage）はアドレスごとに分かれるので、ポートは必ず 5173（`npm run dev` も 5173 に固定）
 
@@ -182,4 +183,4 @@ Mac mini M4（メイン・開発と検証）/ MSI（Windows・MT4）/ T580（Win
    - 10 年分の仮データ（2016〜2025、約 375 万本）で測定（2026-10-22）: 9.5 年先への移動 約 1 秒、2025→2018 の巻き戻し 0.1 秒、開き直し 0.2〜0.6 秒、メモリ 40〜110 MB、プロジェクトのファイル 18 KB
 6. ~~MT4 書き出しスクリプト（.mq4）+ 取引履歴の再現（時刻のずれを自動判定）~~ 前半（取引履歴）・後半（TitanFX の 1 分足の自動取り込み。上の「MT4 の 1 分足」）とも作った。後半は T580 の MT4 でまだ動かしていない
 7. 取引記録の保存と成績統計（保存先は iCloud Drive などの同期フォルダを選べるようにする）
-8. （任意）他の PC からの利用（Tailscale）
+8. ~~（任意）他の PC からの利用（Tailscale）~~ 2026-11-23 に iPad から開けるようにした（上の「起動」）。タッチ操作はまだ
