@@ -211,9 +211,13 @@ async function api(path: string, method = 'GET', value?: unknown): Promise<Respo
     headers: value === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: value === undefined ? undefined : JSON.stringify(value),
   });
+  if (res.status === 409) throw new ConflictError();
   if (!res.ok) throw new Error(`保存先との通信に失敗しました（${res.status}）`);
   return res;
 }
+
+/** 別の機器（iPad など）が後から保存していたので、この画面からは書かなかった */
+class ConflictError extends Error {}
 
 function localIndex(): ProjectIndex {
   const idx = read<ProjectIndex>(INDEX_KEY);
@@ -281,7 +285,7 @@ export async function initStore(): Promise<{ remote: boolean; dir: string; locke
     if (localIsNewer(copy, file.updated ?? 0)) {
       // 閉じる直前の分がファイルに届いていなかった → 控えの方が新しい
       currentState = copy!.state;
-      await api(`/${index.current}`, 'PUT', { name: file.name, state: copy!.state, updated: copy!.updated });
+      await api(`/${index.current}`, 'PUT', { name: file.name, state: copy!.state, updated: copy!.updated, base: file.updated ?? 0 });
       remoteBase = copy!.updated;
     } else {
       currentState = file.state;
@@ -332,21 +336,60 @@ function writeLocalNow() {
   write(INDEX_KEY, index);
 }
 
+/**
+ * 別の機器で後から保存されていて、この画面からはもう書かない（書くとそちらで進めた分が消える）。
+ * 読み直すと、ファイルの方（別の機器で進めた状態）から始まる（控えの base がファイルの版と違うので、控えは使わない）
+ */
+let conflicted = false;
+let onConflict: () => void = () => {};
+export function setConflictHandler(f: () => void) {
+  onConflict = f;
+}
+export function isConflicted() {
+  return conflicted;
+}
+
 function writeRemoteNow(): Promise<void> {
   clearTimeout(remoteTimer);
   remoteTimer = undefined;
-  if (!remote || !pending) return remoteSaving;
+  if (!remote || !pending || conflicted) return remoteSaving;
   const meta = currentMeta();
   const value = { name: meta.name, state: pending, updated: meta.updated };
   remoteSaving = remoteSaving.then(() =>
-    api(`/${meta.id}`, 'PUT', value).then(
-      () => {
-        if (meta.id === index.current) remoteBase = value.updated;
-      },
-      () => {},
-    ),
+    conflicted
+      ? undefined
+      : // base は送る直前の値（前の保存が届いてから決まる）
+        api(`/${meta.id}`, 'PUT', { ...value, base: remoteBase }).then(
+          () => {
+            if (meta.id === index.current) remoteBase = value.updated;
+          },
+          (e) => {
+            if (e instanceof ConflictError && meta.id === index.current && !conflicted) {
+              conflicted = true;
+              onConflict();
+            }
+          },
+        ),
   );
   return remoteSaving;
+}
+
+/**
+ * 別の機器で、このプロジェクトが後から保存されたか（ファイルの版が、この画面が最後に読んだ・書いた版と違う）。
+ * 書きかけの保存が届くのを待ってから見る（自分の保存の返事を待たずに見ると、自分の分を「別の機器」と取り違える）。
+ * 届かないときは false
+ */
+export async function remoteChanged(): Promise<boolean> {
+  if (!remote || conflicted) return false;
+  await remoteSaving;
+  if (remoteTimer !== undefined) return false;
+  try {
+    const { updated } = (await (await api(`/${index.current}/updated`)).json()) as { updated: number };
+    // 版の無い古いファイルは比べない（ずっと「違う」になって読み直し続けないように）
+    return typeof updated === 'number' && updated !== remoteBase;
+  } catch {
+    return false;
+  }
 }
 
 /**

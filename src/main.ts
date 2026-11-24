@@ -33,6 +33,8 @@ import {
   listFolders,
   saveState,
   storeInfo,
+  setConflictHandler,
+  remoteChanged,
   switchProject,
   type AppState,
   type ProjectMeta,
@@ -4314,8 +4316,59 @@ async function start() {
   updateStatus(Math.round(performance.now()));
   // 表示が出てから、インジケーターに必要な過去のデータを裏で読み込む（R1 の 1 秒を守るため後回し）
   setTimeout(() => void ensureIndicatorHistory(), 0);
+  watchOtherDevices();
   if (store.lockedBy) toast(`このプロジェクトは別の機器（${store.lockedBy}）でも開いているようです。同時に使うと保存がぶつかります（Dropbox の競合コピーや、片方の変更が消えることがあります）`);
   else if (!store.remote) toast('保存先のフォルダに届かないため、ブラウザの中だけに保存しています');
+}
+
+/**
+ * 同じプロジェクトを Mac mini と iPad で開いているとき（2026-11-23）:
+ * - 別の機器が後から保存していたら、この画面からは書かない（サーバーが断る。state.ts の writeRemoteNow）。帯で知らせて読み直してもらう
+ * - 画面に戻ってきたとき・30 秒ごとに見て、別の機器で進んでいて、この画面に書きかけが無ければ、自分で読み直す（⌘R を忘れても最新から続けられる）
+ */
+const RELOADED_KEY = 'fxp.reloadedForOther';
+function watchOtherDevices() {
+  setConflictHandler(() => {
+    const bar = document.createElement('div');
+    bar.className = 'conflict-bar';
+    bar.innerHTML = '<span>このプロジェクトは別の機器（iPad など）で後から保存されました。この画面の変更は保存していません（上書きすると、そちらで進めた分が消えるため）</span><button>読み直す</button>';
+    bar.querySelector('button')!.addEventListener('click', () => {
+      // 読み直す前にこの画面の状態を書きに行かない（断られるだけ）
+      leaving = true;
+      location.reload();
+    });
+    document.body.append(bar);
+  });
+  try {
+    if (sessionStorage.getItem(RELOADED_KEY)) {
+      sessionStorage.removeItem(RELOADED_KEY);
+      toast('別の機器で進んだ分を読み込みました');
+    }
+  } catch {
+    /* 知らせられなくても困らない */
+  }
+  let checking = false;
+  const check = async () => {
+    if (checking || document.hidden) return;
+    checking = true;
+    try {
+      if (await remoteChanged()) {
+        try {
+          sessionStorage.setItem(RELOADED_KEY, '1');
+        } catch {
+          /* 同上 */
+        }
+        // 閉じる前の保存（beforeunload）で、古い状態を書きに行かない
+        leaving = true;
+        location.reload();
+      }
+    } finally {
+      checking = false;
+    }
+  };
+  window.addEventListener('focus', () => void check());
+  document.addEventListener('visibilitychange', () => void check());
+  setInterval(() => void check(), 30_000);
 }
 
 let firstPaintMs = 0;

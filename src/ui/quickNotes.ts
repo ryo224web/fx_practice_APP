@@ -153,7 +153,11 @@ export function setupQuickNotes(button: HTMLElement, load: () => NoteBook, save:
     }
     return out;
   };
-  const notesIn = (id: string | null) => (id === null ? book.notes : book.notes.filter((n) => descendants(id).has(n.folder ?? '')));
+  /**
+   * フォルダに直接入っているメモ（null は「すべて」で全部）。中のフォルダのメモは出さない（Apple のメモと同じ。
+   * 2026-11-24 までは中のフォルダのメモも上のフォルダに出していて、違和感があった）
+   */
+  const notesIn = (id: string | null) => (id === null ? book.notes : book.notes.filter((n) => n.folder === id));
 
   /** 空のまま離れたメモは消す（Apple のメモと同じ） */
   const dropIfEmpty = (n: Note | null) => {

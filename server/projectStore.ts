@@ -317,6 +317,13 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
     const id = parts[0];
     if (!id || !ID.test(id)) return send(res, 400, { error: 'bad id' });
 
+    // ファイルの版（updated）だけ。開いている画面が、別の機器で進んだかを見る（目印は書かない）
+    if (req.method === 'GET' && parts[1] === 'updated') {
+      const file = await fileOf(id);
+      const p = file && (await readJson<ProjectFile>(abs(file)));
+      if (!p) return send(res, 404, { error: 'not found' });
+      return send(res, 200, { updated: p.updated });
+    }
     if (req.method === 'GET') {
       const file = await fileOf(id);
       const p = file && (await readJson<ProjectFile>(abs(file)));
@@ -342,7 +349,14 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
       return send(res, 200, { ok: true, file: files.get(id), folder: folderOf(files.get(id)!) });
     }
     if (req.method === 'PUT') {
-      const { name, state, updated, folder } = (await body(req)) as { name: string; state: unknown; updated: number; folder?: string };
+      const { name, state, updated, folder, base } = (await body(req)) as { name: string; state: unknown; updated: number; folder?: string; base?: number };
+      // base（その画面が最後に読んだ・書いた版）が今のファイルの版と違えば、別の機器（iPad など）が後から保存している。
+      // 古い画面の状態で上書きすると、そちらで進めた分が消えるので書かない（2026-11-23）。base を送らない古い画面はそのまま書く
+      if (base !== undefined) {
+        const file = await fileOf(id);
+        const now = file && (await readJson<ProjectFile>(abs(file)));
+        if (now && typeof now.updated === 'number' && now.updated !== base) return send(res, 409, { error: 'conflict', updated: now.updated });
+      }
       await put(id, { name, updated, state }, folder);
       await touchLock(id, req);
       return send(res, 200, { ok: true, file: files.get(id) });

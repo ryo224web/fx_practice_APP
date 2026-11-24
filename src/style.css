@@ -1685,3 +1685,25 @@ th.sortable:hover {
   overflow-y: auto;
 }
 .set-tabs button:focus:not(:focus-visible) { outline: none; }
+
+/* 別の機器で後から保存されたときの帯（main.ts の watchOtherDevices） */
+.conflict-bar {
+  position: fixed;
+  left: 50%;
+  top: 44px;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(760px, calc(100vw - 24px));
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #7a2e2e;
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.conflict-bar button {
+  flex: none;
+}
