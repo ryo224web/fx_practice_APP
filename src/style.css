@@ -1622,6 +1622,21 @@ th.sortable:hover {
   background: var(--panel);
   box-shadow: 0 6px 20px rgb(0 0 0 / 40%);
   user-select: none;
+  display: flex;
+  gap: 4px;
+}
+/* 2 列（右の列は初めは空。行をドラッグして行き来する） */
+.symbol-menu .sym-col {
+  min-width: 120px;
+  min-height: 28px;
+  padding-bottom: 14px;
+}
+.symbol-menu .sym-col + .sym-col {
+  border-left: 1px solid var(--border);
+  padding-left: 4px;
+}
+.symbol-menu .sym-col.sym-drop-end {
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 .symbol-menu .sym-row {
   padding: 3px 10px 3px 4px;

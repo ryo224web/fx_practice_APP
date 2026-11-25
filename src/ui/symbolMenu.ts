@@ -1,12 +1,14 @@
 // ツールバーの銘柄の選択。ふつうの選ぶ欄（select）の一覧はドラッグできないので、同じ見た目のボタンと一覧を自分で出す。
 // 一覧の行をクリックすると選び、ドラッグすると並びを変える（行の上半分に落とすとその上、下半分なら下）。
 // 値は今までどおり隠した select に持つ（新しい検証の銘柄の欄もこの並びを写す）。
+// 一覧は 2 列。右の列は初めは空で、行をドラッグして左右の列を行き来できる（空の所に落とすとその列の一番下。2026-11-25）。
+// 右の列の銘柄は option の data-col="2" で持ち、select の並びはいつも「左の列 → 右の列」にそろえる。
 
 export interface SymbolMenuOptions {
   /** 一覧から選んだ（select の値はもう変えてある） */
   onPick: (symbol: string) => void;
-  /** 並びを変えた（新しい並び） */
-  onReorder: (order: string[]) => void;
+  /** 並びを変えた（新しい並びと、右の列の銘柄） */
+  onReorder: (order: string[], right: string[]) => void;
 }
 
 export interface SymbolMenu {
@@ -40,13 +42,14 @@ export function initSymbolMenu(select: HTMLSelectElement, o: SymbolMenuOptions):
     close();
   };
 
+  const isRight = (op: HTMLOptionElement) => op.dataset.col === '2';
+  const row = (op: HTMLOptionElement) =>
+    `<div class="sym-row${op.value === select.value ? ' sym-current' : ''}" data-sym="${op.value}" draggable="true" role="option"><span class="sym-check">${op.value === select.value ? '✓' : ''}</span>${op.text}</div>`;
   const render = () => {
     if (!menu) return;
-    menu.innerHTML = [...select.options]
-      .map(
-        (op) =>
-          `<div class="sym-row${op.value === select.value ? ' sym-current' : ''}" data-sym="${op.value}" draggable="true" role="option"><span class="sym-check">${op.value === select.value ? '✓' : ''}</span>${op.text}</div>`,
-      )
+    const ops = [...select.options];
+    menu.innerHTML = [ops.filter((op) => !isRight(op)), ops.filter(isRight)]
+      .map((list, i) => `<div class="sym-col" data-col="${i + 1}">${list.map(row).join('')}</div>`)
       .join('');
   };
 
@@ -72,13 +75,19 @@ export function initSymbolMenu(select: HTMLSelectElement, o: SymbolMenuOptions):
     });
 
     let dragSym: string | null = null;
+    // 落とす所: 行の上（上半分ならその上・下半分なら下）か、列の空いた所（その列の一番下）
     const dropAt = (e: DragEvent) => {
-      const row = (e.target as HTMLElement).closest<HTMLElement>('.sym-row');
-      if (!row) return null;
-      const r = row.getBoundingClientRect();
-      return { row, after: e.clientY > r.top + r.height / 2 };
+      const el = e.target as HTMLElement;
+      const row = el.closest<HTMLElement>('.sym-row');
+      if (row) {
+        const r = row.getBoundingClientRect();
+        return { row, col: null, after: e.clientY > r.top + r.height / 2 };
+      }
+      const col = el.closest<HTMLElement>('.sym-col');
+      return col ? { row: null, col, after: true } : null;
     };
-    const clearDrop = () => menu?.querySelectorAll('.sym-drop-before, .sym-drop-after').forEach((x) => x.classList.remove('sym-drop-before', 'sym-drop-after'));
+    const clearDrop = () =>
+      menu?.querySelectorAll('.sym-drop-before, .sym-drop-after, .sym-drop-end').forEach((x) => x.classList.remove('sym-drop-before', 'sym-drop-after', 'sym-drop-end'));
     menu.addEventListener('dragstart', (e) => {
       dragSym = (e.target as HTMLElement).closest<HTMLElement>('.sym-row')?.dataset.sym ?? null;
       if (dragSym && e.dataTransfer) {
@@ -91,7 +100,8 @@ export function initSymbolMenu(select: HTMLSelectElement, o: SymbolMenuOptions):
       clearDrop();
       if (!at) return;
       e.preventDefault();
-      at.row.classList.add(at.after ? 'sym-drop-after' : 'sym-drop-before');
+      if (at.row) at.row.classList.add(at.after ? 'sym-drop-after' : 'sym-drop-before');
+      else at.col!.classList.add('sym-drop-end');
     });
     menu.addEventListener('dragend', () => {
       dragSym = null;
@@ -104,15 +114,30 @@ export function initSymbolMenu(select: HTMLSelectElement, o: SymbolMenuOptions):
       dragSym = null;
       if (!at || !sym) return;
       e.preventDefault();
-      const to = at.row.dataset.sym!;
-      if (to === sym) return;
-      const moved = [...select.options].find((op) => op.value === sym)!;
-      const target = [...select.options].find((op) => op.value === to)!;
+      const ops = [...select.options];
+      const moved = ops.find((op) => op.value === sym)!;
       const value = select.value;
-      if (at.after) target.after(moved);
-      else target.before(moved);
+      if (at.row) {
+        const to = at.row.dataset.sym!;
+        if (to === sym) return;
+        const target = ops.find((op) => op.value === to)!;
+        moved.dataset.col = isRight(target) ? '2' : '1';
+        if (at.after) target.after(moved);
+        else target.before(moved);
+      } else {
+        moved.dataset.col = at.col!.dataset.col!;
+      }
+      // select の並びを「左の列 → 右の列」にそろえる（列の中の並びはそのまま。列の空いた所に落とした銘柄はその列の一番下）
+      const now = [...select.options].filter((op) => op !== moved || at.row);
+      const left = now.filter((op) => !isRight(op));
+      const right = now.filter(isRight);
+      if (!at.row) (isRight(moved) ? right : left).push(moved);
+      for (const op of [...left, ...right]) select.add(op);
       select.value = value;
-      o.onReorder([...select.options].map((op) => op.value));
+      o.onReorder(
+        [...select.options].map((op) => op.value),
+        right.map((op) => op.value),
+      );
       render();
     });
 
@@ -129,6 +154,16 @@ export function initSymbolMenu(select: HTMLSelectElement, o: SymbolMenuOptions):
   };
   refresh();
   return { refresh };
+}
+
+/** 右の列に置いた銘柄に印を付ける（select の並びは「左の列 → 右の列」にそろえる） */
+export function placeRightColumn(select: HTMLSelectElement, right: string[] | undefined) {
+  const set = new Set(right ?? []);
+  const ops = [...select.options];
+  for (const op of ops) op.dataset.col = set.has(op.value) ? '2' : '1';
+  const value = select.value;
+  for (const op of [...ops.filter((op) => !set.has(op.value)), ...ops.filter((op) => set.has(op.value))]) select.add(op);
+  select.value = value;
 }
 
 /** 保存した並びに合わせる（並びに無い銘柄は、元の並びのまま後ろに置く） */

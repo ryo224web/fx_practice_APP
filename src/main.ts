@@ -54,7 +54,7 @@ import { notebookFrom, setupQuickNotes, type NoteBook } from './ui/quickNotes';
 import { DEFAULT_RCI_ZONE, type RciZoneConfig } from './chart/rciZone';
 import { simulateTp, summarizeTp, TP_MULTIPLES, type TpSimRow } from './trade/tpSim';
 import { DEFAULT_LOSS_REASONS, DEFAULT_WIN_REASONS, isWin, missingReasons, newReasonId, tallyByName, tallyReasons, type LossReason } from './trade/lossReasons';
-import { initSymbolMenu, orderSymbols } from './ui/symbolMenu';
+import { initSymbolMenu, orderSymbols, placeRightColumn } from './ui/symbolMenu';
 import { openTagPicker } from './ui/tagPicker';
 import './style.css';
 
@@ -75,10 +75,10 @@ const DAY_BARS = 1440;
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 const statusEl = $('#status');
 const symbolEl = $<HTMLSelectElement>('#symbol');
-/** 銘柄のボタンと一覧（並びはドラッグで変える。共通の設定の symbolOrder） */
+/** 銘柄のボタンと一覧（並びはドラッグで変える。2 列で、右の列は共通の設定の symbolRight。並びは symbolOrder） */
 const symbolMenu = initSymbolMenu(symbolEl, {
   onPick: (symbol) => void changeSymbol(symbol).finally(symbolMenu.refresh),
-  onReorder: (order) => void saveAppSettings({ symbolOrder: order }),
+  onReorder: (order, right) => void saveAppSettings({ symbolOrder: order, symbolRight: right }),
 });
 const clockEl = $('#clock');
 const playBtn = $<HTMLButtonElement>('#play');
@@ -4282,6 +4282,7 @@ async function start() {
     symbolEl.hidden = true;
   }
   for (const s of symbols) symbolEl.add(new Option(s.toUpperCase(), s));
+  placeRightColumn(symbolEl, settings.symbolRight);
   if (manifest && !symbols.includes(state.symbol)) {
     state.symbol = symbols.includes('usdjpy') ? 'usdjpy' : symbols[0];
     state.test = null;

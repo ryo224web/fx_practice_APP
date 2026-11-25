@@ -24,6 +24,8 @@ export interface AppSettings {
   favorites?: string[];
   /** ツールバーの銘柄の一覧の並び */
   symbolOrder?: string[];
+  /** ツールバーの銘柄の一覧の右の列に置いた銘柄（並びは symbolOrder） */
+  symbolRight?: string[];
   /** 図形の太さ・線の種類の欄の場所（チャートの右端・上端からの距離。px） */
   styleBarPos?: { right: number; top: number };
   /** 敗因・勝因の札を付ける欄の大きさ（右下の角で変える） */
