@@ -148,9 +148,11 @@ export function renderMt4(rows: Mt4Row[], info: Mt4Info | null, digits: number, 
   }
   const mark = (v: boolean | null) => (v === null ? '' : v ? '✓' : '<b class="neg" title="記録の価格が、その時刻の足の値幅に入っていません">✗</b>');
   const off = `${info.offsetHours >= 0 ? '+' : ''}${info.offsetHours}`;
-  const judged = info.detected
+  const judged = info.auto
+    ? `時刻: <b>サーバー時刻のまま</b>（EA の履歴なので、ずれは判定しません）`
+    : info.detected
     ? `時刻のずれ（自動判定）: <b>${off} 時間</b>　価格が足に収まった: <b>${info.matched}/${info.checked}</b>`
-    : `時刻のずれ: <b>${off} 時間</b>（この銘柄では判定できていません。価格データが無いか、取引がありません）`;
+    : `時刻のずれ: <b>${off} 時間</b>（この銘柄では判定できていません。価格データが無いか、取引が少ないので、ほかの銘柄で判定した値か 0 を使います）`;
   const updated = info.auto && info.updated ? `（最後に MT4 が書き出したのは ${time(info.updated)}）` : '';
   const head = `${bar}<span class="hint">${esc(info.fileName)}${updated}　${judged}${info.others ? `　（他の銘柄 ${info.others} 件は表示していません）` : ''}　行をダブルクリック: 済んだ取引はチャートでその場所を表示（時刻はそのまま）、まだの取引はエントリーの直前まで進む</span></div>`;
   // 並べ方: 注文時間（同じなら注文番号）の順。初期は新しい取引が上

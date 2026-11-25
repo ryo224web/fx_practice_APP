@@ -1538,12 +1538,32 @@ $('#nt-start-btn').addEventListener('click', async () => {
 // ---------------- MT4 の取引履歴 ----------------
 // 記録の時刻・価格のまま表示する（R2）。ローソク足を進めると、記録どおりにエントリー・決済が現れる。
 
-/** 今の銘柄の時刻のずれ。まだ判定していなければ、ほかの銘柄で判定した値（同じブローカーなら同じはず） */
+/**
+ * 時刻のずれを決めるのに要る、照らし合わせた価格の数（建値・決済で 1 つずつ）。
+ * 2026-11-25 に、USDCAD の取引 1 件の建値だけ（決済の前）で -2 時間と決めて覚え続け、チャートの違う所に出た
+ * （その時刻の足がまだ無く 0 時間は照らせず、2 時間前の足にたまたま価格が収まった）
+ */
+const MIN_OFFSET_CHECKS = 6;
+
+/**
+ * 今の銘柄の時刻のずれ。まだ判定していなければ（数が足りなければ）、ほかの銘柄で判定した値（同じブローカーなら同じはず）。
+ * どれも無ければ 0（EA の取引履歴はサーバー時刻のまま）
+ */
 function mt4Offset() {
   const m = state.mt4;
+  // EA が書く履歴（MT4 から自動）は、いつもサーバー時刻のままなので判定しない（たまたまで違うずれに決まることが無いように。2026-11-25）
+  if (m?.auto) return { hours: 0, matched: 0, checked: 0, detected: false };
+  const ok = (d: { checked: number } | undefined) => !!d && d.checked >= MIN_OFFSET_CHECKS;
   const d = m?.bySymbol?.[md.symbol];
-  return d ? { ...d, detected: true } : { hours: m?.offsetHours ?? 0, matched: 0, checked: 0, detected: false };
+  if (ok(d)) return { ...d!, detected: true };
+  const other = Object.values(m?.bySymbol ?? {})
+    .filter(ok)
+    .sort((a, b) => b.checked - a.checked)[0];
+  return { hours: other?.hours ?? 0, matched: 0, checked: 0, detected: false };
 }
+
+/** 数が足りずに判定しなかった銘柄と、そのときの取引の数（同じ数のうちは読み込み直さない） */
+const offsetTried = new Map<string, number>();
 
 function mt4ToUtc(server: number): number {
   return serverToUtc(server, rule) + mt4Offset().hours * 3_600_000;
@@ -1555,10 +1575,13 @@ function mt4ToUtc(server: number): number {
  */
 async function detectMt4ForSymbol(): Promise<{ hours: number; matched: number; checked: number } | null> {
   const m = state.mt4;
-  if (!m) return null;
-  if (m.bySymbol?.[md.symbol]) return m.bySymbol[md.symbol];
+  if (!m || m.auto) return null;
+  const saved = m.bySymbol?.[md.symbol];
+  if (saved && saved.checked >= MIN_OFFSET_CHECKS) return saved;
   const mine = mt4Trades();
   if (!mine.length) return null;
+  const n = mine.length * 2 - mine.filter((t) => t.closeServer === null).length;
+  if (offsetTried.get(md.symbol) === n) return null;
   const opens = mine.map((t) => serverToUtc(t.openServer, rule));
   const closes = mine.map((t) => (t.closeServer === null ? NaN : serverToUtc(t.closeServer, rule))).filter(Number.isFinite);
   // 判定には新しい方の取引の期間だけを読み込む（読み込める月数に上限があるため）。終わったら今の時刻の辺りに戻す
@@ -1566,7 +1589,13 @@ async function detectMt4ForSymbol(): Promise<{ hours: number; matched: number; c
   await ensureWindow(Math.max(Math.min(...opens), last - HISTORY_LIMIT) - 86_400_000, last + 86_400_000);
   const det = detectOffsetHours(mine, (sv) => serverToUtc(sv, rule), priceLookup, spec.pip);
   if (state.cursor) await ensureLoaded(state.cursor - 62 * 86_400_000, state.cursor);
-  if (det.checked === 0) return null;
+  // 少ない数では決めない（たまたま別の時刻の足に収まることがある）。ほかの銘柄の値か 0 を使う
+  if (det.checked < MIN_OFFSET_CHECKS) {
+    offsetTried.set(md.symbol, n);
+    if (saved) delete m.bySymbol![md.symbol];
+    mt4EventCache = null;
+    return null;
+  }
   const result = { hours: det.hours, matched: det.matched, checked: det.checked };
   (m.bySymbol ??= {})[md.symbol] = result;
   m.offsetHours = det.hours;
