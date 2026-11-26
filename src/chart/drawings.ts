@@ -15,10 +15,12 @@ import type {
   SeriesAttachedParameter,
   SeriesType,
   Time,
+  Logical,
 } from 'lightweight-charts';
 import type { TimeMapper } from './mapper';
+import { TIMEFRAMES } from '../core/candles';
 
-export type DrawingKind = 'hline' | 'vline' | 'trend' | 'poly' | 'channel' | 'rect' | 'fibo' | 'fiboexp' | 'text' | 'rrbuy' | 'rrsell';
+export type DrawingKind = 'hline' | 'vline' | 'trend' | 'poly' | 'channel' | 'rect' | 'fibo' | 'fiboexp' | 'text' | 'rrbuy' | 'rrsell' | 'stamp';
 
 export interface Drawing {
   id: string;
@@ -44,6 +46,8 @@ export interface Drawing {
    * アラートの線は、ふつうの水平線と見分けられ邪魔にならないよう、右端の短い赤い点線だけにする（MT4 と同じ。2026-11-26）
    */
   alert?: boolean;
+  /** トレード済みの印（☑）を置いた時間足。それより長い時間足では、印を足の高値の上へよけて出す */
+  stampTf?: string;
   /** ロック（右上の欄の 🔒）。動かす・大きさを変える・消すができない（選んで太さ・色などを変えるのはできる）。全消去でも残す */
   locked?: boolean;
   /** テキストの中身（改行も入る）。点は文字の左上 */
@@ -190,6 +194,7 @@ export const DRAWING_LABELS: Record<DrawingKind, string> = {
   text: 'テキスト',
   rrbuy: 'リスクリワード（買い）',
   rrsell: 'リスクリワード（売り）',
+  stamp: 'トレード済みの印',
 };
 
 const COLORS: Record<DrawingKind, string> = {
@@ -204,11 +209,12 @@ const COLORS: Record<DrawingKind, string> = {
   text: '#e6edf3',
   rrbuy: '#9aa4b2',
   rrsell: '#9aa4b2',
+  stamp: '#ff6b6b',
 };
 
 /** リスクリワードの図形か */
 /** ダブルクリックでロックを切り替える図形（フィボ・テキスト・チャネルはダブルクリックに別の働きがある） */
-const LOCK_ON_DOUBLE = new Set<DrawingKind>(['hline', 'vline', 'trend', 'poly', 'rect', 'rrbuy', 'rrsell']);
+const LOCK_ON_DOUBLE = new Set<DrawingKind>(['hline', 'vline', 'trend', 'poly', 'rect', 'rrbuy', 'rrsell', 'stamp']);
 
 export const isRR = (kind: DrawingKind) => kind === 'rrbuy' || kind === 'rrsell';
 /** リスクリワードの利益側・損失側の塗りと文字の札の色（TradingView のロング・ショートポジションに近い色） */
@@ -261,8 +267,11 @@ interface TradeBox {
 }
 
 function onePoint(kind: DrawingKind) {
-  return kind === 'hline' || kind === 'vline' || kind === 'text';
+  return kind === 'hline' || kind === 'vline' || kind === 'text' || kind === 'stamp';
 }
+
+/** トレード済みの印（☑）の四角の半分の大きさ（px）。右上の欄の丸 4 つ（太さ 1〜4）で大きさを変える */
+const stampRadius = (width: number) => 10 + width * 4;
 
 /**
  * つまみの位置。長方形は 4 隅（2 = A の時刻・B の価格、3 = B の時刻・A の価格）。
@@ -776,7 +785,10 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
    * 今の見た目から決めて覚える
    */
   textAnchor(d: Drawing): Px | null {
-    if (!this.relative(d)) return this.toPx(d.points[0]);
+    if (!this.relative(d)) {
+      const a = this.toPx(d.points[0]);
+      return a && this.avoidCandles(d, a);
+    }
     const tip = this.toPx(d.points[1]);
     if (!tip) return null;
     if (!d.offset) {
@@ -784,7 +796,40 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       if (!a) return null;
       d.offset = { x: a.x - tip.x, y: a.y - tip.y };
     }
-    return { x: tip.x + d.offset.x, y: tip.y + d.offset.y };
+    return this.avoidCandles(d, { x: tip.x + d.offset.x, y: tip.y + d.offset.y });
+  }
+
+  /**
+   * 書いた時間足より長い時間足で、テキスト（吹き出しの本体）がローソク足にかぶるときは、かぶる足の高値の上へよける
+   * （下位足で書いたメモが上位足で足を隠すのが嫌だった。2026-11-26。トレード済みの印と同じ考え）。
+   * かぶらなければそのまま。動かしている・打っている間はよけない（つかんだ所から動かせるように）
+   */
+  private avoidCandles(d: Drawing, a: Px): Px {
+    const tfMin = TIMEFRAMES as Record<string, number>;
+    const placed = d.tf ? tfMin[d.tf] : undefined;
+    const now = tfMin[this.tf];
+    if (!placed || !now || now <= placed || this.drag?.id === d.id || this.editingId === d.id || !this.chart || !this.series) return a;
+    const box = this.textBoxes.get(d.id);
+    if (!box) return a;
+    const pad = textPad(d);
+    const ts = this.chart.timeScale();
+    const l1 = ts.coordinateToLogical(a.x - pad);
+    const l2 = ts.coordinateToLogical(a.x + box.w + pad);
+    if (l1 === null || l2 === null) return a;
+    let hi = -Infinity;
+    let lo = Infinity;
+    for (let i = Math.floor(l1); i <= Math.ceil(l2); i++) {
+      const b = this.series.dataByIndex(i) as { high?: number; low?: number } | null;
+      if (b?.high == null || b.low == null) continue;
+      hi = Math.max(hi, b.high);
+      lo = Math.min(lo, b.low);
+    }
+    if (!Number.isFinite(hi)) return a;
+    const yHi = this.series.priceToCoordinate(hi);
+    const yLo = this.series.priceToCoordinate(lo);
+    if (yHi === null || yLo === null) return a;
+    if (a.y + box.h + pad < yHi || a.y - pad > yLo) return a;
+    return { x: a.x, y: yHi - box.h - pad - 6 };
   }
 
   /** テキストの左上を (x, y) px に置く。吹き出しはしっぽの先からの距離を変える（1 つ目の点も今の時間足に合わせておく） */
@@ -1232,6 +1277,12 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         case 'vline':
           hit = Math.abs(px.x - a.x) <= HIT;
           break;
+        case 'stamp': {
+          const { mark, r: sr } = this.stampPos(d, a);
+          const r = sr + 3;
+          hit = Math.abs(px.x - mark.x) <= r && Math.abs(px.y - mark.y) <= r;
+          break;
+        }
         case 'text': {
           // たたんだ吹き出しは印の上だけ
           if (this.collapsed(d) && b) {
@@ -1589,6 +1640,43 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
   /** 何も無い所を右クリックしたとき（その所の時刻と価格） */
   onEmptyContext: (e: MouseEvent, pt: { t: number; p: number }) => void = () => {};
 
+  /**
+   * トレード済みの印を出す所。置いた時間足とそれより短い時間足では置いた所そのもの。
+   * 長い時間足では、その時刻を含む足の高値（置いた価格の方が上ならその価格）の上に印を出し、置いた価格に点を残す
+   * （MT4 でも、下位足で付けた印が上位足でローソク足にかぶって見づらかった。2026-11-26）
+   */
+  private stampPos(d: Drawing, a: Px): { mark: Px; dot: Px | null; r: number } {
+    const full = stampRadius(this.lineWidthOf(d));
+    const tfMin = TIMEFRAMES as Record<string, number>;
+    const placed = d.stampTf ? tfMin[d.stampTf] : undefined;
+    const now = tfMin[this.tf];
+    if (!placed || !now || now <= placed || !this.chart || !this.series) return { mark: a, dot: null, r: full };
+    const ts = this.chart.timeScale();
+    const i = Math.floor(this.mapper.toLogical(d.points[0].t));
+    const x = ts.logicalToCoordinate(i as Logical);
+    if (x === null) return { mark: a, dot: null, r: full };
+    // 上位足では小さくし（足が細いので、大きいままだと両隣の足にもかぶった）、印の幅にかかる足の一番高い高値の上に出す
+    const r = 7;
+    const l1 = ts.coordinateToLogical(x - r - 2);
+    const l2 = ts.coordinateToLogical(x + r + 2);
+    let hi = -Infinity;
+    for (let k = Math.floor(l1 ?? i); k <= Math.ceil(l2 ?? i); k++) {
+      const b = this.series.dataByIndex(k) as { high?: number } | null;
+      if (b?.high != null) hi = Math.max(hi, b.high);
+    }
+    const hy = Number.isFinite(hi) ? this.series.priceToCoordinate(hi) : null;
+    if (hy === null) return { mark: a, dot: null, r: full };
+    return { mark: { x, y: Math.min(hy, a.y) - r - 6 }, dot: { x, y: a.y }, r };
+  }
+
+  /** トレード済みの印を置く（右クリックのメニューから）。時間足の色ではなく、いつも赤（欄の色で変えられる） */
+  addStamp(pt: { t: number; p: number }) {
+    const d: Drawing = { id: crypto.randomUUID(), kind: 'stamp', points: [pt], color: COLORS.stamp, stampTf: this.tf, created: Date.now() };
+    this.drawings.push(d);
+    this.onChange();
+    this.refresh();
+  }
+
   /** 水平線を置く（右クリックのメニューから）。alert ならアラートの線 */
   addHline(pt: { t: number; p: number }, alert: boolean) {
     const d: Drawing = { id: crypto.randomUUID(), kind: 'hline', points: [pt], color: COLORS.hline, tf: this.tf, created: Date.now(), ...(alert ? { alert: true } : {}) };
@@ -1666,6 +1754,44 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       case 'vline':
         line(a.x, 0, a.x, h);
         break;
+      case 'stamp': {
+        // トレード済みの印（☑。角の丸い四角にチェック）。一度トレードした所に、もう一度ねらわないように置く（2026-11-26）
+        // 置いた時間足より長い時間足では、ローソク足にかぶらないよう、印を小さくしてその辺りの足の高値の上へよけ、
+        // 置いた価格には小さな点を残して細い点線で結ぶ
+        const { mark, dot, r } = this.stampPos(d, a);
+        ctx.setLineDash([]);
+        if (dot) {
+          ctx.save();
+          ctx.globalAlpha = 0.8;
+          ctx.beginPath();
+          ctx.arc(dot.x, dot.y, 2.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.globalAlpha = 0.5;
+          ctx.lineWidth = 1;
+          ctx.setLineDash([2, 3]);
+          line(dot.x, dot.y - 3, mark.x, mark.y + r);
+          ctx.restore();
+        }
+        const c = mark;
+        ctx.globalAlpha = 0.95;
+        ctx.lineWidth = dot ? (sel ? 2 : 1.5) : sel ? 3 : 2;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.roundRect(c.x - r, c.y - r, r * 2, r * 2, r * 0.3);
+        ctx.save();
+        ctx.globalAlpha = 0.2;
+        ctx.fill();
+        ctx.restore();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.lineWidth = Math.max(dot ? 1.8 : 2.5, r * 0.22);
+        ctx.moveTo(c.x - r * 0.5, c.y + r * 0.02);
+        ctx.lineTo(c.x - r * 0.12, c.y + r * 0.42);
+        ctx.lineTo(c.x + r * 0.55, c.y - r * 0.45);
+        ctx.stroke();
+        break;
+      }
       case 'text': {
         this.pins.delete(d.id);
         // 打っている間は、打つ欄の方に出す

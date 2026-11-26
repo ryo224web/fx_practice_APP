@@ -878,13 +878,15 @@ export class ChartPane {
     if (!d) return;
     const names: Record<LineKind, string> = { solid: '実線', dotted: '点線', dashed: '破線' };
     const isText = d.kind === 'text';
+    // トレード済みの印は、丸 4 つが印の大きさで、線の種類は無い
+    const isStamp = d.kind === 'stamp';
     this.styleBar.innerHTML =
       '<b class="grip" title="つかんで欄を動かす">⋮⋮</b>' +
       [1, 2, 3, 4]
-        .map((n) => `<button type="button" data-w="${n}" class="${n === w ? 'on' : ''}" title="${isText ? '文字の大きさ' : '線の太さ'} ${n}"><span style="width:${n * 2 + 3}px;height:${n * 2 + 3}px"></span></button>`)
+        .map((n) => `<button type="button" data-w="${n}" class="${n === w ? 'on' : ''}" title="${isText ? '文字の大きさ' : isStamp ? '印の大きさ' : '線の太さ'} ${n}"><span style="width:${n * 2 + 3}px;height:${n * 2 + 3}px"></span></button>`)
         .join('') +
       // テキストには線の種類が無い（丸 4 つは文字の大きさ）
-      (isText
+      (isText || isStamp
         ? ''
         : '<i></i>' +
           LINE_KINDS.map(

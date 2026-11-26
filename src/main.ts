@@ -2612,6 +2612,7 @@ function openColorDialog(colors: Record<string, string>, widths: Partial<Record<
     .join('');
   const opts = (v: number) => [1, 2, 3, 4].map((n) => `<option value="${n}" ${n === v ? 'selected' : ''}>${n}</option>`).join('');
   $('#width-table').innerHTML = (Object.keys(DRAWING_LABELS) as DrawingKind[])
+    .filter((k) => k !== 'stamp')
     .map((k) => `<tr><td>${DRAWING_LABELS[k]}</td><td><select data-kind="${k}">${opts(widths[k] ?? defaultLineWidth(k))}</select></td></tr>`)
     .join('');
   const dlg = $<HTMLDialogElement>('#color-dialog');
@@ -3263,6 +3264,20 @@ async function changeSymbol(symbol: string) {
     symbolMenu.refresh();
     return;
   }
+  // 仮想の取引で操作の記録があれば、切り替えると今の時刻が新しい出発点になり、それより前に戻れなくなるので確かめる
+  // （2026-11-26 に、再生がデータの終わりまで進んだ後に銘柄を切り替えて、検証の続きに戻れなくなった）
+  if (!mt4Mode() && test().actions.length > 0) {
+    const at = formatTimeWithWeekday(state.cursor, state.zone, rule);
+    if (
+      !confirm(
+        `銘柄を ${md.symbol.toUpperCase()} から ${symbol.toUpperCase()} に切り替えると、今の時刻（${at}）がこの検証の新しい出発点になり、それより前には戻れなくなります（取引の記録と残高は残ります）。\n\n切り替えますか？`,
+      )
+    ) {
+      symbolEl.value = md.symbol;
+      symbolMenu.refresh();
+      return;
+    }
+  }
   setPlaying(false);
   clearTradeHighlight();
   // 今の口座を出発点にして、新しい銘柄で続ける
@@ -3413,6 +3428,7 @@ function createPanes() {
       showMenu(e.clientX, e.clientY, [
         [`🔔 アラート ${lv}`, () => p.drawings.addHline(pt, true)],
         [`― 水平線 ${lv}`, () => p.drawings.addHline(pt, false)],
+        ['☑ トレード済みの印', () => p.drawings.addStamp(pt)],
       ]);
     };
     p.setRightOffset(state.rightOffset ?? 12);
