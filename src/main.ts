@@ -52,6 +52,8 @@ import { quickSummary, REPORT_CSS, reportBody, reportHtml } from './ui/report';
 import { loadAppSettings, saveAppSettings } from './appSettings';
 import { notebookFrom, setupQuickNotes, type NoteBook } from './ui/quickNotes';
 import { DEFAULT_RCI_ZONE, type RciZoneConfig } from './chart/rciZone';
+import { fireAlert } from './ui/alerts';
+import { rciAt } from './indicators/calc';
 import { simulateTp, summarizeTp, TP_MULTIPLES, type TpSimRow } from './trade/tpSim';
 import { DEFAULT_LOSS_REASONS, DEFAULT_WIN_REASONS, isWin, missingReasons, newReasonId, tallyByName, tallyReasons, type LossReason } from './trade/lossReasons';
 import { initSymbolMenu, orderSymbols, placeRightColumn } from './ui/symbolMenu';
@@ -610,6 +612,59 @@ function setPlaying(on: boolean) {
   }
 }
 
+// ---------------- アラート（ライブの間だけ。2026-11-26） ----------------
+// 水平線の 🔔: 直接届いた価格（Bid）が線をまたいだら（線ちょうども）鳴らし、その線のアラートを外す（MT4 と同じく 1 回だけ）。
+// RCI の 0 付近: 「RCI の 0 付近を背景で知らせる」の時間足の RCI が、今の価格で ±の内側に入ったら鳴らす（同じ足では 1 回だけ）。
+// どちらも、ライブを始めた直後の 1 回目の価格では鳴らさない（入っている・越えているのは前から）。
+let alertState: { sym: string; price: number | null; rciIn: boolean | null; rciBar: number } | null = null;
+
+function checkAlerts(price: number) {
+  if (!live || peek || !Number.isFinite(price)) return;
+  if (alertState?.sym !== md.symbol) alertState = { sym: md.symbol, price: null, rciIn: null, rciBar: NaN };
+  const st = alertState;
+  const sym = md.symbol.toUpperCase();
+  // 水平線
+  const prev = st.price;
+  st.price = price;
+  if (prev !== null && prev !== price) {
+    const list = state.drawings[md.symbol] ?? [];
+    const hit = list.filter((d) => d.kind === 'hline' && d.alert && (prev - d.points[0].p) * (price - d.points[0].p) <= 0);
+    if (hit.length) {
+      for (const d of hit) {
+        const lv = formatPrice(d.points[0].p, md.digits);
+        fireAlert(`${sym} ${lv}`, `価格が ${lv} に${price >= prev ? '上がって' : '下がって'}届きました（今 ${formatPrice(price, md.digits)}）`, `line:${d.id}`, toast);
+      }
+      // 鳴らしたアラートは線ごと消す（MT4 と同じ。⌘Z で戻せる）
+      const next = list.filter((d) => !hit.includes(d));
+      state.drawings[md.symbol] = next;
+      for (const p of panes) {
+        p.drawings.drawings = next;
+        p.drawings.refresh();
+      }
+      recordDrawingChange();
+      save();
+    }
+  }
+  // RCI の 0 付近
+  const z = rciZoneCfg;
+  if (!z.alert || !(z.tf in TIMEFRAMES) || !md.bid.length) return;
+  const tf = z.tf as Timeframe;
+  const { agg, times, closes } = getAgg(tf);
+  const k = lastLE(agg.starts, cursor);
+  if (k < z.period - 1) return;
+  // 今の価格が、まだ取り込んでいない次の足のものなら、今の足の終値を使う（足の変わり目の 1 分だけ）
+  const size = TIMEFRAMES[tf] * 60_000;
+  const close = liveBar && liveBar.t >= times[k] + size ? md.bid[cursor].c : price;
+  const v = rciAt(closes, k, z.period, close);
+  const inside = Math.abs(v) <= z.level;
+  const was = st.rciIn;
+  st.rciIn = inside;
+  if (was === false && inside && st.rciBar !== times[k]) {
+    st.rciBar = times[k];
+    fireAlert(`${sym} ${tf} の RCI${z.period}`, `±${z.level} の内側に入りました（今 ${v.toFixed(1)}）`, `rci:${md.symbol}:${times[k]}`, toast);
+  }
+}
+
 // ---------------- ライブ ----------------
 // 最新の足まで進み、MT4 から新しい 1 分足が届くたびに自動で進む。本物のチャートを見ているように使う。
 // T580 の EA が 1 秒ごとに直接送る価格（/api/mt4/tick）で、できかけの足も毎秒動かす（見せるだけで、約定は終わった足で決める）。
@@ -620,6 +675,7 @@ function setLive(on: boolean) {
   if (live === on) return;
   if (on) exitPeek();
   live = on;
+  alertState = null;
   const b = $('#live');
   b.setAttribute('aria-pressed', String(on));
   b.classList.toggle('live-on', on);
@@ -700,9 +756,11 @@ async function applyLive(r: LiveMsg) {
   if (!live || md !== mdNow) return;
   const last = md.bid[md.bid.length - 1];
   const bar = r.tick?.bar && last && r.tick.bar.t > last.t ? r.tick.bar : null;
+  if (r.tick && !bar && !liveBar) checkAlerts(r.tick.bid);
   if (!bar && !liveBar) return;
   liveBar = bar;
   liveBarSym = md.symbol;
+  if (r.tick) checkAlerts(r.tick.bid);
   if (liveFrame) return;
   liveFrame = requestAnimationFrame(() => {
     liveFrame = 0;
@@ -2424,7 +2482,7 @@ function openIndicatorDialog(cfg: IndicatorConfig = indicatorsFor(active.tf)) {
     <td><input id="macd-sigcolor" type="color" value="${mc.signalColor}" /></td>
     <td><select id="macd-width">${[1, 2, 3, 4].map((n) => `<option value="${n}" ${n === (mc.width ?? 1) ? 'selected' : ''}>${n}</option>`).join('')}</select></td></tr></table>`;
   const z2 = rciZoneCfg;
-  $('#ind-zone').innerHTML = `<h3>RCI の 0 付近を背景で知らせる（全部の時間足・全部のチャートで共通）<label class="inline"><input id="zone-on" type="checkbox" ${z2.enabled ? 'checked' : ''} /> 知らせる</label></h3>
+  $('#ind-zone').innerHTML = `<h3>RCI の 0 付近を背景で知らせる（全部の時間足・全部のチャートで共通）<label class="inline"><input id="zone-on" type="checkbox" ${z2.enabled ? 'checked' : ''} /> 知らせる</label><label class="inline" title="ライブの間に ±の内側に入ったら、音・画面・Mac の通知で知らせる（同じ足では 1 回だけ）"><input id="zone-alert" type="checkbox" ${z2.alert ? 'checked' : ''} /> 🔔 ライブで入ったら鳴らす</label></h3>
     <p class="hint">決めた時間足の RCI が ±の内側にある時間だけ、どの時間足のチャートでも背景をうっすら青く塗ります（M1 を見たまま、M15 の RCI25 が 0 付近まで戻ったのに気づけるように）。</p>
     <table class="ind-table"><tr><td>時間足</td><td>RCI の期間</td><td>± の幅</td></tr>
     <tr><td><select id="zone-tf">${(Object.keys(TIMEFRAMES) as Timeframe[]).map((tf) => `<option value="${tf}" ${tf === z2.tf ? 'selected' : ''}>${tf}</option>`).join('')}</select></td>
@@ -2447,6 +2505,7 @@ function applyRciZoneFromDialog() {
     tf: $<HTMLSelectElement>('#zone-tf').value,
     period: num('#zone-period', 2, 500, rciZoneCfg.period),
     level: num('#zone-level', 1, 100, rciZoneCfg.level),
+    alert: $<HTMLInputElement>('#zone-alert').checked,
   };
   if (JSON.stringify(next) === JSON.stringify(rciZoneCfg)) return;
   rciZoneCfg = next;
@@ -3332,6 +3391,14 @@ function createPanes() {
     p.drawings.widthOf = (k) => state.lineWidths?.[k] ?? defaultLineWidth(k);
     p.drawings.timeLabel = (t) => formatTimeWithWeekday(t, state.zone, rule);
     p.drawings.onEditLevels = () => openSettings('levels');
+    // 何も無い所の右クリック: その価格にアラート・水平線を置く（MT4 の「アラート」と同じ。2026-11-26）
+    p.drawings.onEmptyContext = (e, pt) => {
+      const lv = formatPrice(pt.p, md.digits);
+      showMenu(e.clientX, e.clientY, [
+        [`🔔 アラート ${lv}`, () => p.drawings.addHline(pt, true)],
+        [`― 水平線 ${lv}`, () => p.drawings.addHline(pt, false)],
+      ]);
+    };
     p.setRightOffset(state.rightOffset ?? 12);
     return p;
   });

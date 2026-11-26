@@ -39,6 +39,11 @@ export interface Drawing {
   style?: LineKind;
   /** この図形だけの色（右上の欄の登録した色から選ぶ）。無ければ描いた時間足の色 */
   custom?: string;
+  /**
+   * アラート（水平線だけ。右クリックの「アラート」か、右上の欄の 🔔）。ライブで価格（Bid）がこの線に届いたら鳴らし、線ごと消す（MT4 と同じく 1 回だけ）。
+   * アラートの線は、ふつうの水平線と見分けられ邪魔にならないよう、右端の短い赤い点線だけにする（MT4 と同じ。2026-11-26）
+   */
+  alert?: boolean;
   /** ロック（右上の欄の 🔒）。動かす・大きさを変える・消すができない（選んで太さ・色などを変えるのはできる）。全消去でも残す */
   locked?: boolean;
   /** テキストの中身（改行も入る）。点は文字の左上 */
@@ -234,6 +239,9 @@ export function fiboExpPrice(a: number, b: number, c: number, level: number): nu
 }
 
 const HIT = 6;
+/** アラートの線の長さ（右端から。px）と色 */
+const ALERT_LEN = 90;
+export const ALERT_COLOR = '#ffffff';
 const HANDLE = 4;
 /** マグネットが吸い付く距離（px） */
 const MAGNET = 15;
@@ -556,7 +564,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
           coordinate: () => y,
           text: () => pt.p.toFixed(this.digits),
           textColor: () => '#000',
-          backColor: () => this.colorOf(d),
+          backColor: () => (d.alert && d.kind === 'hline' ? ALERT_COLOR : this.colorOf(d)),
           visible: () => true,
           tickVisible: () => true,
         });
@@ -1216,7 +1224,8 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
       let hit = false;
       switch (d.kind) {
         case 'hline':
-          hit = Math.abs(px.y - a.y) <= HIT;
+          // アラートの線は右端の短い点線の上だけ
+          hit = Math.abs(px.y - a.y) <= HIT && (!d.alert || px.x >= w - ALERT_LEN - HIT);
           break;
         case 'vline':
           hit = Math.abs(px.x - a.x) <= HIT;
@@ -1540,11 +1549,29 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     const m = this.mouse(e);
     if (!m) return;
     const hit = this.hitDrawing(m.px);
-    if (!hit) return;
+    if (!hit) {
+      // 何も無い所の右クリック: その価格にアラート・水平線を置くメニュー（main.ts）。図形を描いている途中は出さない
+      if (this.tool || this.drag) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.onEmptyContext(e, { t: this.mapper.toTime(m.l), p: m.p });
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     this.selectedId = hit.id;
     this.deleteSelected();
+  }
+
+  /** 何も無い所を右クリックしたとき（その所の時刻と価格） */
+  onEmptyContext: (e: MouseEvent, pt: { t: number; p: number }) => void = () => {};
+
+  /** 水平線を置く（右クリックのメニューから）。alert ならアラートの線 */
+  addHline(pt: { t: number; p: number }, alert: boolean) {
+    const d: Drawing = { id: crypto.randomUUID(), kind: 'hline', points: [pt], color: COLORS.hline, tf: this.tf, created: Date.now(), ...(alert ? { alert: true } : {}) };
+    this.drawings.push(d);
+    this.onChange();
+    this.refresh();
   }
 
   // ---- 描画 ----
@@ -1604,6 +1631,13 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     };
     switch (d.kind) {
       case 'hline':
+        // アラートの線は、右端の短い白い点線だけ（MT4 と同じく、ふつうの水平線と見分けられ邪魔にならないように）
+        if (d.alert) {
+          ctx.strokeStyle = ALERT_COLOR;
+          ctx.setLineDash([2, 3]);
+          line(w - ALERT_LEN, a.y, w, a.y);
+          break;
+        }
         line(0, a.y, w, a.y);
         break;
       case 'vline':

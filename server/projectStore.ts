@@ -461,6 +461,30 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
     return send(res, 200, { dir: folder });
   }
 
+  // ---- アラートの Mac の通知（/api/notify。2026-11-26）----
+  //   POST / { title, body, key }  Mac の通知センターに出す。同じ key は 60 秒に 1 回だけ（2 つの画面で開いていても 1 回）
+  const notified = new Map<string, number>();
+  async function handleNotify(req: IncomingMessage, res: ServerResponse) {
+    if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+    const b = (await body(req)) as { title?: string; body?: string; key?: string };
+    const now = Date.now();
+    for (const [k, at] of notified) if (now - at > 60_000) notified.delete(k);
+    if (b.key && notified.has(b.key)) return send(res, 200, { ok: true, skipped: true });
+    if (b.key) notified.set(b.key, now);
+    // 文字は引数で渡す（AppleScript の文の中に埋め込まない）
+    execFile('osascript', [
+      '-e',
+      'on run argv',
+      '-e',
+      'display notification (item 2 of argv) with title (item 1 of argv) sound name "Glass"',
+      '-e',
+      'end run',
+      String(b.title ?? 'FX Practice').slice(0, 200),
+      String(b.body ?? '').slice(0, 500),
+    ]);
+    return send(res, 200, { ok: true });
+  }
+
   async function handleSettings(req: IncomingMessage, res: ServerResponse) {
     if (req.method === 'GET') {
       const cur = (await readJson<Record<string, unknown>>(appSettings)) ?? {};
@@ -487,6 +511,9 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
     configureServer(server) {
       server.middlewares.use('/api/screenshots', (req, res) => {
         handleScreenshots(req, res).catch((e) => send(res, 500, { error: e instanceof Error ? e.message : String(e) }));
+      });
+      server.middlewares.use('/api/notify', (req, res) => {
+        handleNotify(req, res).catch((e) => send(res, 500, { error: e instanceof Error ? e.message : String(e) }));
       });
       server.middlewares.use('/api/settings', (req, res) => {
         handleSettings(req, res).catch((e) => send(res, 500, { error: e instanceof Error ? e.message : String(e) }));

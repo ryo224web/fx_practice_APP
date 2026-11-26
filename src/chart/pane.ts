@@ -287,6 +287,7 @@ export class ChartPane {
       if (b.dataset.s) d.style = b.dataset.s as LineKind;
       if (b.dataset.ray) d.ray = !rayOn(d);
       if (b.dataset.lock) d.locked = !d.locked;
+      if (b.dataset.alert) d.alert = !d.alert;
       if (b.dataset.callout) {
         // ふつうの文字に戻すときは、今の見た目の位置に置く（吹き出しの本体はしっぽの先からの距離で持っているため）
         if (d.callout) this.drawings.syncTextPoint(d);
@@ -870,7 +871,7 @@ export class ChartPane {
     const w = d ? (d.kind === 'text' ? TEXT_SIZES.indexOf(this.drawings.textSizeOf(d)) + 1 : this.drawings.lineWidthOf(d)) : 0;
     const st = d?.style ?? 'solid';
     const palette = this.host.palette();
-    const key = d ? `${d.id}:${w}:${st}:${rayOn(d)}:${d.custom ?? ''}:${!!d.locked}:${!!d.callout}:${palette.join()}` : '';
+    const key = d ? `${d.id}:${w}:${st}:${rayOn(d)}:${d.custom ?? ''}:${!!d.locked}:${!!d.callout}:${!!d.alert}:${palette.join()}` : '';
     if (key === this.styleBarKey) return;
     this.styleBarKey = key;
     this.styleBar.hidden = !d;
@@ -902,6 +903,9 @@ export class ChartPane {
         .join('') +
       `<button type="button" data-c="" class="swatch ${d.custom ? '' : 'on'}" title="描いた時間足の色に戻す">↺</button>` +
       '<button type="button" data-add="1" title="色を選んで一覧に足す（この図形にも当てる）">＋</button><input type="color" hidden />' +
+      (d.kind === 'hline'
+        ? `<i></i><button type="button" data-alert="1" class="${d.alert ? 'on' : ''}" title="${d.alert ? 'アラート（ライブで価格がこの線に届いたら鳴らして、線ごと消す）。押すとふつうの水平線に戻す' : 'アラートにする（右端の白い点線になる。ライブで価格が届いたら、音・画面・Mac の通知で知らせて線ごと消す）'}">🔔</button>`
+        : '') +
       `<i></i><button type="button" data-lock="1" class="${d.locked ? 'on' : ''}" title="${d.locked ? 'ロック中（動かせない・消せない）。押すと外す' : 'ロックする（動かせない・消せないようにする）'}">${d.locked ? '🔒' : '🔓'}</button>`;
     this.placeStyleBar(this.host.styleBarPos());
   }

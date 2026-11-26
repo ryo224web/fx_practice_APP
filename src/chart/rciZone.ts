@@ -15,6 +15,8 @@ export interface RciZoneConfig {
   period: number;
   /** ±この値の内側に入ったら塗る */
   level: number;
+  /** ライブで内側に入ったら鳴らす（音・画面・Mac の通知。2026-11-26） */
+  alert?: boolean;
 }
 
 export const DEFAULT_RCI_ZONE: RciZoneConfig = { enabled: true, tf: 'M15', period: 25, level: 20 };
