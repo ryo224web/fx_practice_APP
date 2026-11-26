@@ -616,23 +616,39 @@ function setPlaying(on: boolean) {
 // 水平線の 🔔: 直接届いた価格（Bid）が線をまたいだら（線ちょうども）鳴らし、その線のアラートを外す（MT4 と同じく 1 回だけ）。
 // RCI の 0 付近: 「RCI の 0 付近を背景で知らせる」の時間足の RCI が、今の価格で ±の内側に入ったら鳴らす（同じ足では 1 回だけ）。
 // どちらも、ライブを始めた直後の 1 回目の価格では鳴らさない（入っている・越えているのは前から）。
-let alertState: { sym: string; price: number | null; rciIn: boolean | null; rciBar: number } | null = null;
+let alertState: { sym: string; price: number | null; bar: Bar | null; rciIn: boolean | null; rciBar: number } | null = null;
 
-function checkAlerts(price: number) {
+function checkAlerts(price: number, bar: Bar | null) {
   if (!live || peek || !Number.isFinite(price)) return;
-  if (alertState?.sym !== md.symbol) alertState = { sym: md.symbol, price: null, rciIn: null, rciBar: NaN };
+  if (alertState?.sym !== md.symbol) alertState = { sym: md.symbol, price: null, bar: null, rciIn: null, rciBar: NaN };
   const st = alertState;
   const sym = md.symbol.toUpperCase();
-  // 水平線
+  // 水平線: 前に届いた価格から今の価格までに通った幅に線があれば鳴らす。
+  // 価格は T580 から数秒〜20 秒おきにしか届かないことがあるので、その間に線に触って戻った分も、
+  // できかけの 1 分足の高値・安値が伸びた所で拾う（2026-11-26。前の価格と今の価格だけでは、間のひげで触ったのを逃した）
   const prev = st.price;
+  const pb = st.bar;
   st.price = price;
-  if (prev !== null && prev !== price) {
+  st.bar = bar;
+  let lo = prev === null ? price : Math.min(prev, price);
+  let hi = prev === null ? price : Math.max(prev, price);
+  if (prev !== null && bar) {
+    if (pb && pb.t === bar.t) {
+      if (bar.h > pb.h) hi = Math.max(hi, bar.h);
+      if (bar.l < pb.l) lo = Math.min(lo, bar.l);
+    } else if (pb && bar.t > pb.t) {
+      // 新しい 1 分足: その足の高値・安値は、前に届いた価格より後のもの
+      hi = Math.max(hi, bar.h);
+      lo = Math.min(lo, bar.l);
+    }
+  }
+  if (prev !== null && lo < hi) {
     const list = state.drawings[md.symbol] ?? [];
-    const hit = list.filter((d) => d.kind === 'hline' && d.alert && (prev - d.points[0].p) * (price - d.points[0].p) <= 0);
+    const hit = list.filter((d) => d.kind === 'hline' && d.alert && d.points[0].p >= lo && d.points[0].p <= hi);
     if (hit.length) {
       for (const d of hit) {
         const lv = formatPrice(d.points[0].p, md.digits);
-        fireAlert(`${sym} ${lv}`, `価格が ${lv} に${price >= prev ? '上がって' : '下がって'}届きました（今 ${formatPrice(price, md.digits)}）`, `line:${d.id}`, toast);
+        fireAlert(`${sym} ${lv}`, `価格が ${lv} に${d.points[0].p >= prev ? '上がって' : '下がって'}届きました（今 ${formatPrice(price, md.digits)}）`, `line:${d.id}`, toast);
       }
       // 鳴らしたアラートは線ごと消す（MT4 と同じ。⌘Z で戻せる）
       const next = list.filter((d) => !hit.includes(d));
@@ -756,11 +772,11 @@ async function applyLive(r: LiveMsg) {
   if (!live || md !== mdNow) return;
   const last = md.bid[md.bid.length - 1];
   const bar = r.tick?.bar && last && r.tick.bar.t > last.t ? r.tick.bar : null;
-  if (r.tick && !bar && !liveBar) checkAlerts(r.tick.bid);
+  if (r.tick && !bar && !liveBar) checkAlerts(r.tick.bid, r.tick.bar);
   if (!bar && !liveBar) return;
   liveBar = bar;
   liveBarSym = md.symbol;
-  if (r.tick) checkAlerts(r.tick.bid);
+  if (r.tick) checkAlerts(r.tick.bid, r.tick.bar);
   if (liveFrame) return;
   liveFrame = requestAnimationFrame(() => {
     liveFrame = 0;
