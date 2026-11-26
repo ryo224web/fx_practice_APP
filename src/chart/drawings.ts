@@ -344,6 +344,8 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     orig: { l: number; p: number }[];
     moved: boolean;
     creating: boolean;
+    /** ⌘ を押しながらつかんで作ったコピーのとき、元の図形の ID（動かさずに離したらコピーをやめる） */
+    copyOf?: string;
     /** テキストのつまみをつかんだときの枠（px）と文字の大きさ */
     text?: { x: number; y: number; w: number; h: number; size: number; boxW?: number; boxH?: number; mx: number; my: number };
   } | null = null;
@@ -1417,7 +1419,18 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     const hit = this.hitDrawing(m.px);
     const before = this.selectedId;
     this.selectedId = hit?.id ?? null;
-    const d = hit ? this.drawings.find((x) => x.id === hit.id)! : null;
+    let d = hit ? this.drawings.find((x) => x.id === hit.id)! : null;
+    // ⌘ を押しながら図形をつかんでドラッグすると、コピーを作って動かす（MT4 の Ctrl + ドラッグと同じ。2026-11-26）。
+    // つまみではなく図形そのものをつかんだときだけ。ロックした図形もコピーはできる（コピーはロックしない）
+    let copyOf: string | undefined;
+    if (hit && d && hit.handle === -1 && e.metaKey) {
+      const c: Drawing = { ...structuredClone(d), id: crypto.randomUUID(), created: Date.now() };
+      delete c.locked;
+      copyOf = d.id;
+      this.drawings.push(c);
+      this.selectedId = c.id;
+      d = c;
+    }
     // ロックした図形は選ぶだけ（動かさない。ドラッグはチャートを動かす）
     if (hit && d && !d.locked) {
       const at = d.kind === 'text' ? this.textAnchor(d) : null;
@@ -1429,6 +1442,7 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         orig: d.points.map((pt) => ({ l: this.mapper.toLogical(pt.t), p: pt.p })),
         moved: false,
         creating: false,
+        copyOf,
         ...(at && box ? { text: { x: at.x, y: at.y, w: box.w, h: box.h, size: this.textSizeOf(d), boxW: d.boxW, boxH: d.boxH, mx: m.px.x, my: m.px.y } } : {}),
       };
       e.stopPropagation();
@@ -1513,6 +1527,15 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
         return;
       }
       this.finishCreate();
+      return;
+    }
+    if (drag.copyOf && !drag.moved) {
+      // ⌘ を押してクリックしただけ（動かしていない）なら、重なったコピーは作らない
+      // 図形の配列はほかのチャートと同じものなので、その場で外す
+      const k = this.drawings.findIndex((x) => x.id === drag.id);
+      if (k >= 0) this.drawings.splice(k, 1);
+      this.selectedId = drag.copyOf;
+      this.refresh();
       return;
     }
     if (drag.moved) this.onChange();

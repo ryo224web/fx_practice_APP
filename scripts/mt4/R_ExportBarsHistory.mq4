@@ -50,7 +50,7 @@
 //| set it to "All History" once (right click -> All History).        |
 //+------------------------------------------------------------------+
 #property strict
-#property version     "1.14"
+#property version     "1.15"
 #property copyright   "R（FX Practice 用の自作ツール）"
 #property description "FX Practice 用に、チャート（1 分足）を書き出す EA です。注文は一切出しません。"
 #property description "1 分足を MQL4\\Files\\fxp_bars\\銘柄\\ に書きます（時刻はサーバー時刻）。月ごとのファイル（銘柄_年.月.csv）は"
@@ -64,10 +64,11 @@ input string Symbols       = "USDJPY,EURUSD,GBPUSD,AUDUSD,USDCHF,USDCAD,NZDUSD,E
 input string Suffix        = "";         // Symbol suffix (empty for TitanFX)
 input int    InitialMonths = 12;         // Also write this many past months (if missing)
 input int    CheckEveryMin = 1;          // Check for a new hour every N minutes
-input string LiveUrl       = "http://192.168.40.227/fxp/tick"; // Send the prices to FX Practice on the Mac (empty = off)
+input string LiveUrl       = "http://192.168.200.1/fxp/tick"; // Send the prices to FX Practice on the Mac, over the cable (empty = off)
 input int    SendEveryMs   = 250;        // Send the prices every N milliseconds (only when they changed)
 input int    CountDays     = 7;          // Compare the M1 bars of the last N days with the Mac and send the hours it is missing (0 = off)
 input int    LiveMinutes   = 120;        // While sending fails, write the last N finished M1 bars to <symbol>_live.csv every minute (0 = off)
+input int    StatsMinutes  = 30;         // Print the timing of the last minute every minute for N minutes after starting (to find why live is late)
 input string Folder        = "fxp_bars"; // Output folder (in MQL4\Files)
 input string HistoryFile   = "fx_practice_history.csv"; // Account history file (in MQL4\Files). Empty = do not write
 
@@ -79,9 +80,16 @@ datetime monthsDay = 0;     // the day the month files were last written (server
 bool     sendOk = false;    // the last send to LiveUrl worked
 string   sentBody = "";     // the last body sent (nothing is sent while the prices do not change)
 uint     startedAt = 0;     // GetTickCount when the EA started
-int      sendCount = 0;     // sends and their time in this minute (printed for the first 5 minutes)
+int      sendCount = 0;     // sends and their time in this minute (printed for StatsMinutes after starting)
 uint     sendMs = 0;
 uint     sendMaxMs = 0;
+int      timerCalls = 0;    // OnTimer calls in this minute (with SendEveryMs 250, about 240 when MT4 is not busy)
+uint     timerAt = 0;       // GetTickCount of the last OnTimer
+uint     timerMaxGap = 0;   // longest time between two OnTimer calls in this minute
+int      sameCount = 0;     // OnTimer calls that sent nothing because no price had changed
+uint     sendPartMax = 0;   // slowest SendLive in this minute (building the text + WebRequest)
+uint     histPartMax = 0;   // slowest trade history check in this minute
+uint     exportMs = 0;      // time of the last minute's file writing (month / day / _live files)
 uint     catchUpUntil = 0;  // for 10 minutes after sending starts (again), today's bars are also sent once a minute
 uint     catchUpAt = 0;     // GetTickCount of the last catch-up send
 uint     retryAt = 0;       // after a failed send, try again at this GetTickCount
@@ -120,6 +128,13 @@ int OnInit()
    sendCount = 0;
    sendMs = 0;
    sendMaxMs = 0;
+   timerCalls = 0;
+   timerAt = 0;
+   timerMaxGap = 0;
+   sameCount = 0;
+   sendPartMax = 0;
+   histPartMax = 0;
+   exportMs = 0;
    if(LiveUrl != "") EventSetMillisecondTimer(MathMax(100, SendEveryMs));
    else EventSetTimer(60);
    ExportAll();
@@ -136,18 +151,37 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
+   uint t0 = GetTickCount();
+   if(timerAt != 0 && t0 - timerAt > timerMaxGap) timerMaxGap = t0 - timerAt;
+   timerAt = t0;
+   timerCalls++;
    SendLive();
+   uint t1 = GetTickCount();
    // Rewrite the history as soon as a trade opens or closes or its S/L / T/P moves (cheap: only the open positions are read)
    if(HistorySig() != historySig) ExportHistory();
+   uint t2 = GetTickCount();
+   if(t1 - t0 > sendPartMax) sendPartMax = t1 - t0;
+   if(t2 - t1 > histPartMax) histPartMax = t2 - t1;
    if(GetTickCount() - minuteAt < (uint)MathMax(1, CheckEveryMin) * 60000 - 2000) return;
    minuteAt = GetTickCount();
-   if(sendCount > 0 && GetTickCount() - startedAt < 6 * 60000)
-      Print("R_ExportBarsHistory: sent ", sendCount, " times in the last minute (", sendMs / sendCount, " ms on average, ", sendMaxMs, " ms at most)");
+   // Why is live late? timer: few calls / a long gap = MT4 was busy. changed: few = MT4 itself got few new prices.
+   // slowest: which part of the EA took the time (the file writing is the previous minute's)
+   if(GetTickCount() - startedAt < (uint)MathMax(0, StatsMinutes) * 60000)
+      Print("R_ExportBarsHistory: last minute: timer ", timerCalls, " times (longest gap ", timerMaxGap, " ms), prices changed ",
+            timerCalls - sameCount, " / unchanged ", sameCount, ", sent ", sendCount, " (", (uint)(sendCount > 0 ? sendMs / (uint)sendCount : 0), " ms on average, ",
+            sendMaxMs, " ms at most); slowest: send ", sendPartMax, " ms, history check ", histPartMax, " ms, file writing ", exportMs, " ms");
    sendCount = 0;
    sendMs = 0;
    sendMaxMs = 0;
+   timerCalls = 0;
+   timerMaxGap = 0;
+   sameCount = 0;
+   sendPartMax = 0;
+   histPartMax = 0;
+   uint t3 = GetTickCount();
    if(Cutoff() != exportedUntil) ExportAll();
    ExportLive();
+   exportMs = GetTickCount() - t3;   // also makes the gap to the next OnTimer longer (the prices wait for it)
 }
 
 // ---------------- prices every SendEveryMs, straight to the Mac (not through Dropbox) ----------------
@@ -206,7 +240,11 @@ void SendLive()
    for(int k = 0; k < ArraySize(fillSym); k++) AddFill(fillSym[k], fillHour[k], data, pos);
    ArrayResize(fillSym, 0);
    ArrayResize(fillHour, 0);
-   if(pos == 0 || (body == sentBody && sendOk && !catchUp && !counting && !filling)) return;
+   if(pos == 0 || (body == sentBody && sendOk && !catchUp && !counting && !filling))
+   {
+      sameCount++;
+      return;
+   }
    ArrayResize(data, pos);
    char result[];
    string headers;
