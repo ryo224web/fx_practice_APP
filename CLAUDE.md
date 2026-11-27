@@ -174,6 +174,30 @@ R_ExportHistory.mq4 の使い方（**Windows 機（MSI か T580）の MT4**）:
 - 「FX Practice を終了」は、ブラウザで使っていたときなどに裏で動いているサーバーを止める（`stop.sh`）
 - 保存データ（localStorage）はアドレスごとに分かれるので、ポートは必ず 5173（`npm run dev` も 5173 に固定）
 
+## 経済指標と Kindle の画面（2026-11-26）
+
+- 机に横向きに置く古い Kindle に、経済指標・天気を出すため
+- データの置き場は FX Practice とは別の Dropbox の `Claude/kindle_dashboard`（`KINDLE_DIR`。環境変数 `FXP_KINDLE_DIR`）: `calendar/`（指標）・`weather.json`・`battery.csv`（電池の記録）・`charging.svg`（充電中のマーク）・`config.json`（天気の場所）。プログラムは FX Practice のサーバーに組み込んだまま（`server/kindle*.ts`・`econCalendar.ts`・`weather.ts`・`scripts/kindle/`）。2026-11-27 に、ユーザーが作ったこのフォルダへ移した
+- Kindle は **Paperwhite 2（2013・日本向け。シリアルの頭 905A）・ファームウェア 5.12.2.2**（PW2 の最後の版なので、もう更新は来ない）。2026-11-27 に WinterBreak2 で脱獄した（kindlemodding.org の判定画面が WinterBreak2 を勧めた。`wb2.zip` の `winterbreak2` フォルダを Kindle の一番上に置き、体験版ブラウザで `https://penguins184.xyz/wb2` を開いて Jailbreak を押す。中で kindlemodding.org の `jb.sh` が動く）。成功すると `documents/JAILBROKEN.txt` ができ、`/mnt/us/libkh/bin/fbink` が入る。`documents` に置いた `.sh` は本の一覧に出て、タップで動く（スクリプトレット）。KUAL はもう使わない（サイトによると古くて動かない）
+- 指標は ForexFactory の週間 JSON（`https://nfs.faireconomy.media/ff_calendar_thisweek.json`）。鍵は要らない。今週（日〜土）の分だけで来週分は無く（`ff_calendar_nextweek.json` は 404）、結果の値も無い。公式の API ではなく、規約は転載・再配布を禁じているので自分で見るだけ。続けて取ると 429 を返すので、1 時間に 1 回だけ取り（断られたら 15 分後）、週ごとに Dropbox の `Claude/kindle_dashboard` の `calendar/<日曜の日付>.json` に残す（`server/econCalendar.ts`）。ほかの候補の Finance Calendar は鍵が要り、無料は申請して 1 日 10 回まで
+- 天気は Open-Meteo（鍵は要らない。30 分に 1 回。`server/weather.ts`）。場所はデータの置き場の `config.json` の `latlon`（"緯度,経度"。環境変数 `FXP_WEATHER_LATLON` でも）。**このリポジトリは GitHub で公開しているので、住んでいる場所はリポジトリに書かない**（2026-11-27）。Dropbox の `Claude/kindle_dashboard` の `weather.json` に残す。マークは白黒の SVG を img で出す（雪・みぞれもある）
+- `GET /kindle`（`server/kindle.ts`）: サーバーで作る横向き 1024×758 の白黒の画面。古いブラウザでも出るよう JavaScript なし・table で並べる・5 分ごとに読み直す。
+  - 左上に今の天気（今日の最高・最低・降水確率、12 時間以内に雨・雪になるなら「16時から雪」。雪が降る・積もっているときだけ「朝 9 時までに 8cm ・ 積雪 32cm」を太字で。`snowSummary`。Open-Meteo の `snowfall`・`snow_depth`）
+  - 右上に次の ★★★ までのカウントダウン（「2:30」。1 日以上なら「1日 5時間」）。触らない時間（★★★ の前後 30 分。重なりはまとめる）に入ると黒地で「発表まで 10 分」、発表後は「発表から 8 分 / あと 22 分」。「触ってよい」は出さない（ユーザーが要らないと言った）
+  - 中段の左に今から 12 時間の天気（気温・降水確率）。下にあった触らない時間の黒い帯は、要らないと言われて消した（市場の時間のバーなど、代わりのプログレスバーの案も要らないとのこと）。右に今週の日曜〜土曜の天気（固定。過ぎた日は薄く、今日は枠。最高・最低・降水確率。過ぎた日を出すため Open-Meteo の `past_days=6` も取る）。週間の天気は指標の欄には出さない（ユーザーの希望）
+  - 下に月〜金の指標（★★★・★★。名前は短い日本語 `NAMES`）。終わった日は細くして ★★★ だけ、今日は太い枠、祝日も出す。土曜の朝 8 時を過ぎたら来週の月〜金（`weekDays`）
+  - `?cur=USD,JPY&before=30&after=30&impact=High,Medium&w=&h=&at=`（`at` はその時刻の画面を見る確かめる用。天気は今のもの）。`GET /api/calendar` は JSON
+- Kindle に送る画像（`server/kindleImage.ts`）: `renderKindle` の HTML を Chrome（ヘッドレス。ふだんの Chrome と別の置き場）で 1024×758 に撮り、`sips` で 90°・270° 回して 758×1024 の 8 bit グレーにする（1 枚 5 秒ほど。60 秒以内に作ったものはそのまま返す）。作業場所は `os.tmpdir()/fxp-kindle`（初めは `public/data/kindle` に HTML を書いていて、作るたびに vite が開いている FP の画面を読み直した）
+- Kindle から取りに来る入口: 家のネットワークの **8090 番の `GET /kindle.png` だけ**（`?rot=270` で逆向き。環境変数 `FXP_KINDLE_PORT`、0 で止める）。ほかのパスは 404。開発サーバーの中でも `/kindle.png` で見られる。ほかの機器に開いているのは、これと 80 番の `POST /fxp/tick` だけ
+- Kindle 側のスクリプト `scripts/kindle/fxp_dash.sh`（本の一覧の「FX ダッシュボード」）: タップすると裏で動き、Kindle の画面（`lab126_gui`）を止め、スリープ画面を止めて（`preventScreenSaver`）、5 分の区切り（:00・:05…）ごとに起きる → Wi-Fi をつなぐ（30 秒まで待つ）→ 電池の残量を付けて `http://192.168.40.227:8090/kindle.png?rot=270&batt=44&chg=0`（Mac mini の Wi-Fi のアドレス）を取る → fbink で出す（ふだんは点滅なし、毎時 0〜4 分の回と最初だけ点滅ありで残像を消す。`-w` で書き換えが終わるまで待ってから眠る。すぐ眠ると途中で止まって薄くなった）→ Wi-Fi を切って RTC（`/sys/class/rtc/rtc1/wakealarm`）で次の区切りまで眠る（`echo mem > /sys/power/state`）。電池を持たせるため（ほかの人の作例で 2 日 → 約 1 か月）。2026-11-27 の結果:
+  - Wi-Fi をつないだまま眠ると 15〜19 秒で起こされた → 眠る前に Wi-Fi を切る
+  - 充電中は眠れない（`echo mem` が失敗する）→ その回は起きたまま待つ（そのときは画面のタップでも止まる）
+  - 止めるのは電源ボタン（入力 `max77696-onkey`。タッチは `cyttsp4_mt`）。**時計で予定どおり起きたときにも電源ボタンの入力が 1 回届く**ので、それは無視し、予定より早く起きて入力があったとき（眠っている間に押した）と、起きている間に押されたときだけ止める
+  - 止めるときは `start lab126_gui` でいつもの画面に戻す（読み込みのあと戻る。2026-11-27 に電源ボタンで止まるのを確かめた。前の版ではアプリケーションエラーが出たことがある。OK で戻る）。戻らなければ電源ボタンを 20 秒で再起動
+  - 記録は Kindle の一番上の `fxp_dash.log`（Kindle の時計は UTC。300 KB で半分に）。Mac 側は Dropbox の `Claude/kindle_dashboard` の `battery.csv`（日時,残量,充電中,充電を止めている）に、取りに来るたびに残す。画面の右上にも「電池 44%」（20% 以下は太字で「充電して」）
+  - ケーブルを挿したままでも、電池が 80%（`CHG_STOP`）以上で充電を止め、40%（`CHG_START`）以下で再開する（満充電のまま置くと電池が傷むため）。PW2 の `/sys/devices/system/wario_charger/wario_charger0/allow_charging` を 0 にすると、挿したままでも充電が止まり電池で動く（2026-11-27 に確かめた: 0 で +226mA → −77mA、1 に戻すと +463mA。再起動すると 1 に戻る）。ダッシュボードを止めるときは 1 に戻す。止めている間は Mac に `hold=1` を伝える（画面には何も足さない。「充電お休み中」と出していたが要らないと言われた）。充電中は電池の残量の横にマークを出す（Dropbox の `Claude/kindle_dashboard` の `charging.svg` か `.png`。ユーザーが用意したキャラクターのドット絵を、マスごとの色を読んで灰色の濃淡の SVG にしたもの。キャラクターの絵なので git には入れない。`chargingIcon`。無ければ「充電中」と字で出す）。調べたときのスクリプトは `scripts/kindle/fxp_probe.sh`（見るだけ）・`fxp_chargetest.sh`（15 秒だけ止めて戻す）。電池の記録の列は 日時,残量,充電中,充電を止めている
+  - 向きの初期は 270（Kindle の下側＝USB の口を左にして横に置く）。直したら **Mac mini** で Kindle を USB でつなぎ `npm run deploy-kindle`（`documents` に写して取り出す）。動いている間は USB のドライブにならないので、先に止める
+
 ## 使っているマシン
 
 Mac mini M4（メイン・開発と検証）/ MSI（Windows・MT4）/ T580（Windows・MT4）/ VMware ARM Windows（Mac mini 上）。
