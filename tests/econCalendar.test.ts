@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { blockedWindows, jaTitle, parseFf, weekKey } from '../server/econCalendar.ts';
 import { countdown, renderKindle, weekDays } from '../server/kindle.ts';
-import { iconImg, kindOf, parseOpenMeteo, snowSummary, type Weather } from '../server/weather.ts';
+import { iconImg, kindOf, mergeJma, parseOpenMeteo, snowSummary, type Weather } from '../server/weather.ts';
 
 const rows = [
   { title: 'Prelim GDP q/q', country: 'USD', date: '2026-11-25T08:30:00-05:00', impact: 'High', forecast: '3.5%', previous: '3.4%' },
@@ -66,6 +66,15 @@ describe('天気', () => {
     expect(kindOf(61)).toBe('rain');
     expect(kindOf(2)).toBe('partly');
     expect(iconImg(71, true, 30)).toContain('alt="雪"');
+  });
+  it('天気と気温は気象庁、降水確率と積雪は既定の計算', () => {
+    const h = (code: number, temp: number, pop: number | null, depth: number | null) => ({ at: 1000, temp, pop, code, isDay: false, snow: 0, depth });
+    const base: Weather = { fetchedAt: 1, current: { temp: 1, code: 45, isDay: false }, hourly: [h(45, 1, 30, 12)], daily: [{ at: 0, code: 45, max: 5, min: 0, pop: 40 }] };
+    const jma: Weather = { fetchedAt: 1, current: { temp: 2, code: 2, isDay: false }, hourly: [h(2, 2, null, null)], daily: [{ at: 0, code: 2, max: 6, min: -1, pop: null }] };
+    const m = mergeJma(base, jma);
+    expect(m.current).toEqual({ temp: 2, code: 2, isDay: false });
+    expect(m.hourly[0]).toMatchObject({ code: 2, temp: 2, pop: 30, depth: 12 });
+    expect(m.daily[0]).toEqual({ at: 0, code: 2, max: 6, min: -1, pop: 40 });
   });
   it('翌朝 9 時までの降雪と今の積雪', () => {
     const hour = (s: string, snow: number, depth: number | null) => ({ at: jst(s), temp: 0, pop: 0, code: 71, isDay: false, snow, depth });

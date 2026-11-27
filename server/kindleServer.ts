@@ -69,6 +69,8 @@ export async function startDashboard(dataDir = KINDLE_DIR, port = Number(process
     battery: img.battery,
     chargingIcon: batteryIcon('charging', dataDir),
     normalIcon: batteryIcon('normal', dataDir),
+    // 大きい数字と天気のマークは SUUNTO の腕時計のようなドット（2026-11-27）
+    pixel: true,
   });
   // 作業場所はプロジェクトの外（OS の一時フォルダ）
   const img = new KindleImage(path.join(os.tmpdir(), 'fxp-kindle'), () => renderKindle(cal.events, options()));

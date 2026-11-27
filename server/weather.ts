@@ -1,5 +1,6 @@
 // 天気（2026-11-26）。Kindle の画面に今の天気・1 時間ごと・週間を出すため。
 // 取ってくる先: Open-Meteo（https://open-meteo.com/。鍵は要らない）。30 分に 1 回。過去 6 日〜先 7 日。
+// 天気のマーク・気温は気象庁の計算（models=jma_seamless）、降水確率と積雪の深さは既定の計算（mergeJma。2026-11-27）。
 // 場所（"緯度,経度"）はデータの置き場の config.json の latlon（環境変数 FXP_WEATHER_LATLON でも）。住んでいる場所なので、公開しているリポジトリには書かない。
 // 最後に取ったものは Dropbox の Claude/kindle_dashboard/weather.json に残す（開発サーバーを起動し直しても出せるように。KINDLE_DIR）。
 
@@ -43,7 +44,8 @@ interface OmResponse {
   daily?: { time: number[]; weather_code: number[]; temperature_2m_max: number[]; temperature_2m_min: number[]; precipitation_probability_max: (number | null)[] };
 }
 
-export function omUrl(latlon: string) {
+/** model: 'jma_seamless' で気象庁の計算（MSM・GSM）を使う。無ければ Open-Meteo の既定（いくつかの計算を組み合わせたもの） */
+export function omUrl(latlon: string, model?: string) {
   const [lat, lon] = latlon.split(',').map((s) => s.trim());
   const q = new URLSearchParams({
     latitude: lat,
@@ -57,6 +59,7 @@ export function omUrl(latlon: string) {
     past_days: '6',
     forecast_days: '8',
   });
+  if (model) q.set('models', model);
   return `https://api.open-meteo.com/v1/forecast?${q}`;
 }
 
@@ -181,14 +184,46 @@ export class WeatherSource {
 
   async fetch(now = Date.now()) {
     if (!this.latlon) throw new Error('天気の場所が決まっていません（config.json の latlon）');
-    const res = await fetch(omUrl(this.latlon));
-    if (!res.ok) throw new Error(`Open-Meteo ${res.status}`);
-    const w = parseOpenMeteo((await res.json()) as OmResponse, now);
-    if (!w) throw new Error('Open-Meteo: 形が違う');
+    const get = async (model?: string) => {
+      const res = await fetch(omUrl(this.latlon, model));
+      if (!res.ok) throw new Error(`Open-Meteo${model ? ` (${model})` : ''} ${res.status}`);
+      const w = parseOpenMeteo((await res.json()) as OmResponse, now);
+      if (!w) throw new Error('Open-Meteo: 形が違う');
+      return w;
+    };
+    const base = await get();
+    // 天気と気温は気象庁の計算で（既定の計算は、ほかでは出ていない霧を出した。2026-11-27）。取れなければ既定のまま
+    const jma = await get('jma_seamless').catch((e) => {
+      console.warn('[weather] 気象庁モデルを取れませんでした:', e instanceof Error ? e.message : e);
+      return null;
+    });
+    const w = jma ? mergeJma(base, jma) : base;
     this.data = w;
     await mkdir(path.dirname(this.file), { recursive: true });
     await writeFile(this.file, JSON.stringify(w));
   }
+}
+
+/**
+ * 天気のマーク・気温・雪の降る量は気象庁の計算（jma）、降水確率と積雪の深さは既定（base）を使う（気象庁の計算には無いため）。
+ * 気象庁の計算に値が無い時刻は既定のまま（2026-11-27）
+ */
+export function mergeJma(base: Weather, jma: Weather): Weather {
+  const jh = new Map(jma.hourly.map((h) => [h.at, h]));
+  const jd = new Map(jma.daily.map((d) => [d.at, d]));
+  const ok = (v: number | null | undefined): v is number => v != null && Number.isFinite(v);
+  return {
+    fetchedAt: base.fetchedAt,
+    current: ok(jma.current.temp) && ok(jma.current.code) ? jma.current : base.current,
+    hourly: base.hourly.map((h) => {
+      const j = jh.get(h.at);
+      return j && ok(j.code) && ok(j.temp) ? { ...h, code: j.code, temp: j.temp, isDay: j.isDay, snow: ok(j.snow) ? j.snow : h.snow } : h;
+    }),
+    daily: base.daily.map((d) => {
+      const j = jd.get(d.at);
+      return j && ok(j.code) && ok(j.max) && ok(j.min) ? { ...d, code: j.code, max: j.max, min: j.min } : d;
+    }),
+  };
 }
 
 /** 翌朝 9 時（日本時間）までに降る雪（cm）と今の積雪（cm）。雪が無ければ null */

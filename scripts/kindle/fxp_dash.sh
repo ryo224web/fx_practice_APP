@@ -25,7 +25,7 @@ EVERY=300
 # ケーブルを挿したままのとき、電池がこの % 以上で充電を止め、この % 以下で再開する（満充電のまま置くと電池が傷むため）
 CHG_STOP=80
 CHG_START=40
-# 1: 更新の間は眠る（電池が持つ。眠る間は Wi-Fi を切る）/ 0: 起きたまま待つ（画面をタップしても止まる）
+# 1: 更新の間は眠る（電池が持つ。眠る間は機内モードで Wi-Fi を切る）/ 0: 起きたまま待つ（画面をタップしても止まる）
 SLEEP=1
 
 # 脱獄（WinterBreak2）が入れた fbink（画像を画面に出す道具）
@@ -34,6 +34,8 @@ export PATH="/mnt/us/libkh/bin:$PATH"
 LOG=/mnt/us/fxp_dash.log
 PID=/tmp/fxp_dash.pid
 IMG=/tmp/fxp_dash.png
+# 最後に出した画面の控え（起動したとき、取れるまでの間にすぐ出す。真っ白で待たせないため。2026-11-27）
+LAST=/mnt/us/.fxp_last_$ROT.png
 # 「Mac mini お休み中」の帯（Mac が起きている間に 1 回取って持っておく。消えないよう Kindle の保存領域に）
 OFF=/mnt/us/.fxp_off_v2_$ROT.png
 AWAKE=/tmp/fxp_dash.awake
@@ -62,6 +64,11 @@ charge_control() {
   [ -w "$ALLOW" ] && [ -n "$1" ] || return
   b=$1
   a=$(cat "$ALLOW" 2>/dev/null)
+  # ケーブルを抜いたら許可に戻す（止めたまま抜くと、次に 60% などで挿したとき 40% まで充電されなかった。2026-11-27）
+  case "$(usb_state)" in
+    *1*) ;;
+    *) [ "$a" = 0 ] && echo 1 > "$ALLOW" && log "charging allowed again (unplugged)"; return ;;
+  esac
   if [ "$a" = 1 ] && [ "$b" -ge "$CHG_STOP" ]; then
     echo 0 > "$ALLOW" && log "charging off at ${b}%" && date +%s > "$CHGF"
   elif [ "$a" = 0 ] && [ "$b" -le "$CHG_START" ]; then
@@ -87,12 +94,21 @@ show() {
   sleep 2
 }
 
-# Wi-Fi がつながるのを 30 秒まで待つ（眠りから覚めた直後はつながっていない）
+# Wi-Fi がつながるのを 45 秒まで待つ（眠りから覚めた直後はつながっていない）。
+# 機内モードを切って待つ。20 秒たってもつながらなければ機内モードを入れて切り直す
+# （2026-11-27 に、起きたあと Wi-Fi が「NA」のまま 2 回続けてつながらず、「お休み中」の帯が出た）
+wifi_state() { echo "cm=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null) wireless=$(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null)"; }
 wifi_ready() {
-  lipc-set-prop com.lab126.wifid enable 1 2>/dev/null
+  lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
   i=0
-  while [ $i -lt 30 ]; do
+  while [ $i -lt 45 ]; do
     [ "$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)" = CONNECTED ] && return 0
+    if [ $i = 20 ]; then
+      log "wifi not connected after 20s ($(wifi_state)); turning wireless off and on"
+      lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
+      sleep 3
+      lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
+    fi
     sleep 1
     i=$((i + 1))
   done
@@ -136,7 +152,9 @@ nap() {
     left=$((target - $(date +%s)))
     [ $left -lt 15 ] && break
     if [ "$SLEEP" = 1 ] && [ -e "$RTC/wakealarm" ] && [ $tries -lt 20 ]; then
-      lipc-set-prop com.lab126.wifid enable 0 2>/dev/null
+      # Wi-Fi は機内モードで切る（設定画面と同じ操作）。Wi-Fi の部品を直接止める（wifid enable 0）のを 2 時間半ほど繰り返したら、
+      # 部品が戻らなくなり、再起動するまでネットワークを見つけられなくなった（2026-11-27）
+      lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
       echo 0 > "$AWAKE"
       rm -f "$KEYF"
       sleep 1
@@ -179,6 +197,8 @@ stop_dash() {
   # ふつうの Kindle に戻すので、充電は許可に戻す
   [ -w "$ALLOW" ] && echo 1 > "$ALLOW"
   lipc-set-prop com.lab126.powerd preventScreenSaver 0
+  # ふつうの Kindle に戻すので Wi-Fi はつけておく
+  lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
   rm -f "$PID" "$AWAKE" "$KEYF" "$USBF" "$CHGF"
   start lab126_gui 2>/dev/null || start framework 2>/dev/null
   exit 0
@@ -194,6 +214,8 @@ main() {
   stop lab126_gui 2>/dev/null || stop framework 2>/dev/null
   sleep 2
   eips -c >/dev/null
+  # 前回の画面があれば、まずそれを出す
+  [ -s "$LAST" ] && cp "$LAST" "$IMG" && show "$IMG" 1
   trap stop_dash TERM INT
 
   # 電源ボタンを押したら止める（眠っているときに押すと、起きたあとでその入力が届く）
@@ -228,7 +250,7 @@ main() {
     TOUCH_PID=$!
   fi
 
-  first=1; offline=0
+  first=1; offline=0; fails=0
   while :; do
     drive_check
     B=$(battery)
@@ -237,28 +259,37 @@ main() {
     # ケーブルが挿さっているか（充電を止めている間も 1。画面の電池の横の絵を充電中のものにする）
     case "$(usb_state)" in *1*) P=1 ;; *) P=0 ;; esac
     # Mac mini が寝ているときは答えが無いので、つながらなければ 5 秒で諦める
-    if wifi_ready && curl -s -f --connect-timeout 5 --max-time 40 -o "$IMG.new" "$URL?rot=$ROT&batt=$B&chg=$C&hold=$H&plug=$P"; then
+    # 取れなかったら 15 秒待ってもう一度だけ試す（眠りから覚めた直後の Wi-Fi は、たまに遅れて 1 回失敗する。2026-11-27）
+    got=0
+    for try in 1 2; do
+      if wifi_ready && curl -s -f --connect-timeout 5 --max-time 40 -o "$IMG.new" "$URL?rot=$ROT&batt=$B&chg=$C&hold=$H&plug=$P"; then got=1; break; fi
+      [ $try = 1 ] && { log "fetch failed once; retry"; sleep 15; }
+    done
+    if [ $got = 1 ]; then
       mv "$IMG.new" "$IMG"
+      cp "$IMG" "$LAST" 2>/dev/null
       min=$(date +%M); min=${min#0}
       full=0
       # 最初・毎時 0〜4 分・お休み中の帯を出していた後は、点滅ありで全体を描き直す
       { [ "$first" = 1 ] || [ "$min" -lt 5 ] || [ "$offline" = 1 ]; } && full=1
       show "$IMG" "$full"
       log "ok batt=$B chg=$C hold=$H plug=$P full=$full"
-      first=0; offline=0
+      first=0; offline=0; fails=0
       # お休み中の帯をまだ持っていなければ取っておく
       [ -s "$OFF" ] || curl -s -f --connect-timeout 5 --max-time 60 -o "$OFF" "$BASE/kindle_off.png?rot=$ROT" || rm -f "$OFF"
     else
-      log "fetch failed batt=$B chg=$C wifi=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)"
+      fails=$((fails + 1))
+      log "fetch failed ($fails) batt=$B chg=$C $(wifi_state)"
       if [ ! -f "$IMG" ]; then
         eips 2 2 "Cannot get image: $URL" >/dev/null
-      elif [ "$offline" != 1 ] && [ -s "$OFF" ]; then
+      elif [ "$offline" != 1 ] && [ $fails -ge 2 ] && [ -s "$OFF" ]; then
+        # 「お休み中」の帯は 2 回続けて取れなかったときだけ（1 回だけの失敗では出さない）
         # 前の画面の上端（横置きで見たとき）に帯を重ねる。270 は縦の画面の左端、90 は右端
         if [ "$ROT" = 270 ]; then ox=0; else ox=708; fi
         command -v fbink >/dev/null 2>&1 && { fbink -q -w -g file="$OFF",x=$ox,y=0 2>/dev/null || fbink -q -g file="$OFF",x=$ox,y=0; }
         sleep 2
       fi
-      offline=1
+      [ $fails -ge 2 ] && offline=1
     fi
     # 次の 5 分の区切り（:00・:05…）まで眠る（毎時 0 分の描き直しがずれないように）。1 分より近ければその次
     now=$(date +%s)
