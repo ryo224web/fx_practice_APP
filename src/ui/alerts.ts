@@ -32,9 +32,11 @@ export function beep() {
 /**
  * アラートを鳴らす。key は同じアラートを 2 つの画面（Mac mini と iPad など）で開いていても、Mac の通知を 1 回にするための目印
  */
-export function fireAlert(title: string, body: string, key: string, show: (msg: string) => void) {
+export function fireAlert(title: string, body: string, key: string, show: (msg: string) => void, notify = true) {
   beep();
   show(`🔔 ${title}　${body}`);
+  // 価格のアラートは、開発サーバーが鳴らしたときにもう Mac の通知を出している（notify = false）
+  if (!notify) return;
   void fetch('/api/notify', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

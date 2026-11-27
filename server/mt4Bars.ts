@@ -23,6 +23,8 @@ import path from 'node:path';
 import type { Plugin } from 'vite';
 import { DEFAULT_SERVER_RULE, serverOffsetMinutes, serverToUtc } from '../src/core/time.ts';
 import { normalizeSymbol } from '../src/mt4/history.ts';
+import { AlertBook, alertsFile } from './priceAlerts.ts';
+import { DEFAULT_PROJECT_DIR } from './projectStore.ts';
 
 /** MT4 のデータフォルダは Dropbox の MT4 にある（MSI・T580 で共有）。EA はその MQL4\\Files\\fxp_bars に書く */
 export const DEFAULT_BARS_DIR = '/Users/ryo/Library/CloudStorage/Dropbox/MT4/MQL4/Files/fxp_bars';
@@ -566,6 +568,20 @@ export function mt4Bars(dir = process.env.FXP_BARS_DIR ?? DEFAULT_BARS_DIR, data
       server.httpServer?.on('close', () => {
         clearInterval(timer);
         receiver?.close();
+      });
+      // 価格のアラート（全部のプロジェクト・全部の銘柄。FP の画面がどこを開いていても、ライブでなくても見張る。2026-11-27）
+      const alerts = new AlertBook(alertsFile(process.env.FXP_PROJECT_DIR || DEFAULT_PROJECT_DIR));
+      sync.listeners.add((sym) => {
+        const tick = sync.ticks.get(sym);
+        if (!tick || Date.now() - tick.at > 10_000) return;
+        void alerts.check(sym, { bid: tick.bid, bar: tick.bar }, SYMBOL_DIGITS[sym] ?? 5).catch(() => {});
+      });
+      server.middlewares.use('/api/alerts', (req, res) => {
+        const sub = new URL(req.url ?? '', 'http://x').pathname;
+        alerts.handle(req, res, sub === '/' ? '' : sub).catch((e) => {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+        });
       });
       // ライブ: 直接届いた今の価格（?sym=usdjpy）。10 秒より古ければ届いていないとみなす
       const liveJson = (sym: string) => {

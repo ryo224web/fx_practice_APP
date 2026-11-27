@@ -712,9 +712,9 @@ export class DrawingManager implements ISeriesPrimitive<Time> {
     return true;
   }
 
-  /** ロックした図形は残す */
+  /** ロックした図形と、価格のアラートは残す（アラートは全部のプロジェクトで共通。図形ではない） */
   clearAll() {
-    this.drawings = this.drawings.filter((d) => d.locked);
+    this.drawings = this.drawings.filter((d) => d.locked || (d.kind === 'hline' && d.alert));
     this.selectedId = null;
     this.onChange();
     this.refresh();

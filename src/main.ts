@@ -253,9 +253,10 @@ async function openSymbol(symbol: string, around: number | null) {
   dataChanged();
   applySpread();
   const list = (state.drawings[md.symbol] ??= []);
+  const shown = withAlerts(list);
   for (const p of panes) {
     p.setDigits(md.digits);
-    p.drawings.setDrawings(list);
+    p.drawings.setDrawings(shown);
   }
   // 銘柄が変わったら、図形の取り消しの記録も最初から
   resetDrawingHistory();
@@ -616,51 +617,99 @@ function setPlaying(on: boolean) {
 // 水平線の 🔔: 直接届いた価格（Bid）が線をまたいだら（線ちょうども）鳴らし、その線のアラートを外す（MT4 と同じく 1 回だけ）。
 // RCI の 0 付近: 「RCI の 0 付近を背景で知らせる」の時間足の RCI が、今の価格で ±の内側に入ったら鳴らす（同じ足では 1 回だけ）。
 // どちらも、ライブを始めた直後の 1 回目の価格では鳴らさない（入っている・越えているのは前から）。
-let alertState: { sym: string; price: number | null; bar: Bar | null; rciIn: boolean | null; rciBar: number } | null = null;
+let alertState: { sym: string; rciIn: boolean | null; rciBar: number } | null = null;
 
-function checkAlerts(price: number, bar: Bar | null) {
+// ---- 価格のアラート（全部のプロジェクト・全部の銘柄で共通。2026-11-27）----
+// 開発サーバーが T580 から届く全銘柄の価格で見張り、届いたら Mac の通知を出して外す（server/priceAlerts.ts）。
+// FP はアラートを「今の銘柄のチャートの、アラートの付いた水平線」として出し、置く・動かす・消すたびにその銘柄の一覧を送る。
+// どのプロジェクトを開いていても、ライブでなくても鳴る（FX Practice を開いている＝開発サーバーが動いている間）
+type PriceAlert = { id: string; sym: string; p: number; t: number; tf?: string; created?: number };
+let priceAlerts: PriceAlert[] = [];
+let alertsLoaded = false;
+const isAlertLine = (d: Drawing) => d.kind === 'hline' && !!d.alert;
+
+function alertDrawings(sym: string): Drawing[] {
+  return priceAlerts
+    .filter((a) => a.sym === sym)
+    .map((a) => ({ id: a.id, kind: 'hline' as const, alert: true, points: [{ t: a.t, p: a.p }], color: '#e5a50a', tf: a.tf, created: a.created }));
+}
+
+/** チャートに渡す図形: プロジェクトの図形 + 今の銘柄の共通のアラート */
+function withAlerts(list: Drawing[]): Drawing[] {
+  return [...list.filter((d) => !isAlertLine(d)), ...alertDrawings(md.symbol)];
+}
+
+const alertKey = (list: { id: string; p: number }[]) => JSON.stringify(list.map((a) => [a.id, a.p]).sort());
+const lineKey = (list: Drawing[]) => alertKey(list.filter(isAlertLine).map((d) => ({ id: d.id, p: d.points[0].p })));
+
+function putAlerts(sym: string, list: PriceAlert[]) {
+  void fetch(`/api/alerts/${sym}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ alerts: list }) }).catch(() =>
+    toast('アラートを保存できませんでした（開発サーバーに届きません）'),
+  );
+}
+
+/** チャートで置く・動かす・消したアラートを、開発サーバーへ送る（変わっていなければ送らない） */
+function syncAlertsFrom(all: Drawing[]) {
+  if (!alertsLoaded) return;
+  const mine = all.filter(isAlertLine).map((d) => ({ id: d.id, sym: md.symbol, p: d.points[0].p, t: d.points[0].t, tf: d.tf, created: d.created }));
+  if (alertKey(mine) === alertKey(priceAlerts.filter((a) => a.sym === md.symbol))) return;
+  priceAlerts = [...priceAlerts.filter((a) => a.sym !== md.symbol), ...mine];
+  putAlerts(md.symbol, mine);
+}
+
+/** 共通のアラートが変わったら（ほかの画面で置いた・鳴って外れた）、チャートの線を合わせる */
+function showAlertsOnCharts() {
+  const cur = panes[0]?.drawings.drawings;
+  if (!cur) return;
+  const next = withAlerts(cur);
+  if (lineKey(cur) === lineKey(next)) return;
+  for (const p of panes) {
+    p.drawings.drawings = next;
+    p.drawings.refresh();
+  }
+}
+
+/** 前はプロジェクトの図形に持っていたアラートの線を、共通のアラートへ移す（1 回だけ） */
+function moveProjectAlerts() {
+  let moved = 0;
+  for (const [sym, list] of Object.entries(state.drawings)) {
+    const lines = (list ?? []).filter(isAlertLine);
+    if (!lines.length) continue;
+    const have = priceAlerts.filter((a) => a.sym === sym);
+    const add = lines.filter((d) => !have.some((a) => a.id === d.id)).map((d) => ({ id: d.id, sym, p: d.points[0].p, t: d.points[0].t, tf: d.tf, created: d.created }));
+    const merged = [...have, ...add];
+    priceAlerts = [...priceAlerts.filter((a) => a.sym !== sym), ...merged];
+    putAlerts(sym, merged);
+    state.drawings[sym] = list.filter((d) => !isAlertLine(d));
+    moved += lines.length;
+  }
+  if (moved) save();
+}
+
+function watchPriceAlerts() {
+  const es = new EventSource('/api/alerts/stream');
+  es.onmessage = (ev) => {
+    const e = JSON.parse(ev.data) as { type: 'list'; alerts: PriceAlert[] } | { type: 'fired'; alert: PriceAlert; title: string; body: string };
+    if (e.type === 'list') {
+      priceAlerts = e.alerts;
+      if (!alertsLoaded) {
+        alertsLoaded = true;
+        moveProjectAlerts();
+      }
+      showAlertsOnCharts();
+    } else if (e.type === 'fired') {
+      // Mac の通知は開発サーバーがもう出している。ここは音と画面の知らせだけ
+      fireAlert(e.title, e.body, `line:${e.alert.id}`, toast, false);
+    }
+  };
+}
+
+function checkAlerts(price: number) {
   if (!live || peek || !Number.isFinite(price)) return;
-  if (alertState?.sym !== md.symbol) alertState = { sym: md.symbol, price: null, bar: null, rciIn: null, rciBar: NaN };
+  if (alertState?.sym !== md.symbol) alertState = { sym: md.symbol, rciIn: null, rciBar: NaN };
   const st = alertState;
   const sym = md.symbol.toUpperCase();
-  // 水平線: 前に届いた価格から今の価格までに通った幅に線があれば鳴らす。
-  // 価格は T580 から数秒〜20 秒おきにしか届かないことがあるので、その間に線に触って戻った分も、
-  // できかけの 1 分足の高値・安値が伸びた所で拾う（2026-11-26。前の価格と今の価格だけでは、間のひげで触ったのを逃した）
-  const prev = st.price;
-  const pb = st.bar;
-  st.price = price;
-  st.bar = bar;
-  let lo = prev === null ? price : Math.min(prev, price);
-  let hi = prev === null ? price : Math.max(prev, price);
-  if (prev !== null && bar) {
-    if (pb && pb.t === bar.t) {
-      if (bar.h > pb.h) hi = Math.max(hi, bar.h);
-      if (bar.l < pb.l) lo = Math.min(lo, bar.l);
-    } else if (pb && bar.t > pb.t) {
-      // 新しい 1 分足: その足の高値・安値は、前に届いた価格より後のもの
-      hi = Math.max(hi, bar.h);
-      lo = Math.min(lo, bar.l);
-    }
-  }
-  if (prev !== null && lo < hi) {
-    const list = state.drawings[md.symbol] ?? [];
-    const hit = list.filter((d) => d.kind === 'hline' && d.alert && d.points[0].p >= lo && d.points[0].p <= hi);
-    if (hit.length) {
-      for (const d of hit) {
-        const lv = formatPrice(d.points[0].p, md.digits);
-        fireAlert(`${sym} ${lv}`, `価格が ${lv} に${d.points[0].p >= prev ? '上がって' : '下がって'}届きました（今 ${formatPrice(price, md.digits)}）`, `line:${d.id}`, toast);
-      }
-      // 鳴らしたアラートは線ごと消す（MT4 と同じ。⌘Z で戻せる）
-      const next = list.filter((d) => !hit.includes(d));
-      state.drawings[md.symbol] = next;
-      for (const p of panes) {
-        p.drawings.drawings = next;
-        p.drawings.refresh();
-      }
-      recordDrawingChange();
-      save();
-    }
-  }
+  // 価格のアラート（線）は開発サーバーが全部の銘柄で見張る（watchPriceAlerts。2026-11-27）。ここは RCI だけ
   // RCI の 0 付近
   const z = rciZoneCfg;
   if (!z.alert || !(z.tf in TIMEFRAMES) || !md.bid.length) return;
@@ -772,11 +821,11 @@ async function applyLive(r: LiveMsg) {
   if (!live || md !== mdNow) return;
   const last = md.bid[md.bid.length - 1];
   const bar = r.tick?.bar && last && r.tick.bar.t > last.t ? r.tick.bar : null;
-  if (r.tick && !bar && !liveBar) checkAlerts(r.tick.bid, r.tick.bar);
+  if (r.tick && !bar && !liveBar) checkAlerts(r.tick.bid);
   if (!bar && !liveBar) return;
   liveBar = bar;
   liveBarSym = md.symbol;
-  if (r.tick) checkAlerts(r.tick.bid, r.tick.bar);
+  if (r.tick) checkAlerts(r.tick.bid);
   if (liveFrame) return;
   liveFrame = requestAnimationFrame(() => {
     liveFrame = 0;
@@ -3498,12 +3547,15 @@ function setupControls() {
       showTool(tool);
     };
     p.drawings.onChange = () => {
-      state.drawings[md.symbol] = p.drawings.drawings;
+      const all = p.drawings.drawings;
+      // 価格のアラートの線はプロジェクトに入れず、全部のプロジェクトで共通のアラートとして開発サーバーへ送る
+      state.drawings[md.symbol] = all.filter((d) => !isAlertLine(d));
       for (const x of panes) {
         if (x === p) continue;
-        x.drawings.drawings = p.drawings.drawings;
+        x.drawings.drawings = all;
         x.drawings.refresh();
       }
+      syncAlertsFrom(all);
       recordDrawingChange();
       save();
     };
@@ -4370,7 +4422,7 @@ function undoDrawing(redo = false) {
   to.push(drawingsSnapshot);
   const list = JSON.parse(prev) as Drawing[];
   state.drawings[md.symbol] = list;
-  for (const p of panes) p.drawings.setDrawings(list);
+  for (const p of panes) p.drawings.setDrawings(withAlerts(list));
   drawingsSnapshot = prev;
   toast(redo ? '図形の操作をやり直しました（⌘Z で元に戻す）' : '図形の操作を元に戻しました（⌘⇧Z でやり直す）');
   save();
@@ -4446,6 +4498,7 @@ async function start() {
   // 表示が出てから、インジケーターに必要な過去のデータを裏で読み込む（R1 の 1 秒を守るため後回し）
   setTimeout(() => void ensureIndicatorHistory(), 0);
   watchOtherDevices();
+  watchPriceAlerts();
   if (store.lockedBy) toast(`このプロジェクトは別の機器（${store.lockedBy}）でも開いているようです。同時に使うと保存がぶつかります（Dropbox の競合コピーや、片方の変更が消えることがあります）`);
   else if (!store.remote) toast('保存先のフォルダに届かないため、ブラウザの中だけに保存しています');
 }
