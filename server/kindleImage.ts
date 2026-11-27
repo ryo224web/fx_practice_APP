@@ -3,15 +3,11 @@
 //   2. Chrome（ヘッドレス）で 1024×758 に撮る
 //   3. sips で 90°（か 270°）回して 758×1024 の白黒（8 bit グレー）にする（Kindle の画面は縦向きなので、横に置いて見るため）
 // 1 枚作るのに 2〜5 秒。60 秒以内に作ったものはそのまま返す。
-//
-// Kindle（Wi-Fi）から取りに来る入口: 家のネットワークの 8090 番（環境変数 FXP_KINDLE_PORT。0 で止める）。
-//   受け付けるのは GET /kindle.png だけ（?rot=270 で逆向き。?batt=67&chg=1&hold=0 で電池の残量・充電中・充電を止めているかを伝えると、画面の右上に出し、
-//   Dropbox の Claude/kindle_dashboard/battery.csv に記録する）。プロジェクトなどの API はほかの機器に開かない。
+// Kindle から取りに来る入口は server/kindleServer.ts（FX Practice とは別に、いつも動かしておくサーバー）。
 
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { createServer, type Server } from 'node:http';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -28,19 +24,21 @@ export type Rotation = 90 | 270;
  *   calendar/<日曜の日付>.json  取ってきた経済指標（週ごと）
  *   weather.json               最後に取った天気
  *   battery.csv                Kindle の電池の記録（日時,残量,充電中,充電を止めている）
- *   charging.svg（か .png）     充電中のマーク
+ *   charging.png・normal.png    電池の残量の横に出す絵（充電中・ふだん。自分で置いた画像をそのまま出す）
  *   config.json                { "latlon": "緯度,経度" } 天気の場所（住んでいる場所なので、公開しているリポジトリには書かない）
  */
 export const KINDLE_DIR = process.env.FXP_KINDLE_DIR || '/Users/ryo/Library/CloudStorage/Dropbox/Claude/kindle_dashboard';
 
 /**
- * 充電中のマーク。自分で用意した画像を KINDLE_DIR の charging.svg（か .png）に置くと、充電中に電池の残量の横に出す。
- * キャラクターの絵などを使うので、git には入れずにここに置く。無ければ「充電中」と字で出す
+ * 電池の残量の横に出す絵。KINDLE_DIR に自分で置いた画像をそのまま出す（描き直さない）。
+ *   charging.png（か .svg・.jpg）  充電中
+ *   normal.png（か .svg・.jpg）    ふだん（充電していないとき）
+ * キャラクターの絵などを使うので、git には入れずにここに置く。無ければ出さない（充電中は「充電中」と字で出す）
  */
-export function chargingIcon(dir = KINDLE_DIR): string | null {
-  for (const [name, type] of [['charging.svg', 'image/svg+xml'], ['charging.png', 'image/png']] as const) {
+export function batteryIcon(name: 'charging' | 'normal', dir = KINDLE_DIR): string | null {
+  for (const [ext, type] of [['png', 'image/png'], ['svg', 'image/svg+xml'], ['jpg', 'image/jpeg']] as const) {
     try {
-      return `data:${type};base64,${readFileSync(path.join(dir, name)).toString('base64')}`;
+      return `data:${type};base64,${readFileSync(path.join(dir, `${name}.${ext}`)).toString('base64')}`;
     } catch {
       /* 無ければ次 */
     }
@@ -53,6 +51,8 @@ export interface Battery {
   charging: boolean;
   /** ケーブルは挿してあるが、電池を守るため充電を止めている（80% で止め 40% で再開） */
   held?: boolean;
+  /** ケーブルが挿さっている（充電中か、充電を止めている） */
+  plugged?: boolean;
   /** 伝えてきた時刻 */
   at: number;
 }
@@ -70,14 +70,15 @@ export class KindleImage {
     this.makeHtml = makeHtml;
   }
 
-  /** Kindle が伝えてきた電池の残量を覚えて記録する（?batt=67&chg=1&hold=0）。変わっていれば画像を作り直す */
+  /** Kindle が伝えてきた電池の残量を覚えて記録する（?batt=67&chg=1&hold=0&plug=1）。変わっていれば画像を作り直す */
   async report(q: URLSearchParams, now = Date.now()) {
     const level = Number(q.get('batt'));
     if (!q.has('batt') || !Number.isFinite(level) || level < 0 || level > 100) return;
     const charging = q.get('chg') === '1';
     const held = q.get('hold') === '1';
-    const changed = !this.battery || this.battery.level !== level || this.battery.charging !== charging || !!this.battery.held !== held;
-    this.battery = { level, charging, held, at: now };
+    const plugged = q.get('plug') === '1' || charging;
+    const changed = !this.battery || this.battery.level !== level || this.battery.charging !== charging || !!this.battery.held !== held || !!this.battery.plugged !== plugged;
+    this.battery = { level, charging, held, plugged, at: now };
     const t = new Date(now + 9 * 3600_000).toISOString().slice(0, 19).replace('T', ' ');
     await appendFile(BATTERY_LOG, `${t},${level},${charging ? 1 : 0},${held ? 1 : 0}\n`).catch(() => {});
     if (changed) this.staleAt = now;
@@ -104,10 +105,15 @@ export class KindleImage {
   }
 
   private async doRender() {
+    await this.shoot(this.makeHtml(), 1024, 758, (rot) => this.file(rot));
+  }
+
+  /** HTML を Chrome で w×h に撮って、90°・270° 回した白黒の PNG にする */
+  private async shoot(page: string, w: number, h: number, out: (rot: Rotation) => string) {
     await mkdir(this.dir, { recursive: true });
-    const html = path.join(this.dir, 'kindle.html');
+    const html = path.join(this.dir, 'page.html');
     const shot = path.join(this.dir, 'shot.png');
-    await writeFile(html, this.makeHtml());
+    await writeFile(html, page);
     await run(
       CHROME,
       [
@@ -117,54 +123,37 @@ export class KindleImage {
         '--force-device-scale-factor=1',
         // ふだん使っている Chrome とは別の置き場（開いていてもぶつからないように）
         `--user-data-dir=${path.join(this.dir, 'chrome')}`,
-        '--window-size=1024,758',
+        `--window-size=${w},${h}`,
         `--screenshot=${shot}`,
         `file://${html}`,
       ],
       { timeout: 60_000 },
     );
     for (const rot of [90, 270] as const) {
-      await run('sips', ['-r', String(rot), '-m', GRAY, shot, '--out', this.file(rot)], { timeout: 30_000 });
+      await run('sips', ['-r', String(rot), '-m', GRAY, shot, '--out', out(rot)], { timeout: 30_000 });
     }
   }
-}
 
-/** Kindle から取りに来る入口（家のネットワーク。GET /kindle.png だけ） */
-export function startKindleServer(img: KindleImage, port = Number(process.env.FXP_KINDLE_PORT ?? 8090)): Server | null {
-  if (!port) return null;
-  const srv = createServer((req, res) => {
-    const u = new URL(req.url ?? '', 'http://x');
-    if (req.method !== 'GET' || u.pathname !== '/kindle.png') {
-      res.statusCode = 404;
-      return res.end();
+  /**
+   * 「Mac mini お休み中」の帯（横 1024×縦 50 を回したもの）。Mac mini が寝ていて画像を取れないとき、Kindle が前の画面の上端に重ねる（2026-11-27 に下端から変えた）。
+   * 中身は変わらないので 1 回だけ作る（Kindle は起きている間に 1 回取って持っておく）
+   */
+  async banner(rot: Rotation): Promise<Buffer> {
+    const out = (r: Rotation) => path.join(this.dir, `banner_v2_${r}.png`);
+    const made = await stat(out(rot)).then(() => true, () => false);
+    if (!made) {
+      this.busy = (this.busy ?? Promise.resolve())
+        .then(() =>
+          this.shoot(
+            `<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;background:#000;color:#fff;font-family:"Hiragino Sans",sans-serif;height:50px;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:bold}</style></head><body>Mac mini お休み中　（Mac が起きたら 5 分以内に新しい画面に戻ります）</body></html>`,
+            1024,
+            50,
+            out,
+          ),
+        )
+        .finally(() => (this.busy = null));
+      await this.busy;
     }
-    const rot: Rotation = u.searchParams.get('rot') === '270' ? 270 : 90;
-    img
-      .report(u.searchParams)
-      .then(() => img.png(rot))
-      .then(
-      (b) => {
-        res.setHeader('Content-Type', 'image/png');
-        res.setHeader('Cache-Control', 'no-store');
-        res.end(b);
-      },
-      (e) => {
-        console.warn('[kindle]', e instanceof Error ? e.message : e);
-        res.statusCode = 500;
-        res.end();
-      },
-    );
-  });
-  // 開発サーバーが自分で起動し直したときは前の入口が閉じる前に来るので、使われていたら 3 秒おきに開き直す（価格の受け口と同じ）
-  let tries = 0;
-  srv.on('error', (e: NodeJS.ErrnoException) => {
-    if (e.code === 'EADDRINUSE' && tries++ < 100) {
-      setTimeout(() => srv.listen(port, '0.0.0.0'), 3000).unref();
-      return;
-    }
-    console.warn(`[kindle] Kindle の入口 ${port} 番を開けませんでした: ${e.message}`);
-  });
-  srv.listen(port, '0.0.0.0');
-  srv.unref();
-  return srv;
+    return readFile(out(rot));
+  }
 }

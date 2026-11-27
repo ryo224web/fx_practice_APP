@@ -12,7 +12,9 @@
     "import-data": "node scripts/import-csv.mjs",
     "make-app": "zsh scripts/mac/make-app.sh",
     "deploy-mt4": "node scripts/mt4/deploy.mjs",
-    "deploy-kindle": "zsh scripts/kindle/deploy.sh"
+    "deploy-kindle": "zsh scripts/kindle/deploy.sh",
+    "kindle-server": "node server/kindleServer.ts",
+    "kindle-agent": "zsh scripts/mac/kindle-dashboard.sh"
   },
   "dependencies": {
     "lightweight-charts": "5.2.1"

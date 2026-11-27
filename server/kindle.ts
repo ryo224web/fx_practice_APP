@@ -4,20 +4,11 @@
 //   下: 月〜金の指標（終わった日は細く、★★★ だけ）
 // サーバーで HTML を作る。古い Kindle のブラウザでも出るよう、JavaScript を使わず、並べるのは table で。5 分ごとに読み直す。
 //
-//   GET /kindle
-//     ?cur=USD,JPY  通貨を絞る（初めは FP の銘柄の通貨）   ?before=30&after=30  触らない時間（分）
-//     ?impact=High,Medium  週の欄に出す重要度（触らない時間は High だけ）   ?w=1024&h=758  画面の大きさ（px）
-//     ?at=2026-11-25T22:20+09:00  その時刻の画面（確かめる用）
-//   GET /api/calendar   残している指標（今日の 2 日前〜）を JSON で
-//   GET /kindle.png     Kindle に送る画像（縦向き 758×1024・白黒。?rot=270 で逆向き）。家のネットワークの 8090 番でも出す（server/kindleImage.ts）
+// 画面を作るだけ。取ってくる・画像にする・Kindle からの入口は server/kindleServer.ts（FX Practice とは別に動かすサーバー）
 
-import { readFileSync } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import type { Plugin } from 'vite';
-import { blockedWindows, EconCalendar, FETCH_EVERY_MS, IMPACTS, jaTitle, type EconEvent, type Impact } from './econCalendar.ts';
-import { chargingIcon, KINDLE_DIR, KindleImage, startKindleServer, type Battery } from './kindleImage.ts';
-import { iconImg, KIND_JA, kindOf, snowSummary, WeatherSource, type Weather } from './weather.ts';
+import { blockedWindows, jaTitle, type EconEvent, type Impact } from './econCalendar.ts';
+import type { Battery } from './kindleImage.ts';
+import { iconImg, KIND_JA, kindOf, snowSummary, type Weather } from './weather.ts';
 
 const JST = 9 * 3600_000;
 const DAY = 86400_000;
@@ -87,8 +78,9 @@ export interface KindleOptions {
   weather: Weather | null;
   /** Kindle が画像を取りに来たときに伝えた電池の残量（30 分より古ければ出さない） */
   battery?: Battery | null;
-  /** 充電中に電池の残量の横に出すマーク（img の src。data: など）。無ければ「充電中」と字で出す */
+  /** 電池の残量の横に出す絵（img の src。data: など）。ケーブルが挿さっている間（充電を止めている間も）は charging（無ければ充電中だけ「充電中」と字で）、ふだんは normal（無ければ出さない） */
   chargingIcon?: string | null;
+  normalIcon?: string | null;
 }
 
 export function renderKindle(all: EconEvent[], o: KindleOptions): string {
@@ -104,7 +96,7 @@ export function renderKindle(all: EconEvent[], o: KindleOptions): string {
   if (!w || o.now - w.fetchedAt > 3 * HOUR) stale.push('⚠ 天気が古い');
   const d = new Date(o.now + JST);
   const b = o.battery && o.now - o.battery.at < 30 * 60_000 ? o.battery : null;
-  const batt = b ? `<span class="${b.level <= 20 && !b.charging ? 'low' : ''}">電池 ${b.level}%${b.charging ? (o.chargingIcon ? ` <img class="chg" src="${o.chargingIcon}" alt="充電中">` : ' 充電中') : b.level <= 20 && !b.held ? ' 充電して' : ''}</span>　` : '';
+  const batt = b ? `<span class="${b.level <= 20 && !b.charging ? 'low' : ''}">電池 ${b.level}%${b.charging || b.plugged ? (o.chargingIcon ? ` <img class="chg" src="${o.chargingIcon}" alt="充電中">` : b.charging ? ' 充電中' : '') : (b.level <= 20 ? ' 充電して' : '') + (o.normalIcon ? ` <img class="chg" src="${o.normalIcon}" alt="">` : '')}</span>　` : '';
   const head = `<table class="head"><tr><td class="date">${d.getUTCMonth() + 1}月${d.getUTCDate()}日(${WEEKDAYS[d.getUTCDay()]})</td><td class="upd">${stale.join(' ')} ${batt}${hm(o.now)} 更新</td></tr></table>`;
 
   // ---- 左: 今の天気 ----
@@ -201,7 +193,7 @@ img{display:block;margin:0 auto}
 .head .date{font-size:30px;font-weight:bold;padding-bottom:4px}
 .head .upd{text-align:right;vertical-align:bottom;font-size:14px;color:#555;padding-bottom:6px}
 .head .upd .low{color:#000;font-weight:bold;font-size:18px}
-.head .upd img.chg{display:inline-block;height:30px;vertical-align:middle;margin:0 0 0 2px}
+.head .upd img.chg{display:inline-block;height:34px;vertical-align:middle;margin:0 0 0 2px}
 .top{margin-top:8px}
 .wxnow{width:52%;vertical-align:middle}
 .wxnow td{vertical-align:middle;padding-right:12px}
@@ -247,115 +239,3 @@ ${head}${top}${mid}${ev}
 
 /** FP の銘柄に出てくる通貨（XAUUSD・BTCUSD は USD、JP225 は JPY） */
 export const DEFAULT_CURRENCIES = ['USD', 'JPY', 'EUR', 'GBP', 'AUD', 'NZD', 'CAD', 'CHF'];
-
-/** 成功したら okMs 後、失敗したら errMs 後にもう一度 */
-function repeat(name: string, fn: () => Promise<void>, okMs: number, errMs: number, firstMs: number) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const run = async () => {
-    try {
-      await fn();
-      timer = setTimeout(run, okMs);
-    } catch (e) {
-      console.warn(`[${name}]`, e instanceof Error ? e.message : e);
-      timer = setTimeout(run, errMs);
-    }
-    timer.unref();
-  };
-  timer = setTimeout(run, Math.max(0, firstMs));
-  timer.unref();
-  return () => clearTimeout(timer);
-}
-
-/** データの置き場の config.json（{ "latlon": "緯度,経度" }）。住んでいる場所などはここに書き、リポジトリには入れない */
-export function readConfig(dir: string): { latlon?: string } {
-  try {
-    return JSON.parse(readFileSync(path.join(dir, 'config.json'), 'utf8')) as { latlon?: string };
-  } catch {
-    return {};
-  }
-}
-
-export function kindleDash(dataDir = KINDLE_DIR): Plugin {
-  return {
-    name: 'fxp-kindle',
-    configureServer(server) {
-      if (process.env.VITEST) return;
-      // 指標: 1 時間に 1 回（ForexFactory は続けて取ると 429 を返すので、断られたら 15 分後）
-      const cal = new EconCalendar(path.join(dataDir, 'calendar'));
-      // 天気: 30 分に 1 回
-      const wx = new WeatherSource(path.join(dataDir, 'weather.json'), process.env.FXP_WEATHER_LATLON || readConfig(dataDir).latlon || '');
-      const stops: (() => void)[] = [];
-      void cal.load().then(() => {
-        const age = cal.fetchedAt ? Date.now() - cal.fetchedAt : Infinity;
-        stops.push(repeat('calendar', () => cal.fetch(), FETCH_EVERY_MS, 15 * 60_000, FETCH_EVERY_MS - age));
-      });
-      const WX_EVERY = 30 * 60_000;
-      void wx.load().then(() => {
-        const age = wx.data ? Date.now() - wx.data.fetchedAt : Infinity;
-        stops.push(repeat('weather', () => wx.fetch(), WX_EVERY, 10 * 60_000, WX_EVERY - age));
-      });
-      server.httpServer?.on('close', () => stops.forEach((s) => s()));
-
-      server.middlewares.use('/api/calendar', (_req, res) => {
-        res.setHeader('Content-Type', 'application/json; charset=utf-8');
-        const from = jstDayStart(Date.now()) - 2 * DAY;
-        res.end(JSON.stringify({ fetchedAt: cal.fetchedAt, events: cal.events.filter((e) => e.at >= from) }));
-      });
-      // Kindle に送る画像（家のネットワークの 8090 番の GET /kindle.png。ここでも /kindle.png で見られる）
-      const defaults = (now = Date.now()): KindleOptions => ({
-        now,
-        currencies: DEFAULT_CURRENCIES,
-        impacts: ['High', 'Medium'],
-        beforeMin: 30,
-        afterMin: 30,
-        width: 1024,
-        height: 758,
-        calendarAt: cal.fetchedAt,
-        weather: wx.data,
-        battery: img.battery,
-        chargingIcon: chargingIcon(),
-      });
-      // 作業場所はプロジェクトの外（public の中に HTML を書くと、vite が開いている FP の画面を読み直してしまった。2026-11-27）
-      const img = new KindleImage(path.join(os.tmpdir(), 'fxp-kindle'), () => renderKindle(cal.events, defaults()));
-      const lan = startKindleServer(img);
-      server.httpServer?.on('close', () => lan?.close());
-      // /kindle より先に（/kindle は /kindle.png にも当たるため）
-      server.middlewares.use('/kindle.png', (req, res) => {
-        const rot = new URL(req.url ?? '', 'http://x').searchParams.get('rot') === '270' ? 270 : 90;
-        img.png(rot).then(
-          (buf) => {
-            res.setHeader('Content-Type', 'image/png');
-            res.setHeader('Cache-Control', 'no-store');
-            res.end(buf);
-          },
-          (e) => {
-            res.statusCode = 500;
-            res.end(e instanceof Error ? e.message : String(e));
-          },
-        );
-      });
-      server.middlewares.use('/kindle', (req, res) => {
-        const q = new URL(req.url ?? '', 'http://x').searchParams;
-        const num = (k: string, d: number) => {
-          const v = Number(q.get(k));
-          return Number.isFinite(v) && v > 0 ? v : d;
-        };
-        const list = (k: string) => q.get(k)?.split(',').map((s) => s.trim()).filter(Boolean);
-        const html = renderKindle(cal.events, {
-          now: Date.parse(q.get('at') ?? '') || Date.now(),
-          currencies: list('cur')?.map((s) => s.toUpperCase()) ?? DEFAULT_CURRENCIES,
-          impacts: (list('impact') ?? ['High', 'Medium']).filter((s): s is Impact => IMPACTS.includes(s as Impact)),
-          beforeMin: num('before', 30),
-          afterMin: num('after', 30),
-          width: num('w', 1024),
-          height: num('h', 758),
-          calendarAt: cal.fetchedAt,
-          weather: wx.data,
-        });
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.setHeader('Cache-Control', 'no-store');
-        res.end(html);
-      });
-    },
-  };
-}

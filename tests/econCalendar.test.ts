@@ -96,6 +96,11 @@ describe('Kindle の画面', () => {
     expect(renderKindle(evs, { ...opt, now, battery: { level: 67, charging: false, at: now } })).toContain('電池 67%');
     expect(renderKindle(evs, { ...opt, now, battery: { level: 15, charging: false, at: now } })).toContain('電池 15% 充電して');
     expect(renderKindle(evs, { ...opt, now, battery: { level: 15, charging: true, at: now } })).toContain('電池 15% 充電中');
+    // ケーブルが挿さっていれば、充電を止めている間も充電中の絵
+    expect(renderKindle(evs, { ...opt, now, chargingIcon: 'data:image/png;base64,AA', normalIcon: 'data:image/png;base64,BB', battery: { level: 85, charging: false, held: true, plugged: true, at: now } })).toContain('base64,AA');
+    // ふだんの絵は充電していないときだけ
+    expect(renderKindle(evs, { ...opt, now, normalIcon: 'data:image/png;base64,BB', battery: { level: 50, charging: false, at: now } })).toContain('src="data:image/png;base64,BB"');
+    expect(renderKindle(evs, { ...opt, now, normalIcon: 'data:image/png;base64,BB', battery: { level: 50, charging: true, at: now } })).not.toContain('base64,BB');
     // 充電中のマークの画像があれば、字の代わりにそれを出す
     expect(renderKindle(evs, { ...opt, now, chargingIcon: 'data:image/png;base64,AA', battery: { level: 50, charging: true, at: now } })).toContain('<img class="chg" src="data:image/png;base64,AA"');
     // 充電を止めている間は何も足さない（「お休み中」は要らないと言われた。2026-11-27）
