@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { blockedWindows, jaTitle, parseFf, weekKey } from '../server/econCalendar.ts';
 import { countdown, renderKindle, weekDays } from '../server/kindle.ts';
+import { activeWarnings } from '../server/warnings.ts';
 import { iconImg, kindOf, mergeJma, parseOpenMeteo, snowSummary, type Weather } from '../server/weather.ts';
 
 const rows = [
@@ -48,6 +49,18 @@ describe('カウントダウン', () => {
     expect(day('2026-11-28T07:00')).toBe('2026-11-23'); // 土の朝（NY は金曜）
     expect(day('2026-11-28T09:00')).toBe('2026-11-30'); // 土の朝 9 時 → 来週
     expect(day('2026-11-29T12:00')).toBe('2026-11-30'); // 日
+  });
+});
+
+describe('気象警報', () => {
+  it('その市町村で発表・継続の、雪と大雨と特別警報だけを、警報を先に', () => {
+    const reports = [
+      { warning: { class20Items: [{ areaCode: '9990100', kinds: [{ code: '14', status: '発表' }, { code: '10', status: '解除' }] }, { areaCode: '9990200', kinds: [{ code: '06', status: '発表' }] }] } },
+      { warning: { class20Items: [{ areaCode: '9990100', kinds: [{ code: '06', status: '継続' }, { status: '発表警報・注意報はなし' }] }] } },
+    ];
+    // 雷注意報は出さない（雪と大雨に関係するものと特別警報だけ）
+    expect(activeWarnings(reports, '9990100')).toEqual(['大雪警報']);
+    expect(activeWarnings(null, '9990100')).toEqual([]);
   });
 });
 
@@ -100,11 +113,19 @@ describe('Kindle の画面', () => {
     expect(html).toContain('祝日 USD');
     expect(html).toContain('PCE コア 前月比');
   });
+  it('今年あと何日・警報と注意報・白黒の反転', () => {
+    const html = renderKindle(evs, { ...opt, now: jst('2026-11-27T10:00'), warnings: ['大雪警報', '雷注意報'] });
+    expect(html).toContain('今年あと 34 日');
+    expect(html).toContain('⚠ 大雪警報');
+    expect(renderKindle(evs, { ...opt, now: jst('2026-12-31T10:00') })).toContain('今年あと 0 日');
+    expect(renderKindle(evs, { ...opt, now: jst('2026-11-27T10:00'), dark: true })).toContain('filter:invert(1)');
+    expect(renderKindle(evs, { ...opt, now: jst('2026-11-27T10:00') })).not.toContain('filter:invert(1)');
+  });
   it('電池の残量を右上に出す（少なければ「充電して」、30 分より古ければ出さない）', () => {
     const now = jst('2026-11-25T20:00');
-    expect(renderKindle(evs, { ...opt, now, battery: { level: 67, charging: false, at: now } })).toContain('電池 67%');
-    expect(renderKindle(evs, { ...opt, now, battery: { level: 15, charging: false, at: now } })).toContain('電池 15% 充電して');
-    expect(renderKindle(evs, { ...opt, now, battery: { level: 15, charging: true, at: now } })).toContain('電池 15% 充電中');
+    expect(renderKindle(evs, { ...opt, now, battery: { level: 67, charging: false, at: now } })).toContain('67<span class="pc">%</span>');
+    expect(renderKindle(evs, { ...opt, now, battery: { level: 15, charging: false, at: now } })).toContain('15<span class="pc">%</span><span class="pc"> 充電して</span>');
+    expect(renderKindle(evs, { ...opt, now, battery: { level: 15, charging: true, at: now } })).toContain('15<span class="pc">%</span> 充電中');
     // ケーブルが挿さっていれば、充電を止めている間も充電中の絵
     expect(renderKindle(evs, { ...opt, now, chargingIcon: 'data:image/png;base64,AA', normalIcon: 'data:image/png;base64,BB', battery: { level: 85, charging: false, held: true, plugged: true, at: now } })).toContain('base64,AA');
     // ふだんの絵は充電していないときだけ
@@ -113,8 +134,8 @@ describe('Kindle の画面', () => {
     // 充電中のマークの画像があれば、字の代わりにそれを出す
     expect(renderKindle(evs, { ...opt, now, chargingIcon: 'data:image/png;base64,AA', battery: { level: 50, charging: true, at: now } })).toContain('<img class="chg" src="data:image/png;base64,AA"');
     // 充電を止めている間は何も足さない（「お休み中」は要らないと言われた。2026-11-27）
-    expect(renderKindle(evs, { ...opt, now, battery: { level: 80, charging: false, held: true, at: now } })).toMatch(/電池 80%<\/span>/);
-    expect(renderKindle(evs, { ...opt, now, battery: { level: 67, charging: false, at: now - 31 * 60_000 } })).not.toContain('電池');
+    expect(renderKindle(evs, { ...opt, now, battery: { level: 80, charging: false, held: true, at: now } })).toMatch(/80<span class="pc">%<\/span><\/span>/);
+    expect(renderKindle(evs, { ...opt, now, battery: { level: 67, charging: false, at: now - 31 * 60_000 } })).not.toContain('class="bt');
   });
   it('触らない時間の外はカウントダウン', () => {
     const html = renderKindle(evs, { ...opt, now: jst('2026-11-25T20:00') });

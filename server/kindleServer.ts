@@ -18,14 +18,24 @@ import path from 'node:path';
 import { EconCalendar, FETCH_EVERY_MS, IMPACTS, type Impact } from './econCalendar.ts';
 import { DEFAULT_CURRENCIES, jstDayStart, renderKindle, type KindleOptions } from './kindle.ts';
 import { batteryIcon, KINDLE_DIR, KindleImage, type Rotation } from './kindleImage.ts';
+import { WarningSource } from './warnings.ts';
 import { WeatherSource } from './weather.ts';
 
 const DAY = 86400_000;
 
 /** データの置き場の config.json（{ "latlon": "緯度,経度" }）。住んでいる場所などはここに書き、リポジトリには入れない */
-export function readConfig(dir: string): { latlon?: string } {
+export interface KindleConfig {
+  /** 天気の場所 "緯度,経度" */
+  latlon?: string;
+  /** 気象庁の府県予報区と市町村のコード（警報・注意報） */
+  jmaOffice?: string;
+  jmaArea?: string;
+  /** 白黒を反転する（画像を作るたびに読むので、書き換えれば次の更新から変わる） */
+  dark?: boolean;
+}
+export function readConfig(dir: string): KindleConfig {
   try {
-    return JSON.parse(readFileSync(path.join(dir, 'config.json'), 'utf8')) as { latlon?: string };
+    return JSON.parse(readFileSync(path.join(dir, 'config.json'), 'utf8')) as KindleConfig;
   } catch {
     return {};
   }
@@ -56,6 +66,13 @@ export async function startDashboard(dataDir = KINDLE_DIR, port = Number(process
   await wx.load();
   repeat('weather', () => wx.fetch(), WX_EVERY, 10 * 60_000, wx.data ? WX_EVERY - (Date.now() - wx.data.fetchedAt) : 0);
 
+  // 気象警報・注意報: 15 分に 1 回
+  const conf = readConfig(dataDir);
+  const warn = new WarningSource(path.join(dataDir, 'warnings.json'), conf.jmaOffice ?? '', conf.jmaArea ?? '');
+  await warn.load();
+  const WARN_EVERY = 15 * 60_000;
+  repeat('warnings', () => warn.fetch(), WARN_EVERY, 10 * 60_000, warn.data ? WARN_EVERY - (Date.now() - warn.data.fetchedAt) : 0);
+
   const options = (now = Date.now()): KindleOptions => ({
     now,
     currencies: DEFAULT_CURRENCIES,
@@ -71,6 +88,9 @@ export async function startDashboard(dataDir = KINDLE_DIR, port = Number(process
     normalIcon: batteryIcon('normal', dataDir),
     // 大きい数字と天気のマークは SUUNTO の腕時計のようなドット（2026-11-27）
     pixel: true,
+    // 2 時間より古い警報は出さない（取れていないとき）
+    warnings: warn.data && now - warn.data.fetchedAt < 2 * 3600_000 ? warn.data.active : null,
+    dark: !!readConfig(dataDir).dark,
   });
   // 作業場所はプロジェクトの外（OS の一時フォルダ）
   const img = new KindleImage(path.join(os.tmpdir(), 'fxp-kindle'), () => renderKindle(cal.events, options()));

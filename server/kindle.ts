@@ -84,6 +84,10 @@ export interface KindleOptions {
   normalIcon?: string | null;
   /** 大きい数字と天気のマークをドット（腕時計の液晶のような点）で描く */
   pixel?: boolean;
+  /** 出ている気象警報・注意報の名前（一番上の行に出す） */
+  warnings?: string[] | null;
+  /** 白黒を反転する（黒地に白。絵は反転しない） */
+  dark?: boolean;
 }
 
 export function renderKindle(all: EconEvent[], o: KindleOptions): string {
@@ -102,8 +106,17 @@ export function renderKindle(all: EconEvent[], o: KindleOptions): string {
   if (!w || o.now - w.fetchedAt > 3 * HOUR) stale.push('⚠ 天気が古い');
   const d = new Date(o.now + JST);
   const b = o.battery && o.now - o.battery.at < 30 * 60_000 ? o.battery : null;
-  const batt = b ? `<span class="${b.level <= 20 && !b.charging ? 'low' : ''}">電池 ${b.level}%${b.charging || b.plugged ? (o.chargingIcon ? ` <img class="chg" src="${o.chargingIcon}" alt="充電中">` : b.charging ? ' 充電中' : '') : (b.level <= 20 ? ' 充電して' : '') + (o.normalIcon ? ` <img class="chg" src="${o.normalIcon}" alt="">` : '')}</span>　` : '';
-  const head = `<table class="head"><tr><td class="date">${o.pixel ? pixelText(`${d.getUTCMonth() + 1}月${d.getUTCDate()}日`, 48, '#000', 3 / 4) : `${d.getUTCMonth() + 1}月${d.getUTCDate()}日`}(${WEEKDAYS[d.getUTCDay()]})</td><td class="upd">${stale.join(' ')} ${batt}${hm(o.now)} 更新</td></tr></table>`;
+  // 電池: 残量は日付と同じ大きさのドットの数字、横に絵（ケーブルが挿さっている間は充電中の絵）。2026-11-27
+  const icon = b ? (b.charging || b.plugged ? o.chargingIcon : o.normalIcon) : null;
+  const batt = b
+    ? `<span class="bt${b.level <= 20 && !b.charging ? ' low' : ''}">${o.pixel ? pixelText(String(b.level), 48, '#000', 3 / 4) : b.level}<span class="pc">%</span>${icon ? `<img class="chg" src="${icon}" alt="">` : b.charging ? ' 充電中' : ''}${b.level <= 20 && !b.charging && !b.plugged ? '<span class="pc"> 充電して</span>' : ''}</span>`
+    : '';
+  // 真ん中: 今年あと何日・出ている警報と注意報
+  const y = d.getUTCFullYear();
+  const left = Math.round((Date.UTC(y + 1, 0, 1) - JST - jstDayStart(o.now)) / DAY) - 1;
+  const warns = (o.warnings ?? []).map((n) => `<span class="wn">⚠ ${esc(n)}</span>`).join(' ');
+  const middle = `<td class="mdl"><div class="yr">今年あと ${left} 日</div>${warns ? `<div>${warns}</div>` : ''}</td>`;
+  const head = `<table class="head"><tr><td class="date">${o.pixel ? pixelText(`${d.getUTCMonth() + 1}月${d.getUTCDate()}日`, 48, '#000', 3 / 4) : `${d.getUTCMonth() + 1}月${d.getUTCDate()}日`}(${WEEKDAYS[d.getUTCDay()]})</td>${middle}<td class="upd">${batt}<div class="ut">${stale.join(' ')} ${hm(o.now)} 更新</div></td></tr></table>`;
 
   // ---- 左: 今の天気（天気の字と「降水」の字は出さない。マークと % で分かるため。2026-11-27）----
   let now = '<td class="wxnow">天気を取れていません</td>';
@@ -222,16 +235,21 @@ export function renderKindle(all: EconEvent[], o: KindleOptions): string {
 <style>
 *{box-sizing:border-box}
 body{margin:0;background:#fff;color:#000;font-family:"Hiragino Sans","Noto Sans JP",sans-serif;font-size:16px}
-.page{width:${o.width}px;height:${o.height}px;padding:12px 18px;overflow:hidden}
+.page{width:${o.width}px;height:${o.height}px;padding:8px 18px;overflow:hidden}
 table{border-collapse:collapse;width:100%}
 td{padding:0;vertical-align:top}
 img{display:block;margin:0 auto}
 .head{border-bottom:2px solid #000}
 .head .date{font-size:30px;font-weight:bold;padding:0 0 4px 10px}
-.head .upd{width:260px;text-align:right;vertical-align:bottom;font-size:15px;padding-bottom:6px}
-.head .upd .low{color:#000;font-weight:bold;font-size:18px}
-.head .upd img.chg{display:inline-block;height:34px;vertical-align:middle;margin:0 0 0 2px}
-.top{margin-top:8px}
+.head .mdl{vertical-align:middle;padding:0 12px}
+.head .yr{font-size:20px;font-weight:bold}
+.head .wn{display:inline-block;font-size:20px;font-weight:bold;border:2px solid #000;padding:0 6px;margin-top:2px}
+.head .upd{text-align:right;vertical-align:bottom;padding-bottom:4px;white-space:nowrap}
+.head .bt{font-size:24px;font-weight:bold}
+.head .bt .pc{font-size:22px}
+.head .bt img.chg{display:inline-block;height:50px;vertical-align:bottom;margin:0 0 0 6px}
+.head .ut{font-size:14px}
+.top{margin-top:4px}
 .wxnow{width:52%;vertical-align:middle}
 .wxnow td{vertical-align:middle;padding-right:12px}
 .wxnow .temp{font-size:64px;font-weight:bold;line-height:1;white-space:nowrap}
@@ -246,8 +264,8 @@ img{display:block;margin:0 auto}
 .cd .mid{font-size:34px;font-weight:bold}
 .cd .sub{font-size:17px}
 .cd.block{background:#000;color:#fff;border-left-color:#000}
-.mid{margin-top:8px;border-top:1px solid #000;border-bottom:2px solid #000}
-.mid > tbody > tr > td{padding:6px 0}
+.mid{margin-top:4px;border-top:1px solid #000;border-bottom:2px solid #000}
+.mid > tbody > tr > td{padding:4px 0}
 .hourly{width:55%;padding-right:12px !important}
 .weekly{border-left:1px solid #000;padding-left:10px !important}
 .cells td{text-align:center;font-size:14px;line-height:1.2}
@@ -263,7 +281,7 @@ img{display:block;margin:0 auto}
 .bar{height:9px;border:1px solid #000;margin:3px auto 0;width:78%}
 .bar div{height:100%;background:#000}
 .weekly .today{border:2px solid #000}
-.week{table-layout:fixed;margin-top:6px}
+.week{table-layout:fixed;margin-top:4px}
 .week td{padding:2px 8px 0;border-left:1px solid #999}
 .week td:first-child{border-left:none}
 .week td.today{border:3px solid #000}
@@ -279,6 +297,7 @@ img{display:block;margin:0 auto}
 .past .dh{font-size:15px;border-bottom-color:#999}
 .past .ev{font-size:14px;font-weight:normal;margin-bottom:4px}
 .none{font-size:17px;color:#777}
+${o.dark ? 'html{background:#000}body{filter:invert(1)}img.chg{filter:invert(1)}' : ''}
 </style></head><body><div class="page">
 ${head}${top}${mid}${ev}
 </div></body></html>`;
