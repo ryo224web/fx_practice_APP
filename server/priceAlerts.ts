@@ -10,7 +10,7 @@
 //   GET  /api/alerts/stream     Server-Sent Events。{ type: 'list', alerts } をつないだときと変わるたび、{ type: 'fired', alert, price } を鳴ったとき
 
 import { execFile } from 'node:child_process';
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 
@@ -126,8 +126,14 @@ export class AlertBook {
 
   private async save() {
     const tmp = `${this.file}.tmp`;
-    await writeFile(tmp, JSON.stringify({ alerts: this.alerts }, null, 1));
-    await rename(tmp, this.file);
+    try {
+      await writeFile(tmp, JSON.stringify({ alerts: this.alerts }, null, 1));
+      await rename(tmp, this.file);
+    } catch (e) {
+      // 書きかけのファイルを残さない
+      await unlink(tmp).catch(() => {});
+      throw e;
+    }
   }
 
   private emit(e: AlertEvent) {

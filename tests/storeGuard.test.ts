@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { assertStoreReadable, readJson, StoreUnreadable } from '../server/projectStore';
+import { assertStoreReadable, backupTime, orphanBackups, readJson, StoreUnreadable } from '../server/projectStore';
 import { AlertBook } from '../server/priceAlerts';
 
 const locked: string[] = [];
@@ -75,5 +75,24 @@ describe('AlertBook', () => {
     chmodSync(f, 0o644);
     await book.replace('usdjpy', [{ id: 'y', sym: 'usdjpy', p: 150, t: 0 }]);
     expect((await book.list()).map((a) => a.id).sort()).toEqual(['x', 'y']);
+  });
+});
+
+describe('削除したプロジェクトの控えの片付け', () => {
+  const day = 86_400_000;
+  const now = Date.UTC(2026, 10, 28);
+  const stamp = (t: number) => `${new Date(t).toISOString().replace(/[:T]/g, '-').replace('Z', '')}.fxp.json`;
+  it('本体が無く、一番新しい控えから 90 日たったフォルダだけ', () => {
+    const folders = [
+      { id: 'alive', files: [stamp(now - 200 * day)] }, // まだあるプロジェクトは古くても消さない
+      { id: 'old', files: [stamp(now - 200 * day), stamp(now - 91 * day)] },
+      { id: 'recent', files: [stamp(now - 200 * day), stamp(now - 30 * day)] }, // 削除して 30 日
+      { id: 'noname', files: ['memo.fxp.json'] }, // 日時が読めないものは消さない
+    ];
+    expect(orphanBackups(folders, new Set(['alive']), now)).toEqual(['old']);
+  });
+  it('控えの名前の日時を読む', () => {
+    expect(backupTime('2026-11-06-01-42-16.415.fxp.json')).toBe(Date.UTC(2026, 10, 6, 1, 42, 16));
+    expect(backupTime('settings_20261121_141958.json')).toBeNaN();
   });
 });

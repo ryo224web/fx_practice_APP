@@ -157,8 +157,14 @@ export async function assertStoreReadable(dir: string) {
 /** 書きかけのファイルが同期されないように、別名で書いてから置き換える */
 async function writeJson(file: string, value: unknown) {
   const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
-  await writeFile(tmp, JSON.stringify(value));
-  await rename(tmp, file);
+  try {
+    await writeFile(tmp, JSON.stringify(value));
+    await rename(tmp, file);
+  } catch (e) {
+    // 書きかけのファイルを残さない（2026-11-28 に、置き換えに失敗した .tmp が保存先に 4 つ残った）
+    await unlink(tmp).catch(() => {});
+    throw e;
+  }
 }
 
 function body(req: IncomingMessage): Promise<unknown> {
@@ -174,6 +180,29 @@ function body(req: IncomingMessage): Promise<unknown> {
     });
     req.on('error', reject);
   });
+}
+
+/** 控えのファイル名（"2026-11-06-01-42-16.415.fxp.json"。UTC）の日時。読めなければ NaN */
+export function backupTime(file: string): number {
+  const m = /^(\d{4})-(\d\d)-(\d\d)-(\d\d)-(\d\d)-(\d\d)/.exec(file);
+  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : NaN;
+}
+
+/** 削除したプロジェクトの控えを消すまでの日数（最後の控え＝削除する直前の控えから数える） */
+export const ORPHAN_BACKUP_DAYS = 90;
+
+/**
+ * 消してよい控えのフォルダ（ID）。本体のファイルがもう無いプロジェクト（削除した）で、一番新しい控えから 90 日たったもの。
+ * 日時の読めない控えしか無いフォルダは消さない
+ */
+export function orphanBackups(folders: { id: string; files: string[] }[], liveIds: ReadonlySet<string>, now: number): string[] {
+  return folders
+    .filter((f) => !liveIds.has(f.id))
+    .filter((f) => {
+      const newest = Math.max(...f.files.map(backupTime).filter(Number.isFinite));
+      return Number.isFinite(newest) && now - newest >= ORPHAN_BACKUP_DAYS * 86_400_000;
+    })
+    .map((f) => f.id);
 }
 
 function send(res: ServerResponse, status: number, value: unknown) {
@@ -252,6 +281,26 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
   /** rel のファイルが、本当に id のプロジェクトか */
   async function holds(rel: string, id: string): Promise<boolean> {
     return (await readJson<ProjectFile>(abs(rel)))?.id === id;
+  }
+
+  /**
+   * 削除したプロジェクトの控えを片付ける（2026-11-28。控えは 1 つのプロジェクトで 30 個までだが、削除したプロジェクトの
+   * フォルダは本体が無くなっても残り続けたので）。保存先が読めていないかもしれないとき（プロジェクトが 1 つも見つからない・
+   * 壊れたファイルがある）は、まだあるプロジェクトの控えを消してしまわないよう何もしない。ID の形でないもの（手で置いた控えなど）は触らない
+   */
+  async function pruneOrphanBackups(now = Date.now()): Promise<string[]> {
+    await assertStoreReadable(dir);
+    const live = await scan();
+    if (!live.length || broken.length) return [];
+    const folders: { id: string; files: string[] }[] = [];
+    for (const name of await listDir(backups)) {
+      if (!ID.test(name)) continue;
+      folders.push({ id: name, files: (await listDir(path.join(backups, name))).filter((f) => f.endsWith(EXT)) });
+    }
+    const gone = orphanBackups(folders, new Set(live.map((p) => p.id)), now);
+    for (const id of gone) await rm(path.join(backups, id), { recursive: true, force: true });
+    if (gone.length) console.log(`[fxp-store] 削除して ${ORPHAN_BACKUP_DAYS} 日たったプロジェクトの控えを消しました: ${gone.join(', ')}`);
+    return gone;
   }
 
   /** 上書き・削除する前の控え。force でなければ 10 分に 1 回まで。古いものから消して 30 個まで残す */
@@ -641,6 +690,19 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
   return {
     name: 'fx-project-store',
     configureServer(server) {
+      // 削除したプロジェクトの控えの片付け: 起動して 1 分後と、そのあと 1 日に 1 回（テストのときはしない）
+      if (!process.env.VITEST) {
+        const prune = () => void pruneOrphanBackups().catch((e) => console.warn(`[fxp-store] 控えの片付けをやめました: ${e instanceof Error ? e.message : e}`));
+        const first = setTimeout(prune, 60_000);
+        const daily = setInterval(prune, 86_400_000);
+        first.unref();
+        daily.unref();
+        // vite がサーバーを起動し直したとき（server/ のファイルを変えたとき）に、前の分が重ならないように止める
+        server.httpServer?.on('close', () => {
+          clearTimeout(first);
+          clearInterval(daily);
+        });
+      }
       server.middlewares.use('/api/screenshots', (req, res) => {
         handleScreenshots(req, res).catch((e) => fail(res, e));
       });
