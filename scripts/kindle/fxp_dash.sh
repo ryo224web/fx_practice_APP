@@ -25,8 +25,11 @@ EVERY=300
 # ケーブルを挿したままのとき、電池がこの % 以上で充電を止め、この % 以下で再開する（満充電のまま置くと電池が傷むため）
 CHG_STOP=80
 CHG_START=40
-# 1: 更新の間は眠る（電池が持つ。眠る間は機内モードで Wi-Fi を切る）/ 0: 起きたまま待つ（画面をタップしても止まる）
+# 1: 更新の間は眠る（電池が持つ）/ 0: 起きたまま待つ（画面をタップしても止まる）
 SLEEP=1
+# 1: 眠る間は機内モードで Wi-Fi を切る / 0: Wi-Fi をつけたまま眠る（起きてからつながるまでの約 10 秒を省く。2026-11-28 から試す）。
+# Wi-Fi のせいで早く起こされるのが 1 回の眠りの中で 2 回続いたら、自動で 1 に戻す
+WIFI_OFF_SLEEP=0
 
 # 脱獄（WinterBreak2）が入れた fbink（画像を画面に出す道具）
 export PATH="/mnt/us/libkh/bin:$PATH"
@@ -150,13 +153,14 @@ drive_check() {
 nap() {
   target=$(($(date +%s) + $1))
   tries=0
+  early=0
   while :; do
     left=$((target - $(date +%s)))
     [ $left -lt 15 ] && break
     if [ "$SLEEP" = 1 ] && [ -e "$RTC/wakealarm" ] && [ $tries -lt 20 ]; then
       # Wi-Fi は機内モードで切る（設定画面と同じ操作）。Wi-Fi の部品を直接止める（wifid enable 0）のを 2 時間半ほど繰り返したら、
       # 部品が戻らなくなり、再起動するまでネットワークを見つけられなくなった（2026-11-27）
-      lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
+      [ "$WIFI_OFF_SLEEP" = 1 ] && lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
       echo 0 > "$AWAKE"
       rm -f "$KEYF"
       sleep 1
@@ -180,7 +184,12 @@ nap() {
             echo 0 > "$RTC/wakealarm" 2>/dev/null
             drive_check
             if [ -f "$KEYF" ] && ! recent_power_change; then log "power button (woke $((target - $(date +%s)))s early)"; stop_dash; fi
-            log "woke early: $((target - $(date +%s)))s left (usb=$(usb_state))"
+            early=$((early + 1))
+            log "woke early: $((target - $(date +%s)))s left (usb=$(usb_state) wifi_off=$WIFI_OFF_SLEEP early=$early)"
+            if [ "$WIFI_OFF_SLEEP" = 0 ] && [ $early -ge 2 ] && ! recent_power_change; then
+              WIFI_OFF_SLEEP=1
+              log "woken early twice with wifi on; turning wifi off while sleeping from now on"
+            fi
           fi
           # 予定どおり時計で起きたときも電源ボタンの入力が 1 回届くので、それは無視する
           rm -f "$KEYF"
@@ -220,9 +229,11 @@ stop_dash() {
 
 main() {
   echo $$ > "$PID"
+  # 古い版の「お休み中」の帯を片付ける（ゴミをためない。2026-11-28）
+  for f in /mnt/us/.fxp_off_*; do [ -e "$f" ] && [ "$f" != "$OFF" ] && rm -f "$f"; done
   echo 1 > "$AWAKE"
   rm -f "$KEYF"
-  log "start $URL rot=$ROT sleep=$SLEEP rtc=$RTC batt=$(battery) chg=$(charging)"
+  log "start $URL rot=$ROT sleep=$SLEEP wifi_off_sleep=$WIFI_OFF_SLEEP rtc=$RTC batt=$(battery) chg=$(charging)"
   # スリープ画面にしない・Kindle の画面（本の一覧など）を止めて上書きされないようにする
   lipc-set-prop com.lab126.powerd preventScreenSaver 1
   stop lab126_gui 2>/dev/null || stop framework 2>/dev/null
@@ -294,7 +305,7 @@ main() {
       # 最初・毎時 0〜4 分・お休み中の帯を出していた後は、点滅ありで全体を描き直す
       { [ "$first" = 1 ] || [ "$min" -lt 5 ] || [ "$offline" = 1 ]; } && full=1
       show "$IMG" "$full"
-      log "ok batt=$B mah=$M awake=${LAST_AWAKE}s chg=$C hold=$H plug=$P full=$full"
+      log "ok batt=$B mah=$M awake=${LAST_AWAKE}s wifi_off=$WIFI_OFF_SLEEP chg=$C hold=$H plug=$P full=$full"
       first=0; offline=0; fails=0
       # お休み中の帯をまだ持っていなければ取っておく
       [ -s "$OFF" ] || curl -s -f --connect-timeout 5 --max-time 60 -o "$OFF" "$BASE/kindle_off.png?rot=$ROT" || rm -f "$OFF"
