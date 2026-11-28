@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { blockedWindows, jaTitle, parseFf, weekKey } from '../server/econCalendar.ts';
 import { countdown, renderKindle, weekDays } from '../server/kindle.ts';
 import { activeWarnings } from '../server/warnings.ts';
+import { BatteryLog } from '../server/kindleImage.ts';
+import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { iconImg, kindOf, mergeJma, parseOpenMeteo, snowSummary, type Weather } from '../server/weather.ts';
 
 const rows = [
@@ -49,6 +53,24 @@ describe('カウントダウン', () => {
     expect(day('2026-11-28T07:00')).toBe('2026-11-23'); // 土の朝（NY は金曜）
     expect(day('2026-11-28T09:00')).toBe('2026-11-30'); // 土の朝 9 時 → 来週
     expect(day('2026-11-29T12:00')).toBe('2026-11-30'); // 日
+  });
+});
+
+describe('電池の記録', () => {
+  it('書けないときは取っておき、次に書けたときにまとめて書く', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'batt-'));
+    const out = join(dir, 'ro', 'battery.csv');
+    const log = new BatteryLog(out, join(dir, 'pending.csv'));
+    // 書けない（置き場のフォルダが無い）
+    await log.append('a\n');
+    await log.append('b\n');
+    expect(readFileSync(join(dir, 'pending.csv'), 'utf8')).toBe('a\nb\n');
+    // 書けるようになった
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(join(dir, 'ro'));
+    await log.append('c\n');
+    expect(readFileSync(out, 'utf8')).toBe('a\nb\nc\n');
+    expect(existsSync(join(dir, 'pending.csv'))).toBe(false);
   });
 });
 

@@ -7,7 +7,7 @@
 
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -61,15 +61,49 @@ export interface Battery {
 /** Kindle の電池の記録（日時,残量,充電中,充電を止めている,残り mAh,前の回に起きていた秒）。1 日に何 % 減るか・どこで使っているかを見るため */
 export const BATTERY_LOG = path.join(KINDLE_DIR, 'battery.csv');
 
+/**
+ * 電池の記録を書く。Dropbox に書けないときは捨てずに手元（pending）に取っておき、次に書けたときにまとめて書く
+ * （2026-11-28 に Dropbox の保存先が一時的に「許可されていない」になり、13:39〜14:48 の記録が抜けた）。
+ * 書けなかったことは、続けて失敗している間は最初の 1 回だけサーバーの記録に出す
+ */
+export class BatteryLog {
+  file: string;
+  pending: string;
+  private failing = false;
+  constructor(file: string, pending: string) {
+    this.file = file;
+    this.pending = pending;
+  }
+
+  async append(line: string) {
+    const held = await readFile(this.pending, 'utf8').catch(() => '');
+    try {
+      await appendFile(this.file, held + line);
+      if (held) {
+        await rm(this.pending, { force: true });
+        console.log(`${new Date().toISOString()} [battery] 書けなかった ${held.split('\n').filter(Boolean).length} 行をまとめて書きました`);
+      }
+      this.failing = false;
+    } catch (e) {
+      await mkdir(path.dirname(this.pending), { recursive: true }).catch(() => {});
+      await appendFile(this.pending, line).catch(() => {});
+      if (!this.failing) console.warn(`${new Date().toISOString()} [battery] 電池の記録を書けません（手元に取っておきます）:`, e instanceof Error ? e.message : e);
+      this.failing = true;
+    }
+  }
+}
+
 export class KindleImage {
   dir: string;
   /** now: 画面に出す時刻（先に作るときは、次の 5 分の区切りの時刻） */
   makeHtml: (now: number) => string;
   private busy: Promise<void> | null = null;
   battery: Battery | null = null;
-  constructor(dir: string, makeHtml: (now: number) => string) {
+  log: BatteryLog;
+  constructor(dir: string, makeHtml: (now: number) => string, logFile = BATTERY_LOG) {
     this.dir = dir;
     this.makeHtml = makeHtml;
+    this.log = new BatteryLog(logFile, path.join(dir, 'battery_pending.csv'));
   }
 
   /** Kindle が伝えてきた電池の残量を覚えて記録する（?batt=67&chg=1&hold=0&plug=1）。変わっていれば画像を作り直す */
@@ -84,7 +118,7 @@ export class KindleImage {
     const t = new Date(now + 9 * 3600_000).toISOString().slice(0, 19).replace('T', ' ');
     // 残り mAh（電池の % より細かく、1〜2 時間で減り方が分かる）と、前の回に起きていた秒（2026-11-27）
     const num = (k: string) => (q.has(k) && Number.isFinite(Number(q.get(k))) ? Number(q.get(k)) : '');
-    await appendFile(BATTERY_LOG, `${t},${level},${charging ? 1 : 0},${held ? 1 : 0},${num('mah')},${num('awake')}\n`).catch(() => {});
+    await this.log.append(`${t},${level},${charging ? 1 : 0},${held ? 1 : 0},${num('mah')},${num('awake')}\n`);
     if (changed) this.staleAt = now;
   }
   /** これより前に作った画像は古いとみなす */
