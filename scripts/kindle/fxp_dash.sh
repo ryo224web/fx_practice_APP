@@ -7,7 +7,7 @@
 # 本の一覧のこのファイルをタップすると始まる。
 #   5 分ごとに起きる → Wi-Fi がつながるのを待つ → 電池の残量を伝えて画像を取る → 画面を書き換える → すぐ眠る（電池を持たせるため）
 #   書き換えはふだん点滅なし。毎時 0〜4 分の回だけ点滅ありで全体を描き直して残像を消す
-#   Mac mini が寝ていて取れないときは、前の画面の上端に「Mac mini お休み中」の帯を 1 回だけ重ね、5 分ごとに試し続ける
+#   Mac mini が寝ていて取れないときは、前の画面の下端に「Mac mini お休み中」の帯を 1 回だけ重ね、5 分ごとに試し続ける
 #   （Mac が答えなければ 5 秒で諦めるので、電池の減りはふだんと同じ。Mac が起きたら 5 分以内に戻る）
 #   充電は USB の充電器で（ダッシュボードのまま充電できる）。Mac につなぐとドライブモードになるので、その間は何もせずに待ち、
 #   Mac から取り出したら止まっていつもの Kindle に戻る
@@ -37,7 +37,7 @@ IMG=/tmp/fxp_dash.png
 # 最後に出した画面の控え（起動したとき、取れるまでの間にすぐ出す。真っ白で待たせないため。2026-11-27）
 LAST=/mnt/us/.fxp_last_$ROT.png
 # 「Mac mini お休み中」の帯（Mac が起きている間に 1 回取って持っておく。消えないよう Kindle の保存領域に）
-OFF=/mnt/us/.fxp_off_v2_$ROT.png
+OFF=/mnt/us/.fxp_off_v3_$ROT.png
 AWAKE=/tmp/fxp_dash.awake
 # 眠っている間・起きた直後に届いた電源ボタンの入力の時刻
 KEYF=/tmp/fxp_dash.key
@@ -91,7 +91,8 @@ show() {
   else
     if [ "$2" = 1 ]; then eips -f -g "$1" >/dev/null; else eips -g "$1" >/dev/null; fi
   fi
-  sleep 2
+  # fbink -w で書き換えが終わるのを待っているので、念のための 1 秒だけ（2 秒だった。起きている時間を縮める。2026-11-27）
+  sleep 1
 }
 
 # Wi-Fi がつながるのを 45 秒まで待つ（眠りから覚めた直後はつながっていない）。
@@ -101,12 +102,13 @@ wifi_state() { echo "cm=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null) wi
 wifi_ready() {
   lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
   i=0
-  while [ $i -lt 45 ]; do
+  # 20 秒でつながらなければ諦める（取れないときに粘ると電池を使う。2026-11-27）。10 秒で一度だけ機内モードを入れて切り直す
+  while [ $i -lt 20 ]; do
     [ "$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)" = CONNECTED ] && return 0
-    if [ $i = 20 ]; then
-      log "wifi not connected after 20s ($(wifi_state)); turning wireless off and on"
+    if [ $i = 10 ]; then
+      log "wifi not connected after 10s ($(wifi_state)); turning wireless off and on"
       lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
-      sleep 3
+      sleep 2
       lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
     fi
     sleep 1
@@ -158,24 +160,36 @@ nap() {
       echo 0 > "$AWAKE"
       rm -f "$KEYF"
       sleep 1
+      # 目覚ましは「今の時計の秒 + 残り」で予約し、読み戻して書けていなければ眠らない（電源ボタンでしか起きなくなるのを防ぐ）
       echo 0 > "$RTC/wakealarm" 2>/dev/null
-      if echo "+$left" > "$RTC/wakealarm" 2>/dev/null && echo mem > /sys/power/state 2>/dev/null; then
-        tries=$((tries + 1))
-        # 起きたときに届く電源ボタンの入力を待つ（見張りがケーブルの抜き挿しかを 1 秒見てから残す）
-        sleep 3
-        late=$((target - $(date +%s)))
-        if [ $late -gt 15 ]; then
-          # 予定より早く起きて電源ボタンの入力があれば、押して起こされた（ケーブルの抜き挿しで起きたときは見張りが残さない）
+      echo $(($(cat "$RTC/since_epoch" 2>/dev/null || date +%s) + left)) > "$RTC/wakealarm" 2>/dev/null
+      if [ -z "$(cat "$RTC/wakealarm" 2>/dev/null)" ]; then
+        log "wakealarm not set; awake for ${left}s"
+      else
+        LAST_AWAKE=$(($(date +%s) - WOKE))
+        if echo mem > /sys/power/state 2>/dev/null; then
+          WOKE=$(date +%s)
+          tries=$((tries + 1))
+          # 起きたときに届く電源ボタンの入力を待つ（見張りがケーブルの抜き挿しかを 1 秒見てから残す）
+          sleep 2
+          # 目覚ましの予約が残っていて、予定より 15 秒以上早ければ、目覚まし以外（電源ボタン・ケーブル）で起きた。
+          # 時計の目覚ましで起きたときは予約が消える（ほかの機種の作例。この機種で消えなくても、時刻で見るので止まらない）
+          al=$(cat "$RTC/wakealarm" 2>/dev/null)
+          [ -n "$al" ] && [ $((target - $(date +%s))) -le 15 ] && log "alarm still set after waking on time ($al)"
+          if [ -n "$al" ] && [ $((target - $(date +%s))) -gt 15 ]; then
+            echo 0 > "$RTC/wakealarm" 2>/dev/null
+            drive_check
+            if [ -f "$KEYF" ] && ! recent_power_change; then log "power button (woke $((target - $(date +%s)))s early)"; stop_dash; fi
+            log "woke early: $((target - $(date +%s)))s left (usb=$(usb_state))"
+          fi
+          # 予定どおり時計で起きたときも電源ボタンの入力が 1 回届くので、それは無視する
+          rm -f "$KEYF"
           drive_check
-          if [ -f "$KEYF" ] && ! recent_power_change; then log "power button (woke ${late}s early)"; stop_dash; fi
-          log "woke early: ${late}s left (usb=$(usb_state))"
+          continue
         fi
-        # 予定どおり時計で起きたときも電源ボタンの入力が 1 回届く（2026-11-27 にこれで止まった）ので、それは無視する
-        rm -f "$KEYF"
-        drive_check
-        continue
+        echo 0 > "$RTC/wakealarm" 2>/dev/null
+        log "cannot suspend (charging=$(charging)); awake for ${left}s"
       fi
-      log "cannot suspend (charging=$(charging)); awake for ${left}s"
     fi
     # 起きたまま待つ（5 秒ごとにドライブモードに入っていないか見る）
     echo 1 > "$AWAKE"
@@ -250,7 +264,7 @@ main() {
     TOUCH_PID=$!
   fi
 
-  first=1; offline=0; fails=0
+  first=1; offline=0; fails=0; LAST_AWAKE=; WOKE=$(date +%s)
   while :; do
     drive_check
     B=$(battery)
@@ -259,12 +273,19 @@ main() {
     # ケーブルが挿さっているか（充電を止めている間も 1。画面の電池の横の絵を充電中のものにする）
     case "$(usb_state)" in *1*) P=1 ;; *) P=0 ;; esac
     # Mac mini が寝ているときは答えが無いので、つながらなければ 5 秒で諦める
-    # 取れなかったら 15 秒待ってもう一度だけ試す（眠りから覚めた直後の Wi-Fi は、たまに遅れて 1 回失敗する。2026-11-27）
+    M=$(cat /sys/class/power_supply/max77696-battery/charge_now 2>/dev/null)
+    # Wi-Fi がつながらない・Mac が答えない（寝ている）ときはもう一度試さない（粘ると電池を使う。2026-11-27）。
+    # Mac は答えたが画像を返せなかったときだけ、5 秒後にもう一度
     got=0
-    for try in 1 2; do
-      if wifi_ready && curl -s -f --connect-timeout 5 --max-time 40 -o "$IMG.new" "$URL?rot=$ROT&batt=$B&chg=$C&hold=$H&plug=$P"; then got=1; break; fi
-      [ $try = 1 ] && { log "fetch failed once; retry"; sleep 15; }
-    done
+    if wifi_ready; then
+      curl -s -f --connect-timeout 5 --max-time 40 -o "$IMG.new" "$URL?rot=$ROT&batt=$B&chg=$C&hold=$H&plug=$P&mah=$M&awake=$LAST_AWAKE"; rc=$?
+      if [ $rc = 0 ]; then got=1
+      elif [ $rc != 7 ] && [ $rc != 28 ]; then
+        log "fetch failed (curl $rc); retry"
+        sleep 5
+        curl -s -f --connect-timeout 5 --max-time 40 -o "$IMG.new" "$URL?rot=$ROT&batt=$B&chg=$C&hold=$H&plug=$P&mah=$M&awake=$LAST_AWAKE" && got=1
+      fi
+    fi
     if [ $got = 1 ]; then
       mv "$IMG.new" "$IMG"
       cp "$IMG" "$LAST" 2>/dev/null
@@ -273,7 +294,7 @@ main() {
       # 最初・毎時 0〜4 分・お休み中の帯を出していた後は、点滅ありで全体を描き直す
       { [ "$first" = 1 ] || [ "$min" -lt 5 ] || [ "$offline" = 1 ]; } && full=1
       show "$IMG" "$full"
-      log "ok batt=$B chg=$C hold=$H plug=$P full=$full"
+      log "ok batt=$B mah=$M awake=${LAST_AWAKE}s chg=$C hold=$H plug=$P full=$full"
       first=0; offline=0; fails=0
       # お休み中の帯をまだ持っていなければ取っておく
       [ -s "$OFF" ] || curl -s -f --connect-timeout 5 --max-time 60 -o "$OFF" "$BASE/kindle_off.png?rot=$ROT" || rm -f "$OFF"
@@ -284,17 +305,23 @@ main() {
         eips 2 2 "Cannot get image: $URL" >/dev/null
       elif [ "$offline" != 1 ] && [ $fails -ge 2 ] && [ -s "$OFF" ]; then
         # 「お休み中」の帯は 2 回続けて取れなかったときだけ（1 回だけの失敗では出さない）
-        # 前の画面の上端（横置きで見たとき）に帯を重ねる。270 は縦の画面の左端、90 は右端
-        if [ "$ROT" = 270 ]; then ox=0; else ox=708; fi
+        # 前の画面の下端（横置きで見たとき）に帯を重ねる。270 は縦の画面の右端、90 は左端（上端だと日付と電池が隠れた）
+        if [ "$ROT" = 270 ]; then ox=708; else ox=0; fi
         command -v fbink >/dev/null 2>&1 && { fbink -q -w -g file="$OFF",x=$ox,y=0 2>/dev/null || fbink -q -g file="$OFF",x=$ox,y=0; }
         sleep 2
       fi
       [ $fails -ge 2 ] && offline=1
     fi
-    # 次の 5 分の区切り（:00・:05…）まで眠る（毎時 0 分の描き直しがずれないように）。1 分より近ければその次
+    # 次の 5 分の区切り（:00・:05…）まで眠る（毎時 0 分の描き直しがずれないように）。1 分より近ければその次。
+    # 取れなかったら間をあける（1 回目 10 分・2 回目 20 分・3 回目から 30 分。取れたら 5 分に戻す。Mac が寝ている夜に
+    # 5 分ごとに起きて Wi-Fi をつなぎ、粘っていたのが電池を使っていた。2026-11-27）
     now=$(date +%s)
     wait_s=$((EVERY - now % EVERY))
     [ $wait_s -lt 60 ] && wait_s=$((wait_s + EVERY))
+    if [ "$fails" -gt 0 ]; then
+      extra=$((fails * 2 - 1)); [ $extra -gt 5 ] && extra=5
+      wait_s=$((wait_s + extra * EVERY))
+    fi
     nap "$wait_s"
   done
 }

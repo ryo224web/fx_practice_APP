@@ -93,7 +93,18 @@ export async function startDashboard(dataDir = KINDLE_DIR, port = Number(process
     dark: !!readConfig(dataDir).dark,
   });
   // 作業場所はプロジェクトの外（OS の一時フォルダ）
-  const img = new KindleImage(path.join(os.tmpdir(), 'fxp-kindle'), () => renderKindle(cal.events, options()));
+  const img = new KindleImage(path.join(os.tmpdir(), 'fxp-kindle'), (now) => renderKindle(cal.events, options(now)));
+  // 5 分の区切りの 15 秒前に画像を作っておく（Kindle は区切りの 10 秒ほど後に取りに来るので、待たせずに返せる。
+  // 取りに来てから作っていたときは、Kindle が 5 秒ほど起きたまま待っていた。2026-11-27）。画面の時刻は区切りの時刻
+  const STEP = 5 * 60_000;
+  const prerender = () => {
+    const next = Math.ceil((Date.now() + 20_000) / STEP) * STEP;
+    setTimeout(() => {
+      img.render(next).catch((e) => console.warn(`${new Date().toISOString()} [kindle] 先に作れませんでした:`, e instanceof Error ? e.message : e));
+      setTimeout(prerender, 30_000);
+    }, Math.max(0, next - 15_000 - Date.now()));
+  };
+  prerender();
 
   const png = (res: import('node:http').ServerResponse, p: Promise<Buffer>) =>
     p.then(

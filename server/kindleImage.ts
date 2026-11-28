@@ -15,7 +15,8 @@ const run = promisify(execFile);
 
 export const CHROME = process.env.FXP_CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const GRAY = '/System/Library/ColorSync/Profiles/Generic Gray Gamma 2.2 Profile.icc';
-const FRESH_MS = 60_000;
+// 先に作った画像（区切りの 15 秒前）を、Kindle が区切りの少し後に取りに来ても使えるように 90 秒
+const FRESH_MS = 90_000;
 
 export type Rotation = 90 | 270;
 
@@ -57,15 +58,16 @@ export interface Battery {
   at: number;
 }
 
-/** Kindle の電池の記録（日時,残量,充電中,充電を止めている）。1 日に何 % 減るかを見るため */
+/** Kindle の電池の記録（日時,残量,充電中,充電を止めている,残り mAh,前の回に起きていた秒）。1 日に何 % 減るか・どこで使っているかを見るため */
 export const BATTERY_LOG = path.join(KINDLE_DIR, 'battery.csv');
 
 export class KindleImage {
   dir: string;
-  makeHtml: () => string;
+  /** now: 画面に出す時刻（先に作るときは、次の 5 分の区切りの時刻） */
+  makeHtml: (now: number) => string;
   private busy: Promise<void> | null = null;
   battery: Battery | null = null;
-  constructor(dir: string, makeHtml: () => string) {
+  constructor(dir: string, makeHtml: (now: number) => string) {
     this.dir = dir;
     this.makeHtml = makeHtml;
   }
@@ -80,7 +82,9 @@ export class KindleImage {
     const changed = !this.battery || this.battery.level !== level || this.battery.charging !== charging || !!this.battery.held !== held || !!this.battery.plugged !== plugged;
     this.battery = { level, charging, held, plugged, at: now };
     const t = new Date(now + 9 * 3600_000).toISOString().slice(0, 19).replace('T', ' ');
-    await appendFile(BATTERY_LOG, `${t},${level},${charging ? 1 : 0},${held ? 1 : 0}\n`).catch(() => {});
+    // 残り mAh（電池の % より細かく、1〜2 時間で減り方が分かる）と、前の回に起きていた秒（2026-11-27）
+    const num = (k: string) => (q.has(k) && Number.isFinite(Number(q.get(k))) ? Number(q.get(k)) : '');
+    await appendFile(BATTERY_LOG, `${t},${level},${charging ? 1 : 0},${held ? 1 : 0},${num('mah')},${num('awake')}\n`).catch(() => {});
     if (changed) this.staleAt = now;
   }
   /** これより前に作った画像は古いとみなす */
@@ -98,14 +102,14 @@ export class KindleImage {
     return readFile(f);
   }
 
-  /** 作る（同時に頼まれたら 1 回にまとめる） */
-  render(): Promise<void> {
-    this.busy ??= this.doRender().finally(() => (this.busy = null));
+  /** 作る（同時に頼まれたら 1 回にまとめる）。now は画面に出す時刻 */
+  render(now = Date.now()): Promise<void> {
+    this.busy ??= this.doRender(now).finally(() => (this.busy = null));
     return this.busy;
   }
 
-  private async doRender() {
-    await this.shoot(this.makeHtml(), 1024, 758, (rot) => this.file(rot));
+  private async doRender(now: number) {
+    await this.shoot(this.makeHtml(now), 1024, 758, (rot) => this.file(rot));
   }
 
   /** HTML を Chrome で w×h に撮って、90°・270° 回した白黒の PNG にする */
@@ -135,17 +139,17 @@ export class KindleImage {
   }
 
   /**
-   * 「Mac mini お休み中」の帯（横 1024×縦 50 を回したもの）。Mac mini が寝ていて画像を取れないとき、Kindle が前の画面の上端に重ねる（2026-11-27 に下端から変えた）。
+   * 「Mac mini お休み中」の帯（横 1024×縦 50 を回したもの）。Mac mini が寝ていて画像を取れないとき、Kindle が前の画面の下端に重ねる（上端も試したが、日付と電池が隠れるので下端に戻した。2026-11-27）。
    * 中身は変わらないので 1 回だけ作る（Kindle は起きている間に 1 回取って持っておく）
    */
   async banner(rot: Rotation): Promise<Buffer> {
-    const out = (r: Rotation) => path.join(this.dir, `banner_v2_${r}.png`);
+    const out = (r: Rotation) => path.join(this.dir, `banner_v3_${r}.png`);
     const made = await stat(out(rot)).then(() => true, () => false);
     if (!made) {
       this.busy = (this.busy ?? Promise.resolve())
         .then(() =>
           this.shoot(
-            `<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;background:#000;color:#fff;font-family:"Hiragino Sans",sans-serif;height:50px;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:bold}</style></head><body>Mac mini お休み中　（Mac が起きたら 5 分以内に新しい画面に戻ります）</body></html>`,
+            `<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;background:#000;color:#fff;font-family:"Hiragino Sans",sans-serif;height:50px;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:bold}</style></head><body>Mac mini お休み中　画面は右上の時刻のまま（Mac が起きたら戻ります）</body></html>`,
             1024,
             50,
             out,
