@@ -21,7 +21,7 @@
 //   DELETE /folders?path=…                   空のフォルダを消す（プロジェクトが入っていれば消さない）
 // 保存先は環境変数 FXP_PROJECT_DIR で変えられる。
 
-import { copyFile, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import os from 'node:os';
@@ -78,12 +78,80 @@ const folderOf = (rel: string) => {
   return d === '.' ? '' : d;
 };
 
-async function readJson<T>(file: string): Promise<T | null> {
+/**
+ * 保存先が読めない（Mac が Dropbox を読む許可を外した・Dropbox がまだ落としていない・ファイルが壊れている、など）。
+ * このときは何も書かずに止める（503）。
+ * 2026-11-28 に、Mac が node に Dropbox を読ませなくなったのに、読めないのを「ファイルが無い」と同じに扱っていたので、
+ * サーバーは保存先が空だと思い込み、FP はブラウザの中のプロジェクトをフォルダの外に書き出し、共通の設定もほぼ空で書き直しかけた
+ * （置き換えの最後で失敗したので無事だった）。「無い」と言ってよいのは、本当に無い（ENOENT）ときだけ
+ */
+export class StoreUnreadable extends Error {
+  readonly code = 'store-unreadable';
+}
+
+const isMissing = (e: unknown) => (e as NodeJS.ErrnoException)?.code === 'ENOENT' || (e as NodeJS.ErrnoException)?.code === 'ENOTDIR';
+
+function unreadable(file: string, e: unknown): StoreUnreadable {
+  const code = (e as NodeJS.ErrnoException)?.code;
+  const why =
+    code === 'EPERM' || code === 'EACCES'
+      ? 'Mac が読むのを許可していません（システム設定のプライバシーとセキュリティで、node か FX Practice に Dropbox を読む許可が要ります）'
+      : e instanceof SyntaxError
+        ? '中身が壊れているか、Dropbox がまだ書き終えていません'
+        : `${code ?? (e instanceof Error ? e.message : String(e))}`;
+  return new StoreUnreadable(`保存先の ${path.basename(file)} を読めません: ${why}`);
+}
+
+/** JSON を読む。無ければ null。読めない・壊れているときは StoreUnreadable（「無い」とは扱わない） */
+export async function readJson<T>(file: string): Promise<T | null> {
+  let text: string;
   try {
-    return JSON.parse(await readFile(file, 'utf8')) as T;
-  } catch {
-    return null;
+    text = await readFile(file, 'utf8');
+  } catch (e) {
+    if (isMissing(e)) return null;
+    throw unreadable(file, e);
   }
+  try {
+    return JSON.parse(text) as T;
+  } catch (e) {
+    throw unreadable(file, e);
+  }
+}
+
+/** フォルダの中身。無ければ空。読めないときは StoreUnreadable */
+async function listDir(d: string): Promise<string[]> {
+  try {
+    return await readdir(d);
+  } catch (e) {
+    if (isMissing(e)) return [];
+    throw unreadable(d, e);
+  }
+}
+
+async function listDirEntries(d: string) {
+  try {
+    return await readdir(d, { withFileTypes: true });
+  } catch (e) {
+    if (isMissing(e)) return [];
+    throw unreadable(d, e);
+  }
+}
+
+/**
+ * 保存先そのものが読めるか。フォルダが無い（Dropbox の場所が変わった・外した）ときも止める
+ * （mkdir で作り直すと、空の保存先に新しく書き始めてしまうため）
+ */
+export async function assertStoreReadable(dir: string) {
+  try {
+    if (!(await stat(dir)).isDirectory()) throw new Error('フォルダではありません');
+    await readdir(dir);
+  } catch (e) {
+    if (isMissing(e)) throw new StoreUnreadable(`保存先のフォルダ（${dir}）がありません。Dropbox の場所が変わっていないか確かめてください`);
+    throw unreadable(dir, e);
+  }
+  // 中の大事なファイルも読めるか（フォルダは見えても、中のファイルだけ読めないことがある）
+  await readJson(path.join(dir, 'index.json'));
+  await readJson(path.join(dir, 'settings.json'));
 }
 
 /** 書きかけのファイルが同期されないように、別名で書いてから置き換える */
@@ -114,6 +182,15 @@ function send(res: ServerResponse, status: number, value: unknown) {
   res.end(JSON.stringify(value));
 }
 
+/** うまくいかなかったときの返事。保存先が読めないときは 503 と code で知らせる（FP は保存を止めて帯を出す） */
+function fail(res: ServerResponse, e: unknown) {
+  if (e instanceof StoreUnreadable) {
+    console.warn(`[fxp-store] ${e.message}`);
+    return send(res, 503, { error: e.message, code: e.code });
+  }
+  return send(res, 500, { error: e instanceof Error ? e.message : String(e) });
+}
+
 export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJECT_DIR): Plugin {
   const projects = path.join(dir, 'projects');
   const locks = path.join(projects, '.locks');
@@ -137,7 +214,7 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
   /** projects の中の .fxp.json を、フォルダの中まで探す（"." で始まるフォルダ = .locks などは見ない） */
   async function walk(rel = ''): Promise<string[]> {
     const out: string[] = [];
-    const entries = await readdir(rel ? abs(rel) : projects, { withFileTypes: true }).catch(() => []);
+    const entries = await listDirEntries(rel ? abs(rel) : projects);
     for (const e of entries) {
       if (e.name.startsWith('.')) continue;
       const r = rel ? `${rel}/${e.name.normalize('NFC')}` : e.name.normalize('NFC');
@@ -150,7 +227,7 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
   /** projects の中のフォルダ（"." で始まるものは見ない。空のフォルダも） */
   async function walkDirs(rel = ''): Promise<string[]> {
     const out: string[] = [];
-    const entries = await readdir(rel ? abs(rel) : projects, { withFileTypes: true }).catch(() => []);
+    const entries = await listDirEntries(rel ? abs(rel) : projects);
     for (const e of entries) {
       if (e.name.startsWith('.') || !e.isDirectory()) continue;
       const r = rel ? `${rel}/${e.name.normalize('NFC')}` : e.name.normalize('NFC');
@@ -198,13 +275,28 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
    * 以前の形式（ファイル名が ID）のファイルは、名前のファイル名に付け替える。
    * 同じ ID のファイルが 2 つあれば（Finder でコピーした、など）、新しく保存した方を使う（もう一方は消さずに残す）
    */
+  /** 読めなかったプロジェクトのファイル（壊れている・Dropbox が書きかけ）。どのプロジェクトか分からないので、見つからないプロジェクトは新しく書かない */
+  let broken: string[] = [];
+
   async function scan(): Promise<{ id: string; name: string; updated: number; folder: string }[]> {
-    files.clear();
     const rels = await walk();
+    files.clear();
+    broken = [];
     const taken = new Set(rels.map((f) => f.toLowerCase()));
     const found = new Map<string, { id: string; name: string; updated: number; folder: string }>();
     for (const f of rels) {
-      const p = await readJson<ProjectFile>(abs(f));
+      let p: ProjectFile | null;
+      try {
+        p = await readJson<ProjectFile>(abs(f));
+      } catch (e) {
+        // 1 つだけ壊れている（中身が JSON でない）なら、ほかは使えるように飛ばす。許可が無いなどで読めないなら止める
+        if (e instanceof StoreUnreadable && /壊れている/.test(e.message)) {
+          console.warn(`[fxp-store] ${e.message}`);
+          broken.push(f);
+          continue;
+        }
+        throw e;
+      }
       if (!p) continue;
       let file = f;
       let id = p.id;
@@ -239,13 +331,22 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
 
   /** dir（projects からの相対）に今あるファイル名（小文字） */
   async function namesIn(d: string): Promise<Set<string>> {
-    const list = await readdir(d ? abs(d) : projects).catch(() => [] as string[]);
+    const list = await listDir(d ? abs(d) : projects);
     return new Set(list.map((f) => f.normalize('NFC').toLowerCase()));
   }
 
   /** プロジェクトを書く。名前が変わっていればファイル名も変え、folder を渡せばそのフォルダへ移す（undefined なら今のフォルダのまま） */
-  async function put(id: string, value: Omit<ProjectFile, 'format' | 'version' | 'id'>, folder?: string) {
+  async function put(id: string, value: Omit<ProjectFile, 'format' | 'version' | 'id'>, folder?: string, existing = false) {
     const current = await fileOf(id);
+    // 前からあるはずのプロジェクト（画面が読んだことがある・一覧に載っている）なのにファイルが見つからなければ、新しく書かない
+    // （Dropbox が入れ替えている途中・読めないファイルがある、など。新しく書くと同じプロジェクトのファイルが 2 つになる）
+    if (!current && (existing || broken.length)) {
+      throw new StoreUnreadable(
+        broken.length
+          ? `保存先に読めないプロジェクトのファイルがあるので、新しいファイルは書きません（${broken.join('、')}）`
+          : 'このプロジェクトのファイルが保存先に見つかりません。新しいファイルは書きません（Dropbox が入れ替えている途中かもしれません）',
+      );
+    }
     const dir = folder === undefined ? (current ? folderOf(current) : '') : safeFolder(folder);
     const wanted = safeFileName(value.name);
     let file = current;
@@ -269,7 +370,14 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
     files.set(id, file!);
   }
 
+  /** 一覧に載っている（index.json にある）プロジェクトか */
+  async function listed(id: string): Promise<boolean> {
+    const idx = await readJson<{ order?: string[]; folders?: Record<string, string> }>(indexFile);
+    return !!idx && ((idx.order ?? []).includes(id) || !!idx.folders?.[id]);
+  }
+
   async function handle(req: IncomingMessage, res: ServerResponse) {
+    await assertStoreReadable(dir);
     await mkdir(locks, { recursive: true });
     const url = new URL(req.url ?? '/', 'http://x');
     const parts = url.pathname.split('/').filter(Boolean);
@@ -277,7 +385,11 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
     // 一覧
     if (parts.length === 0 && req.method === 'GET') {
       const list = await scan();
-      return send(res, 200, { dir, host: hostOf(req), index: await readJson(indexFile), projects: list, folders: await walkDirs() });
+      const idx = await readJson(indexFile);
+      const folders = await walkDirs();
+      // 本当に初めて（一覧もプロジェクトもフォルダも無い）のときだけ fresh。FP はこのときだけブラウザの中のプロジェクトを移す
+      const fresh = !idx && !list.length && !folders.length && !broken.length;
+      return send(res, 200, { dir, host: hostOf(req), index: idx, projects: list, folders, fresh });
     }
 
     // フォルダ
@@ -310,7 +422,12 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
     }
 
     if (parts[0] === 'index' && req.method === 'PUT') {
-      await writeJson(indexFile, await body(req));
+      const next = (await body(req)) as { order?: string[] } | null;
+      const now = await readJson<{ order?: string[] }>(indexFile);
+      // 一覧が空に（ほとんど空に）なるような書き換えは、何かがおかしいので書かない
+      if (now?.order?.length && (!next?.order || next.order.length < now.order.length / 2))
+        throw new StoreUnreadable(`一覧（index.json）を ${now.order.length} 件から ${next?.order?.length ?? 0} 件に減らす書き換えなので、書きませんでした`);
+      await writeJson(indexFile, next);
       return send(res, 200, { ok: true });
     }
 
@@ -357,7 +474,8 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
         const now = file && (await readJson<ProjectFile>(abs(file)));
         if (now && typeof now.updated === 'number' && now.updated !== base) return send(res, 409, { error: 'conflict', updated: now.updated });
       }
-      await put(id, { name, updated, state }, folder);
+      // base がある（画面が前にファイルを読んだ・書いた）か一覧に載っていれば、前からあるプロジェクト
+      await put(id, { name, updated, state }, folder, base !== undefined || (await listed(id)));
       await touchLock(id, req);
       return send(res, 200, { ok: true, file: files.get(id) });
     }
@@ -385,6 +503,7 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
   const tplFile = (name: string) => path.join(templates, `${safeFileName(name)}${TPL}`);
 
   async function handleTemplates(req: IncomingMessage, res: ServerResponse) {
+    await assertStoreReadable(dir);
     await mkdir(templates, { recursive: true });
     const url = new URL(req.url ?? '/', 'http://x');
     const parts = url.pathname.split('/').filter(Boolean);
@@ -396,7 +515,7 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
     if (parts.length) return send(res, 404, { error: 'not found' });
     if (req.method === 'GET') {
       const list = [];
-      for (const f of (await readdir(templates)).filter((x) => x.endsWith(TPL)).sort()) {
+      for (const f of (await listDir(templates)).filter((x) => x.endsWith(TPL)).sort()) {
         const t = await readJson<{ name: string; updated: number; settings: unknown }>(path.join(templates, f));
         if (t?.name) list.push({ name: t.name, updated: t.updated, settings: t.settings });
       }
@@ -445,6 +564,7 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
 
   async function handleScreenshots(req: IncomingMessage, res: ServerResponse) {
     if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+    await assertStoreReadable(dir);
     const url = new URL(req.url ?? '/', 'http://x');
     const b = (await body(req)) as { folder?: string; files?: { name: string; data: string }[] };
     const folder = path.join(shots, safeFileName(b.folder || 'その他'));
@@ -485,9 +605,18 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
     return send(res, 200, { ok: true });
   }
 
+  /** 共通の設定のファイルがもうあるはずか（一覧があれば、前に設定も書いている） */
+  async function settingsShouldExist(): Promise<boolean> {
+    return (await listDir(dir)).includes('index.json');
+  }
+
   async function handleSettings(req: IncomingMessage, res: ServerResponse) {
+    // 読めないときに {} を返したり、{} に書き足したりすると、共通の設定（キー・色・札など）が消える
+    await assertStoreReadable(dir);
     if (req.method === 'GET') {
-      const cur = (await readJson<Record<string, unknown>>(appSettings)) ?? {};
+      const found = await readJson<Record<string, unknown>>(appSettings);
+      if (!found && (await settingsShouldExist())) throw new StoreUnreadable('共通の設定（settings.json）が見つかりません（Dropbox が入れ替えている途中かもしれません）');
+      const cur = found ?? {};
       if (!cur.keymap) {
         const keymap = await keymapFromProjects();
         if (keymap) {
@@ -499,8 +628,11 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
     }
     if (req.method === 'PUT') {
       const patch = (await body(req)) as Record<string, unknown>;
-      const cur = (await readJson<Record<string, unknown>>(appSettings)) ?? {};
-      await writeJson(appSettings, { ...cur, ...patch });
+      const cur = await readJson<Record<string, unknown>>(appSettings);
+      // 設定のファイルが無いのは初めてのときだけ。前からあったのに無くなっていれば（Dropbox が入れ替えている途中など）書かない
+      if (!cur && (await settingsShouldExist()))
+        throw new StoreUnreadable('共通の設定（settings.json）が見つかりません。書き足すと設定が消えるので、書きませんでした');
+      await writeJson(appSettings, { ...(cur ?? {}), ...patch });
       return send(res, 200, { ok: true });
     }
     return send(res, 405, { error: 'method not allowed' });
@@ -510,19 +642,19 @@ export function projectStore(dir = process.env.FXP_PROJECT_DIR || DEFAULT_PROJEC
     name: 'fx-project-store',
     configureServer(server) {
       server.middlewares.use('/api/screenshots', (req, res) => {
-        handleScreenshots(req, res).catch((e) => send(res, 500, { error: e instanceof Error ? e.message : String(e) }));
+        handleScreenshots(req, res).catch((e) => fail(res, e));
       });
       server.middlewares.use('/api/notify', (req, res) => {
-        handleNotify(req, res).catch((e) => send(res, 500, { error: e instanceof Error ? e.message : String(e) }));
+        handleNotify(req, res).catch((e) => fail(res, e));
       });
       server.middlewares.use('/api/settings', (req, res) => {
-        handleSettings(req, res).catch((e) => send(res, 500, { error: e instanceof Error ? e.message : String(e) }));
+        handleSettings(req, res).catch((e) => fail(res, e));
       });
       server.middlewares.use('/api/projects', (req, res) => {
-        handle(req, res).catch((e) => send(res, 500, { error: e instanceof Error ? e.message : String(e) }));
+        handle(req, res).catch((e) => fail(res, e));
       });
       server.middlewares.use('/api/templates', (req, res) => {
-        handleTemplates(req, res).catch((e) => send(res, 500, { error: e instanceof Error ? e.message : String(e) }));
+        handleTemplates(req, res).catch((e) => fail(res, e));
       });
     },
   };

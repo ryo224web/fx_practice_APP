@@ -579,7 +579,8 @@ export function mt4Bars(dir = process.env.FXP_BARS_DIR ?? DEFAULT_BARS_DIR, data
       server.middlewares.use('/api/alerts', (req, res) => {
         const sub = new URL(req.url ?? '', 'http://x').pathname;
         alerts.handle(req, res, sub === '/' ? '' : sub).catch((e) => {
-          res.statusCode = 500;
+          // 読めないときは 503（FP は一覧を受け取れないので、アラートを送り直さない）
+          res.statusCode = 503;
           res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
         });
       });

@@ -74,6 +74,11 @@ export function passedRange(prev: AlertTick | null, cur: AlertTick): { lo: numbe
 export class AlertBook {
   private alerts: PriceAlert[] = [];
   private loaded: Promise<void>;
+  /**
+   * alerts.json を読めなかったときの理由（許可が無い・壊れている）。このときは書かない（空の一覧で上書きすると、
+   * ほかの銘柄のアラートが消えるため。2026-11-28 に保存先を読めなくなったことがあった）。次に使うときに読み直す
+   */
+  private loadError: string | null = null;
   /** 銘柄 → 前に届いた価格 */
   private last = new Map<string, AlertTick>();
   /** 鳴らして外したアラート（古い画面が一覧を送り直しても、生き返らせない） */
@@ -84,16 +89,38 @@ export class AlertBook {
     readonly file: string,
     private notify: (title: string, body: string) => void = macNotify,
   ) {
-    this.loaded = readFile(file, 'utf8')
-      .then((s) => {
-        const v = JSON.parse(s) as { alerts?: PriceAlert[] };
-        this.alerts = Array.isArray(v.alerts) ? v.alerts.filter((a) => a && typeof a.id === 'string' && Number.isFinite(a.p)) : [];
-      })
-      .catch(() => {});
+    this.loaded = this.load();
+  }
+
+  private async load() {
+    try {
+      const v = JSON.parse(await readFile(this.file, 'utf8')) as { alerts?: PriceAlert[] };
+      this.alerts = Array.isArray(v.alerts) ? v.alerts.filter((a) => a && typeof a.id === 'string' && Number.isFinite(a.p)) : [];
+      this.loadError = null;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException)?.code;
+      if (code === 'ENOENT') {
+        this.alerts = [];
+        this.loadError = null;
+      } else {
+        this.loadError = e instanceof SyntaxError ? 'alerts.json が壊れています' : `alerts.json を読めません（${code ?? String(e)}）`;
+        console.warn(`[fxp-alerts] ${this.loadError}`);
+      }
+    }
+  }
+
+  /** 読めていなければ読み直す。それでも読めなければ止める */
+  private async ready() {
+    await this.loaded;
+    if (this.loadError) {
+      this.loaded = this.load();
+      await this.loaded;
+    }
+    if (this.loadError) throw new Error(this.loadError);
   }
 
   async list(): Promise<PriceAlert[]> {
-    await this.loaded;
+    await this.ready();
     return this.alerts;
   }
 
@@ -109,7 +136,7 @@ export class AlertBook {
 
   /** その銘柄のアラートを丸ごと置き換える */
   async replace(sym: string, list: PriceAlert[]) {
-    await this.loaded;
+    await this.ready();
     const mine = list
       .filter((a) => a && typeof a.id === 'string' && Number.isFinite(a.p) && !this.fired.has(a.id))
       .map((a) => ({ id: a.id, sym, p: a.p, t: Number.isFinite(a.t) ? a.t : Date.now(), ...(a.tf ? { tf: a.tf } : {}), ...(a.created ? { created: a.created } : {}) }));
@@ -121,6 +148,7 @@ export class AlertBook {
   /** 価格が届いたとき。通った幅にアラートがあれば鳴らして外す */
   async check(sym: string, tick: AlertTick, digits = 5, label = sym.toUpperCase()) {
     await this.loaded;
+    if (this.loadError) return;
     if (!(tick.bid > 0)) return;
     const range = passedRange(this.last.get(sym) ?? null, tick);
     this.last.set(sym, { bid: tick.bid, bar: tick.bar ? { t: tick.bar.t, h: tick.bar.h, l: tick.bar.l } : null });
@@ -149,9 +177,10 @@ export class AlertBook {
       res.end(JSON.stringify(v));
     };
     if (sub === '/stream') {
+      const first = await this.list();
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
       const send = (e: AlertEvent) => res.write(`data: ${JSON.stringify(e)}\n\n`);
-      send({ type: 'list', alerts: await this.list() });
+      send({ type: 'list', alerts: first });
       this.subs.add(send);
       const ping = setInterval(() => res.write(': ping\n\n'), 15_000);
       req.on('close', () => {

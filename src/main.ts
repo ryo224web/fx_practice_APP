@@ -34,6 +34,7 @@ import {
   saveState,
   storeInfo,
   setConflictHandler,
+  setUnreadableHandler,
   remoteChanged,
   switchProject,
   type AppState,
@@ -688,6 +689,11 @@ function moveProjectAlerts() {
 
 function watchPriceAlerts() {
   const es = new EventSource('/api/alerts/stream');
+  // 保存先を読めないとサーバーは断る（503）。そのときつなぎ直さないので、少し待ってからつなぎ直す
+  es.onerror = () => {
+    if (es.readyState !== EventSource.CLOSED) return;
+    setTimeout(watchPriceAlerts, 15_000);
+  };
   es.onmessage = (ev) => {
     const e = JSON.parse(ev.data) as { type: 'list'; alerts: PriceAlert[] } | { type: 'fired'; alert: PriceAlert; title: string; body: string };
     if (e.type === 'list') {
@@ -4500,7 +4506,7 @@ async function start() {
   watchOtherDevices();
   watchPriceAlerts();
   if (store.lockedBy) toast(`このプロジェクトは別の機器（${store.lockedBy}）でも開いているようです。同時に使うと保存がぶつかります（Dropbox の競合コピーや、片方の変更が消えることがあります）`);
-  else if (!store.remote) toast('保存先のフォルダに届かないため、ブラウザの中だけに保存しています');
+  else if (!store.remote && !storeInfo().error) toast('保存先のフォルダに届かないため、ブラウザの中だけに保存しています');
 }
 
 /**
@@ -4509,7 +4515,34 @@ async function start() {
  * - 画面に戻ってきたとき・30 秒ごとに見て、別の機器で進んでいて、この画面に書きかけが無ければ、自分で読み直す（⌘R を忘れても最新から続けられる）
  */
 const RELOADED_KEY = 'fxp.reloadedForOther';
+
+/**
+ * 保存先（Dropbox）を読めないとき（2026-11-28）: 帯で知らせる。サーバーは何も書かない。
+ * この画面の分はブラウザの控えに入っていて、読めるようになって読み直すと、新しい方（控え）を使う
+ */
+let unreadableBar: HTMLElement | null = null;
+function showUnreadable(msg: string | null) {
+  if (!msg) {
+    unreadableBar?.remove();
+    unreadableBar = null;
+    return;
+  }
+  if (!unreadableBar) {
+    unreadableBar = document.createElement('div');
+    unreadableBar.className = 'conflict-bar';
+    unreadableBar.innerHTML = '<span></span><button>読み直す</button>';
+    unreadableBar.querySelector('button')!.addEventListener('click', () => {
+      void flushSave().finally(() => location.reload());
+    });
+    document.body.append(unreadableBar);
+  }
+  unreadableBar.querySelector('span')!.textContent =
+    `${msg}。保存先には何も書かずに止めています（この画面の分はブラウザの控えに入っています）。直ったら「読み直す」を押してください`;
+}
+
 function watchOtherDevices() {
+  setUnreadableHandler(showUnreadable);
+  if (storeInfo().error) showUnreadable(storeInfo().error);
   setConflictHandler(() => {
     const bar = document.createElement('div');
     bar.className = 'conflict-bar';

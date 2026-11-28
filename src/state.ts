@@ -204,6 +204,8 @@ let currentState: AppState | null = null;
 let remote = false;
 let storeDir = '';
 let lockedBy: string | null = null;
+/** 保存先を読めない理由（読めていれば null） */
+let storeError: string | null = null;
 
 async function api(path: string, method = 'GET', value?: unknown): Promise<Response> {
   const res = await fetch(`/api/projects${path}`, {
@@ -212,12 +214,33 @@ async function api(path: string, method = 'GET', value?: unknown): Promise<Respo
     body: value === undefined ? undefined : JSON.stringify(value),
   });
   if (res.status === 409) throw new ConflictError();
+  if (res.status === 503) {
+    const b = (await res.json().catch(() => null)) as { error?: string; code?: string } | null;
+    if (b?.code === 'store-unreadable') throw new StoreUnreadableError(b.error ?? '保存先を読めません');
+  }
   if (!res.ok) throw new Error(`保存先との通信に失敗しました（${res.status}）`);
   return res;
 }
 
 /** 別の機器（iPad など）が後から保存していたので、この画面からは書かなかった */
 class ConflictError extends Error {}
+
+/**
+ * 保存先（Dropbox）を読めないので、サーバーが書くのを断った（Mac が読む許可を外した、など）。
+ * 2026-11-28 に、読めないのを「保存先が空」と取り違えて、ブラウザの中のプロジェクトをフォルダの外に書き出したことがあった
+ */
+export class StoreUnreadableError extends Error {}
+
+let onUnreadable: (msg: string | null) => void = () => {};
+/** 保存先を読めなくなった（msg）・また書けるようになった（null）ときに呼ぶ */
+export function setUnreadableHandler(f: (msg: string | null) => void) {
+  onUnreadable = f;
+}
+function setStoreError(msg: string | null) {
+  if (msg === storeError) return;
+  storeError = msg;
+  onUnreadable(msg);
+}
 
 function localIndex(): ProjectIndex {
   const idx = read<ProjectIndex>(INDEX_KEY);
@@ -251,9 +274,13 @@ export async function initStore(): Promise<{ remote: boolean; dir: string; locke
       index: { current: string; order: string[]; folders?: Record<string, string> } | null;
       projects: ProjectMeta[];
       folders?: string[];
+      /** 保存先が本当に初めて（何も無い）か。このときだけブラウザの中のプロジェクトを移す */
+      fresh?: boolean;
     };
-    remote = true;
     storeDir = data.dir;
+    // プロジェクトが 1 つも無いのに「初めて」でなければ、何かがおかしい（読めていない）。ブラウザの中のものを書き出さない
+    if (data.projects.length === 0 && !data.fresh) throw new StoreUnreadableError('保存先にプロジェクトが 1 つも見つかりません（読めていないかもしれません）');
+    remote = true;
     if (data.projects.length === 0) {
       for (const p of local.list) {
         const copy = readLocal(p.id);
@@ -292,8 +319,9 @@ export async function initStore(): Promise<{ remote: boolean; dir: string; locke
       remoteBase = file.updated ?? 0;
     }
     lockedBy = file.lock && file.lock.host !== data.host && Date.now() - file.lock.time < LOCK_FRESH ? file.lock.host : null;
-  } catch {
-    // サーバーに保存先が無い（ビルドしたものを開いた、など）→ ブラウザの中だけで動く
+  } catch (e) {
+    // サーバーに保存先が無い（ビルドしたものを開いた、など）・保存先を読めない → ブラウザの中だけで動く
+    if (e instanceof StoreUnreadableError) storeError = e.message;
     remote = false;
     index = local;
     currentState = readLocal(index.current)?.state ?? null;
@@ -303,7 +331,7 @@ export async function initStore(): Promise<{ remote: boolean; dir: string; locke
 }
 
 export function storeInfo() {
-  return { remote, dir: storeDir, lockedBy };
+  return { remote, dir: storeDir, lockedBy, error: storeError };
 }
 
 export function currentMeta(): ProjectMeta {
@@ -362,12 +390,15 @@ function writeRemoteNow(): Promise<void> {
         api(`/${meta.id}`, 'PUT', { ...value, base: remoteBase }).then(
           () => {
             if (meta.id === index.current) remoteBase = value.updated;
+            setStoreError(null);
           },
           (e) => {
             if (e instanceof ConflictError && meta.id === index.current && !conflicted) {
               conflicted = true;
               onConflict();
             }
+            // 読めない間はサーバーが断る（書かない）。控えには入っているので、読めるようになれば次の保存で届く
+            if (e instanceof StoreUnreadableError) setStoreError(e.message);
           },
         ),
   );
