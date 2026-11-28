@@ -162,14 +162,19 @@ export function renderKindle(all: EconEvent[], o: KindleOptions): string {
         return `<td><div class="h">${new Date(h.at + JST).getUTCHours()}</div>${iconImg(wx.code, wx.isDay, o.pixel ? 48 : 44)}<div class="t">${deg(h.temp)}</div>${bar(pop)}</td>`;
       })
       .join('');
-    // 週間は今週の日曜〜土曜で固定（過ぎた日は薄く。今日は枠）
+    // 週間は日曜〜土曜の並びで固定。過ぎた曜日は来週のその曜日を出す（曜日を白黒反転して来週と分かるように。
+    // 土曜に来週の天気が見えないのは変だった。2026-11-28）。今日は枠
     const sunday = today - jstDay(today) * DAY;
-    const days = [0, 1, 2, 3, 4, 5, 6].map((i) => w.daily.find((x) => x.at === sunday + i * DAY) ?? { at: sunday + i * DAY, code: -1, max: NaN, min: NaN, pop: null });
+    const days = [0, 1, 2, 3, 4, 5, 6].map((i) => {
+      const at = sunday + i * DAY + (sunday + i * DAY < today ? 7 * DAY : 0);
+      return w.daily.find((x) => x.at === at) ?? { at, code: -1, max: NaN, min: NaN, pop: null };
+    });
     const dcells = days
       .map((x) => {
-        const cls = x.at === today ? ' class="today"' : x.at < today ? ' class="gone"' : '';
+        const next = x.at > sunday + 6 * DAY;
+        const cls = x.at === today ? ' class="today"' : '';
         // 今日は枠で分かるので「今日」の字は付けない（2026-11-27）
-        const label = WEEKDAYS[jstDay(x.at)];
+        const label = next ? `<span class="nx">${WEEKDAYS[jstDay(x.at)]}</span>` : WEEKDAYS[jstDay(x.at)];
         if (x.code < 0) return `<td${cls}><div class="h">${label}</div></td>`;
         return `<td${cls}><div class="h">${label}</div>${iconImg(x.code, true, o.pixel ? 40 : 36)}<div class="t">${deg(x.max)}</div><div class="lo">${deg(x.min)}</div>${bar(x.pop, 50)}</td>`;
       })
@@ -272,7 +277,7 @@ img{display:block;margin:0 auto}
 .cells .h{font-size:15px}
 .cells .t{font-weight:bold;font-size:18px}
 .cells .lo{font-size:15px;color:#444}
-.weekly .gone{opacity:.45}
+.weekly .nx{background:#000;color:#fff;padding:0 4px;border-radius:3px}
 .hourly .cells .h{font-size:18px}
 .weekly .cells .h{font-size:17px}
 .weekly .cells .t{font-size:22px}
