@@ -20,6 +20,9 @@ const FRESH_MS = 90_000;
 
 export type Rotation = 90 | 270;
 
+/** 「Mac mini お休み中」の帯の版。中身を変えたら上げる（Kindle 側の .fxp_off_<版>_ も合わせる。古い版は片付けで消す） */
+export const BANNER_VERSION = 'v3';
+
 /**
  * Kindle のダッシュボードのデータの置き場（FX Practice とは別。2026-11-27）。環境変数 FXP_KINDLE_DIR で変えられる
  *   calendar/<日曜の日付>.json  取ってきた経済指標（週ごと）
@@ -177,7 +180,7 @@ export class KindleImage {
    * 中身は変わらないので 1 回だけ作る（Kindle は起きている間に 1 回取って持っておく）
    */
   async banner(rot: Rotation): Promise<Buffer> {
-    const out = (r: Rotation) => path.join(this.dir, `banner_v3_${r}.png`);
+    const out = (r: Rotation) => path.join(this.dir, `banner_${BANNER_VERSION}_${r}.png`);
     const made = await stat(out(rot)).then(() => true, () => false);
     if (!made) {
       this.busy = (this.busy ?? Promise.resolve())

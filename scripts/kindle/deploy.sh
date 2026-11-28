@@ -10,5 +10,10 @@ if [[ -z $kindle ]]; then echo "Kindle が見つかりません（USB でつな�
 # Kindle は改行が LF でないと動かないので、そのまま写す（Mac の隠しファイル ._ は作らない）
 COPYFILE_DISABLE=1 cp -X "$here/fxp_dash.sh" "$kindle/documents/fxp_dash.sh"
 rm -f "$kindle/documents/._fxp_dash.sh"
+# 要らなくなったファイルを片付ける（ゴミをためない。2026-11-28）: 調べたときの結果・スクリプト、Mac が付ける ._ の隠しファイル、古い版の帯
+rm -f "$kindle/fxp_probe.txt" "$kindle/fxp_chargetest.txt" "$kindle/documents/fxp_probe.sh" "$kindle/documents/fxp_chargetest.sh"
+find "$kindle" -maxdepth 2 -name '._*' -delete 2>/dev/null
+cur=$(grep -o 'fxp_off_v[0-9]*' "$here/fxp_dash.sh" | head -1)
+for f in "$kindle"/.fxp_off_*; do [[ -e $f && $f != *$cur* ]] && rm -f "$f"; done
 echo "入れました: $kindle/documents/fxp_dash.sh"
 diskutil eject "$kindle" && echo "取り出しました"

@@ -3,6 +3,7 @@ import { blockedWindows, jaTitle, parseFf, weekKey } from '../server/econCalenda
 import { countdown, renderKindle, weekDays } from '../server/kindle.ts';
 import { activeWarnings } from '../server/warnings.ts';
 import { BatteryLog } from '../server/kindleImage.ts';
+import { keepWorkFile, trimBatteryCsv } from '../server/kindleCleanup.ts';
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -53,6 +54,16 @@ describe('カウントダウン', () => {
     expect(day('2026-11-28T07:00')).toBe('2026-11-23'); // 土の朝（NY は金曜）
     expect(day('2026-11-28T09:00')).toBe('2026-11-30'); // 土の朝 9 時 → 来週
     expect(day('2026-11-29T12:00')).toBe('2026-11-30'); // 日
+  });
+});
+
+describe('片付け', () => {
+  it('作業場所は今の版の帯と使うファイルだけ残す・電池の記録は古い行を除く', () => {
+    expect(keepWorkFile('banner_v3_90.png', 'v3')).toBe(true);
+    expect(keepWorkFile('banner_v1_90.png', 'v3')).toBe(false);
+    expect(keepWorkFile('kindle.html', 'v3')).toBe(false);
+    expect(keepWorkFile('kindle_270.png', 'v3')).toBe(true);
+    expect(trimBatteryCsv('2026-08-01 00:00:00,90\n2026-11-28 10:00:00,94\n', '2026-09-01 00:00:00')).toBe('2026-11-28 10:00:00,94\n');
   });
 });
 

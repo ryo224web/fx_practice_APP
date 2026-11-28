@@ -17,7 +17,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { EconCalendar, FETCH_EVERY_MS, IMPACTS, type Impact } from './econCalendar.ts';
 import { DEFAULT_CURRENCIES, jstDayStart, renderKindle, type KindleOptions } from './kindle.ts';
-import { batteryIcon, KINDLE_DIR, KindleImage, type Rotation } from './kindleImage.ts';
+import { cleanup } from './kindleCleanup.ts';
+import { BANNER_VERSION, batteryIcon, KINDLE_DIR, KindleImage, type Rotation } from './kindleImage.ts';
 import { WarningSource } from './warnings.ts';
 import { WeatherSource } from './weather.ts';
 
@@ -93,9 +94,20 @@ export async function startDashboard(dataDir = KINDLE_DIR, port = Number(process
     dark: !!readConfig(dataDir).dark,
   });
   // 作業場所はプロジェクトの外（OS の一時フォルダ）
-  const img = new KindleImage(path.join(os.tmpdir(), 'fxp-kindle'), (now) => renderKindle(cal.events, options(now)));
+  const workDir = path.join(os.tmpdir(), 'fxp-kindle');
+  const img = new KindleImage(workDir, (now) => renderKindle(cal.events, options(now)));
   // 5 分の区切りの 15 秒前に画像を作っておく（Kindle は区切りの 10 秒ほど後に取りに来るので、待たせずに返せる。
   // 取りに来てから作っていたときは、Kindle が 5 秒ほど起きたまま待っていた。2026-11-27）。画面の時刻は区切りの時刻
+  // 片付け: 起動したときと、1 日に 1 回（5 分の区切りと重ならない :02:30 ごろ）。ゴミをためない（2026-11-28）
+  const tidy = () => cleanup({ workDir, dataDir, bannerVersion: BANNER_VERSION }).catch((e) => console.warn('[cleanup]', e instanceof Error ? e.message : e));
+  await tidy();
+  const DAY_MS = 86400_000;
+  const firstTidy = DAY_MS - ((Date.now() - 150_000) % DAY_MS);
+  setTimeout(function again() {
+    void tidy();
+    setTimeout(again, DAY_MS);
+  }, firstTidy);
+
   const STEP = 5 * 60_000;
   const prerender = () => {
     const next = Math.ceil((Date.now() + 20_000) / STEP) * STEP;
